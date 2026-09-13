@@ -86,6 +86,57 @@ describe("runScoutResearch — structured response", () => {
     expect(outcome.report.unresolved_questions.length).toBeGreaterThan(0);
   });
 
+  it("downgrades ready_for_founders_review to investigate_further when there are zero sources and zero verified facts", async () => {
+    const report = makeScoutReport({
+      verdict: "ready_for_founders_review",
+      sources: [],
+      verified_facts: [],
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("investigate_further");
+    expect(outcome.report.unresolved_questions.some((q) => q.includes("dated source"))).toBe(true);
+  });
+
+  it("downgrades ready_for_founders_review when there are sources but zero verified facts", async () => {
+    const report = makeScoutReport({
+      verdict: "ready_for_founders_review",
+      verified_facts: [],
+      // sources present, but nothing cites them as a verified fact
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("investigate_further");
+  });
+
+  it("downgrades ready_for_founders_review when a verified fact cites a source that was never listed", async () => {
+    const report = makeScoutReport({
+      verdict: "ready_for_founders_review",
+      sources: [],
+      verified_facts: [{ statement: "Some claim.", source_url: "https://example.com/never-listed" }],
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("investigate_further");
+  });
+
+  it("does not require more than one authoritative, dated source to keep a ready_for_founders_review verdict", async () => {
+    // makeScoutReport()'s default already has exactly one verified fact
+    // backed by exactly one dated source — this must be enough on its own.
+    const report = makeScoutReport({ verdict: "ready_for_founders_review" });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+  });
+
   it("honors a reject verdict when Scout concludes the opportunity isn't worth pursuing", async () => {
     const report = makeScoutReport({
       verdict: "reject",

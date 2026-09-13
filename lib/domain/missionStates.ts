@@ -41,6 +41,29 @@ export function assertTransition(from: MissionState, to: MissionState): void {
   }
 }
 
+/**
+ * Thrown when a transition was legal in the state graph (assertTransition
+ * passed) but the atomic conditional database update still didn't apply —
+ * meaning the mission's real, persisted state had already moved on by the
+ * time the write happened (a genuine concurrent change, e.g. a founder
+ * cancelling while an agent's work was still in flight). Distinct from
+ * IllegalMissionTransitionError, which means the move was never legal at
+ * all, regardless of timing.
+ */
+export class MissionConcurrencyError extends Error {
+  constructor(
+    readonly missionId: string,
+    readonly expectedStates: MissionState[],
+    readonly toState: MissionState,
+    readonly actualState: MissionState,
+  ) {
+    super(
+      `Mission ${missionId} was expected to be in ${expectedStates.join("/")} when moving it to "${toState}", but it is now "${actualState}" — it must have changed concurrently.`,
+    );
+    this.name = "MissionConcurrencyError";
+  }
+}
+
 export const TERMINAL_STATES: MissionState[] = ["rejected", "cancelled"];
 
 export function isTerminal(state: MissionState): boolean {

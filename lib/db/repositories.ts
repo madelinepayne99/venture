@@ -94,31 +94,62 @@ export function listMissions(): Mission[] {
     .all() as Mission[];
 }
 
-export function updateMissionState(
+export interface TransitionResult {
+  /** Whether the mission was actually in one of fromStates and got moved. */
+  ok: boolean;
+  /** The mission's row as it stands right now, whether or not this call moved it. */
+  mission: Mission;
+}
+
+/**
+ * The only way any code in this app should change a mission's state. The
+ * WHERE clause makes the check-and-write a single atomic statement — there
+ * is no gap between "is it still in that state?" and "move it," so two
+ * callers racing to transition the same mission can never both succeed,
+ * and neither can silently overwrite a state the mission has already
+ * moved past (e.g. a founder's cancellation while an agent's work is still
+ * in flight).
+ *
+ * This function is `async` even though better-sqlite3 itself is
+ * synchronous, so every call site already awaits it — swapping the body
+ * for a real async Postgres client later is a body-only change, not a
+ * call-site rewrite.
+ */
+export async function transitionMissionState(
   id: string,
-  state: MissionState,
+  fromStates: MissionState[],
+  toState: MissionState,
   fields: Partial<
     Pick<Mission, "interpreted_mission" | "final_status" | "failure_reason">
   > = {},
-): Mission {
+): Promise<TransitionResult> {
+  if (fromStates.length === 0) {
+    throw new Error("transitionMissionState requires at least one expected fromState.");
+  }
   const db = getDb();
   const ts = now();
-  db.prepare(
-    `UPDATE missions
-     SET state = ?, updated_at = ?,
-         interpreted_mission = COALESCE(?, interpreted_mission),
-         final_status = COALESCE(?, final_status),
-         failure_reason = COALESCE(?, failure_reason)
-     WHERE id = ?`,
-  ).run(
-    state,
-    ts,
-    fields.interpreted_mission ?? null,
-    fields.final_status ?? null,
-    fields.failure_reason ?? null,
-    id,
-  );
-  return getMission(id)!;
+  const placeholders = fromStates.map(() => "?").join(", ");
+  const result = db
+    .prepare(
+      `UPDATE missions
+       SET state = ?, updated_at = ?,
+           interpreted_mission = COALESCE(?, interpreted_mission),
+           final_status = COALESCE(?, final_status),
+           failure_reason = COALESCE(?, failure_reason)
+       WHERE id = ? AND state IN (${placeholders})`,
+    )
+    .run(
+      toState,
+      ts,
+      fields.interpreted_mission ?? null,
+      fields.final_status ?? null,
+      fields.failure_reason ?? null,
+      id,
+      ...fromStates,
+    );
+  const mission = getMission(id);
+  if (!mission) throw new Error(`Mission ${id} not found.`);
+  return { ok: result.changes > 0, mission };
 }
 
 // --- Mission stages -----------------------------------------------------
@@ -282,7 +313,8 @@ export function recordCost(entry: {
   model: string;
   inputTokens: number;
   outputTokens: number;
-  usdCost: number;
+  /** Null means real tokens were spent but pricing for this model is unknown — never invent a figure. */
+  usdCost: number | null;
 }): CostEntry {
   const id = randomUUID();
   getDb()
@@ -300,17 +332,23 @@ export function recordCost(entry: {
       entry.usdCost,
     );
 
-  getDb()
-    .prepare(
-      `INSERT INTO ledger_entries (id, mission_id, category, description, amount_usd)
-       VALUES (?, ?, 'agent_cost', ?, ?)`,
-    )
-    .run(
-      randomUUID(),
-      entry.missionId,
-      `${entry.model} usage (${entry.inputTokens} in / ${entry.outputTokens} out tokens)`,
-      -Math.abs(entry.usdCost),
-    );
+  // Only the business ledger gets an entry when we actually know the
+  // dollar amount — an unpriced model still gets its token usage recorded
+  // above (for reconciliation), but the ledger must never carry a
+  // fabricated $0 (or any other invented) charge.
+  if (entry.usdCost !== null) {
+    getDb()
+      .prepare(
+        `INSERT INTO ledger_entries (id, mission_id, category, description, amount_usd)
+         VALUES (?, ?, 'agent_cost', ?, ?)`,
+      )
+      .run(
+        randomUUID(),
+        entry.missionId,
+        `${entry.model} usage (${entry.inputTokens} in / ${entry.outputTokens} out tokens)`,
+        -Math.abs(entry.usdCost),
+      );
+  }
 
   return getDb().prepare("SELECT * FROM costs WHERE id = ?").get(id) as CostEntry;
 }

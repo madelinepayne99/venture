@@ -53,11 +53,28 @@ dispatch to Scout.
 
 The mission workflow is fully wired end-to-end for Scout: creation →
 founder approval gate → Scout research (real Claude API call, real web
-search, real structured output) → one of Scout's three honest verdicts.
-There is no background job queue yet — Scout's research runs synchronously
-inside the approve request. If a future agent's work takes long enough
-that this becomes a problem, introduce a real queue rather than faking
-progress in the meantime.
+search, structured JSON parsed and Zod-validated from the response) → one
+of Scout's three honest verdicts. There is no background job queue yet —
+Scout's research runs synchronously inside the approve request. **This is
+a known production blocker, not a stopgap that's fine to ship** — see
+"Known production blockers" below.
+
+After a production-readiness review, a first round of correctness fixes
+was made (still on top of SQLite/synchronous dispatch — no new
+infrastructure): every mission-state change now goes through
+`transitionMissionState`, an atomic conditional database update (`UPDATE
+... WHERE state IN (...)`) rather than a blind write, so a mission
+cancelled while an agent's work is still in flight can never be silently
+revived when that work later completes, and two overlapping approval
+attempts can never both dispatch an agent or charge the ledger. Failure
+settlement is now resilient to a pricing lookup itself failing — token
+usage is always recorded when known, but a dollar cost is only ever
+recorded when it's genuinely known (`costs.usd_cost` is nullable; an
+unpriced cost never becomes a ledger entry). Scout also now has a
+structural evidence guardrail, not just a language-pattern one: it cannot
+reach `ready_for_founders_review` without at least one verified fact
+backed by a real, dated source (one authoritative source is enough — this
+does not require an arbitrary source count).
 
 ## Architecture
 
@@ -75,8 +92,10 @@ progress in the meantime.
   `draft → awaiting_founder_approval → queued → researching →
   {awaiting_evidence | ready_for_founders_review | rejected | failed}`,
   plus `cancelled` reachable from every non-terminal state. If you need a
-  new transition, add it explicitly to `ALLOWED_TRANSITIONS` — don't just
-  call `updateMissionState` and hope.
+  new transition, add it explicitly to `ALLOWED_TRANSITIONS` first (the
+  structural check), then perform it via `transitionMissionState` in
+  `lib/db/repositories.ts` (the atomic conditional write) — never write
+  `state` directly with a plain `UPDATE`.
 - **Mission workflow** (`lib/domain/missionWorkflow.ts`) — orchestrates
   creation, the founders' approval gate, dispatch to an agent, and
   settling the mission based on the agent's verdict or a caught error.
@@ -93,13 +112,25 @@ progress in the meantime.
     dates, verified facts, labeled inferences, unresolved questions,
     recommended next action, and a `reject` /
     `investigate_further` / `ready_for_founders_review` verdict) is a
-    required field here — the API call uses this schema as its
-    structured-output format, so a response that doesn't match fails
-    loudly instead of getting displayed anyway.
+    required field here. The installed Anthropic SDK version doesn't yet
+    expose an enforced structured-output mode, so Scout is instructed via
+    the system prompt to return matching JSON; `index.ts` parses that text
+    (with a bracket-extraction fallback for stray prose) and validates it
+    against this schema — a response that doesn't match fails loudly
+    instead of getting displayed anyway. Swap in real structured-output
+    enforcement if/when the SDK supports it; the schema itself doesn't
+    need to change.
   - `prompt.ts` — the system prompt, including the safety rules below.
-  - `guardrails.ts` — a second, code-level check that scans Scout's own
-    free-text fields for guaranteed-outcome language, independent of the
-    prompt. Defense in depth: don't remove one because the other exists.
+  - `guardrails.ts` — code-level checks independent of the prompt, run
+    after parsing: `findGuaranteeLanguage` scans Scout's free-text fields
+    for guaranteed-outcome language, and `hasMeaningfulEvidence` is a
+    structural check that a `ready_for_founders_review` verdict is backed
+    by at least one verified fact tied to a real, dated source (not an
+    arbitrary source count — one authoritative source is enough). Both
+    downgrade the verdict to `investigate_further` rather than silently
+    passing a confident-sounding but unsupported report through. Defense
+    in depth: don't remove any of these because the prompt already says
+    the same thing.
   - `index.ts` — `runScoutResearch(mission, { client? })` calls the Claude
     API with the `web_search` server tool and the Zod output format,
     handles `pause_turn` by resuming rather than truncating, and throws a
@@ -112,7 +143,10 @@ progress in the meantime.
 - **`lib/agents/pricing.ts`** — per-model USD pricing, used only to record
   real spend into the `costs` table and `ledger_entries` (as a negative
   amount). Never used to estimate or promise savings/profit. An unknown
-  model throws rather than silently recording a wrong cost.
+  model throws rather than silently recording a wrong cost — callers must
+  catch that throw, record the token counts with `usd_cost: null`, and
+  never let it block settling the mission (see `runScoutPipeline`'s catch
+  block in `missionWorkflow.ts`).
 
 ## Data model
 
@@ -121,7 +155,11 @@ See `lib/db/schema.sql` for the authoritative definitions: `founders`,
 `agent_assignments`, `evidence`, `deliverables`, `approvals`, `costs`,
 `ledger_entries`, `activity_history`. Every table backs something actually
 displayed in the UI — don't add a column to make room for fabricated
-activity; add it when there's a real thing to record.
+activity; add it when there's a real thing to record. `costs.usd_cost` is
+nullable by design — null means real tokens were spent but pricing for
+that model is unknown; it is never coerced to 0, and `recordCost` skips
+the `ledger_entries` insert entirely when it's null, so the ledger only
+ever holds genuine, known dollar amounts.
 
 ## Safety rules (non-negotiable)
 
@@ -177,16 +215,32 @@ activity; add it when there's a real thing to record.
 
 ## Testing
 
-`npm test` (Vitest) covers: mission creation and validation, Scout's
-structured response and the facts/inferences separation, weak-evidence and
-outright-reject verdicts, failed research (including that partial cost is
-still recorded), cancellation, the founders' approval gate (including a
-mission that tries to skip it), secret protection, cost/ledger recording,
-and the fabricated-completion-state checks described above. Tests never
-call the real Anthropic API — `runScoutResearch` takes an injectable
-client, and `lib/agents/scout` is mocked at the module level for workflow
-tests. `tests/setup.ts` forces an in-memory database and deletes any
-`ANTHROPIC_API_KEY` from the test environment.
+`npm test` (Vitest, 53 tests) covers: mission creation and validation,
+Scout's structured response and the facts/inferences separation,
+weak-evidence and outright-reject verdicts, the structural evidence
+guardrail (zero sources, zero verified facts, a fact citing an unlisted
+source, and the one-good-source-is-enough case), failed research
+(including that cost is still recorded, and that a pricing-lookup failure
+never leaves a mission stuck in `researching` or invents a dollar amount),
+cancellation (including a mission cancelled *while Scout is still
+researching it*, proving the report is discarded but its real cost is
+still recorded), repeated and genuinely concurrent approval attempts
+(proving Scout never runs twice and the ledger is never charged twice),
+the atomic `transitionMissionState` guarantee itself in isolation, the
+founders' approval gate (including a mission that tries to skip it),
+secret protection, cost/ledger recording, and the fabricated-completion-
+state checks described above. Tests never call the real Anthropic API —
+`runScoutResearch` takes an injectable client, and `lib/agents/scout` is
+mocked at the module level for workflow tests. `tests/setup.ts` forces an
+in-memory database and deletes any `ANTHROPIC_API_KEY` from the test
+environment.
+
+No `ANTHROPIC_API_KEY` has been available in any session that has worked
+on this codebase so far — Scout's behavior against the real Claude API
+(including the actual `web_search` tool and real model output) has never
+been exercised live. Everything above is verified against mocked/fake
+responses only. Treat "the tests pass" and "Scout works against the real
+API" as two separate, both-still-open claims.
 
 ## Running it for real
 
@@ -197,3 +251,51 @@ exercised end-to-end — verify it against a real mission before treating it
 as production-ready, and watch the first few runs' `costs` rows to confirm
 the pricing table in `lib/agents/pricing.ts` still matches Anthropic's
 published rates.
+
+## Known production blockers — do not deploy publicly until these are addressed
+
+A production-readiness review identified several gaps between this
+codebase and an actual online deployment. A first round of contained,
+same-infrastructure correctness fixes has been made (see "Current
+development stage" above and the mission-workflow/Scout guardrail code).
+Three larger gaps remain and were deliberately **not** addressed yet —
+they need their own scoped change, with real tooling decisions made
+explicitly rather than picked implicitly by whoever gets to them first:
+
+1. **Persistence.** The app runs on `better-sqlite3` against a local file
+   (`data/venture.db`). This is fine for local development, but a
+   serverless host (Vercel is the intended target) does not give a
+   deployment a persistent, shared, writable disk across invocations or
+   instances — missions would not reliably survive between requests, let
+   alone deploys. This needs a real managed relational database before
+   any non-local deployment. Whatever database and query layer are
+   chosen, `lib/db/repositories.ts` is deliberately the only place that
+   issues raw queries, and `transitionMissionState` is already `async`
+   (even though its current body is fully synchronous) specifically so
+   that swapping its implementation is a body-only change — every caller
+   already `await`s it. Every other repository function is still
+   synchronous today and would need the same treatment.
+
+2. **Durable background execution.** `approveMission` → Scout's research
+   → settlement all happen inside one HTTP request/response cycle
+   (`lib/domain/missionWorkflow.ts`). A real research pass (multiple
+   model round-trips with web search) can take well past a serverless
+   function's execution time limit; if the process is killed mid-request,
+   today's code has no way to notice and no way to recover — nothing
+   currently re-checks or reaps a mission left in `researching`. This
+   needs Scout's dispatch moved off the request/response path onto a
+   durable job mechanism (a queue, a durable-execution service, or
+   equivalent) with its own retry semantics, plus some explicit handling
+   for a mission that's been `researching` too long.
+
+3. **Authentication.** No API route currently verifies who is calling it.
+   The "Acting as: Ellis / Maddie" selector in the UI is a client-side
+   convenience only — `founderId` is trusted verbatim from the request
+   body on every mutating route (`create`, `approve`, `cancel`). Before
+   any deployment reachable outside a trusted local network, every
+   mutating route needs to derive the acting founder from a verified
+   server-side session, not from a client-supplied string.
+
+Do not pick specific vendors or add any of these dependencies without a
+founder decision first — this section records the gaps, not a plan
+already in motion.

@@ -41,7 +41,8 @@ export function MissionDetail({ detail }: { detail: MissionDetailData | null }) 
   }
 
   const { mission, stages, evidence, scoutReport, costs, activity } = detail;
-  const totalCost = costs.reduce((sum, c) => sum + c.usd_cost, 0);
+  const totalCost = costs.reduce((sum, c) => sum + (c.usd_cost ?? 0), 0);
+  const hasUnpricedCost = costs.some((c) => c.usd_cost === null);
 
   return (
     <div className="max-h-[calc(100vh-6rem)] space-y-4 overflow-y-auto rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">
@@ -197,6 +198,7 @@ export function MissionDetail({ detail }: { detail: MissionDetailData | null }) 
       {costs.length > 0 && (
         <Section title="Cost of this mission">
           ${totalCost.toFixed(4)} across {costs.length} model call{costs.length === 1 ? "" : "s"}
+          {hasUnpricedCost && " (some usage has unknown pricing and is not included in this total)"}
         </Section>
       )}
 

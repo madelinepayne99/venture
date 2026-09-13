@@ -40,4 +40,24 @@ describe("cost ledger", () => {
     expect(entries[0]?.amount_usd).toBeCloseTo(-0.007, 6);
     expect(ledgerTotalUsd()).toBeCloseTo(-0.007, 6);
   });
+
+  it("records token usage with a null cost without inventing a ledger charge", () => {
+    const scout = listAgents().find((a) => a.key === "scout")!;
+    const cost = recordCost({
+      missionId: null,
+      agentId: scout.id,
+      model: "some-future-model-not-in-the-pricing-table",
+      inputTokens: 640,
+      outputTokens: 120,
+      usdCost: null,
+    });
+
+    expect(cost.usd_cost).toBeNull();
+    expect(cost.input_tokens).toBe(640);
+    expect(cost.output_tokens).toBe(120);
+
+    // No ledger entry at all for an unpriced cost — not even a fabricated $0.
+    expect(listLedgerEntries()).toHaveLength(0);
+    expect(ledgerTotalUsd()).toBe(0);
+  });
 });

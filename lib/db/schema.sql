@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS costs (
   model TEXT NOT NULL,
   input_tokens INTEGER NOT NULL,
   output_tokens INTEGER NOT NULL,
-  usd_cost REAL NOT NULL,
+  usd_cost REAL, -- NULL means real tokens were spent but pricing for this
+                 -- model is unknown — never fabricate a dollar figure here.
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 

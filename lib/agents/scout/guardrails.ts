@@ -52,3 +52,27 @@ export function findGuaranteeLanguage(report: ScoutReport): GuardrailViolation[]
 
   return violations;
 }
+
+/**
+ * Structural check, independent of the language scan above: a
+ * "ready_for_founders_review" verdict must be backed by at least one
+ * verified fact grounded in a real, dated source — not just plausible-
+ * sounding prose. This deliberately does not require multiple sources:
+ * one authoritative, dated source backing one verified fact is enough:
+ * the point is to catch "confident report, zero real evidence" (e.g. web
+ * search failed entirely and Scout fell back to training knowledge), not
+ * to impose an arbitrary source count.
+ */
+export function hasMeaningfulEvidence(report: ScoutReport): boolean {
+  const sourceByUrl = new Map(report.sources.map((source) => [source.url, source]));
+
+  return report.verified_facts.some((fact) => {
+    if (!fact.source_url || !fact.source_url.trim()) return false;
+    const source = sourceByUrl.get(fact.source_url);
+    // The source must actually be listed (not just referenced) and carry a
+    // real access date — every entry in `sources` already requires one by
+    // schema, so this mainly guards against a fact citing a URL that never
+    // made it into the sources list at all.
+    return Boolean(source && source.accessed_date);
+  });
+}

@@ -6,7 +6,7 @@ import { getAnthropicClient } from "@/lib/agents/anthropicClient";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import { ScoutReportSchema, type ScoutReport } from "./schema";
 import { SCOUT_SYSTEM_PROMPT, buildScoutUserPrompt } from "./prompt";
-import { findGuaranteeLanguage } from "./guardrails";
+import { findGuaranteeLanguage, hasMeaningfulEvidence } from "./guardrails";
 
 export const SCOUT_MODEL = process.env.SCOUT_MODEL || "claude-sonnet-5";
 // Sonnet 5 is the deliberate default: Scout runs frequently on ordinary
@@ -145,6 +145,14 @@ export async function runScoutResearch(
         (v) =>
           `Safety guardrail: "${v.matchedText}" in ${v.field} reads as a certainty claim about demand/revenue/profit — verify manually before trusting this section.`,
       ),
+    ];
+  }
+
+  if (report.verdict === "ready_for_founders_review" && !hasMeaningfulEvidence(report)) {
+    report.verdict = "investigate_further";
+    report.unresolved_questions = [
+      ...report.unresolved_questions,
+      "Safety guardrail: no verified fact was backed by a real, dated source — downgraded from ready_for_founders_review, since a founders'-review verdict needs at least one authoritative, dated source behind it.",
     ];
   }
 

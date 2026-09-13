@@ -120,7 +120,8 @@ export interface CostEntry {
   model: string;
   input_tokens: number;
   output_tokens: number;
-  usd_cost: number;
+  /** Null means real tokens were spent but pricing for this model is unknown — never a fabricated figure. */
+  usd_cost: number | null;
   created_at: string;
 }
 

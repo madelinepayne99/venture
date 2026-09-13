@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { MissionValidationError } from "@/lib/domain/missionWorkflow";
-import { IllegalMissionTransitionError } from "@/lib/domain/missionStates";
+import { IllegalMissionTransitionError, MissionConcurrencyError } from "@/lib/domain/missionStates";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -13,6 +13,9 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }
   if (error instanceof IllegalMissionTransitionError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof MissionConcurrencyError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof Error && error.message.includes("not found")) {
