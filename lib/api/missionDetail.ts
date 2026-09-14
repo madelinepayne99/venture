@@ -11,24 +11,33 @@ import {
 } from "@/lib/db/repositories";
 import type { ScoutReport } from "@/lib/agents/scout/schema";
 
-export function getMissionDetail(missionId: string) {
-  const mission = getMission(missionId);
+export async function getMissionDetail(missionId: string) {
+  const mission = await getMission(missionId);
   if (!mission) return null;
 
-  const deliverables = listDeliverables(missionId);
+  const [stages, assignments, evidence, deliverables, costs, approvals, activity] = await Promise.all([
+    listStages(missionId),
+    listAssignments(missionId),
+    listEvidence(missionId),
+    listDeliverables(missionId),
+    listCosts(missionId),
+    listApprovals(missionId),
+    listActivity(missionId),
+  ]);
+
   const scoutReport = deliverables.find((d) => d.kind === "scout_research_report")?.content as
     | ScoutReport
     | undefined;
 
   return {
     mission,
-    stages: listStages(missionId),
-    assignments: listAssignments(missionId),
-    evidence: listEvidence(missionId),
+    stages,
+    assignments,
+    evidence,
     deliverables,
     scoutReport: scoutReport ?? null,
-    costs: listCosts(missionId),
-    approvals: listApprovals(missionId),
-    activity: listActivity(missionId),
+    costs,
+    approvals,
+    activity,
   };
 }

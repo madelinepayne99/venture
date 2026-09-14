@@ -1,5 +1,5 @@
 import "server-only";
-import type { Mission, MissionState, ScoutVerdict } from "@/lib/db/types";
+import type { Mission, MissionStage, MissionState, ScoutVerdict } from "@/lib/db/types";
 import {
   createMission,
   getMission,
@@ -7,9 +7,11 @@ import {
   recordApproval,
   recordActivity,
   startStage,
+  getOpenStage,
   completeStage,
   failStage,
   assignAgent,
+  hasAssignment,
   getAgentByKey,
   recordEvidence,
   recordDeliverable,
@@ -19,6 +21,7 @@ import { validateMissionInput, type MissionInput } from "@/lib/domain/missionVal
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
 import { calculateUsdCost } from "@/lib/agents/pricing";
+import { inngest, MISSION_APPROVED_EVENT } from "@/lib/inngest/client";
 
 export class MissionValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -40,7 +43,7 @@ export async function createAndSubmitMission(
     throw new MissionValidationError(validation.errors);
   }
 
-  const mission = createMission({
+  const mission = await createMission({
     founderId: input.founderId,
     projectId: input.projectId,
     title: input.title.trim(),
@@ -57,14 +60,14 @@ export async function createAndSubmitMission(
       submission.mission.state,
     );
   }
-  recordActivity({
+  await recordActivity({
     missionId: mission.id,
     actor: `founder:${input.founderId}`,
     action: "submitted_for_approval",
   });
 
   if (!approvalGateEnabled()) {
-    recordActivity({
+    await recordActivity({
       missionId: mission.id,
       actor: "system",
       action: "approval_gate_disabled",
@@ -83,15 +86,21 @@ export async function createAndSubmitMission(
  * requests both try to approve the same mission (a double-click, two tabs,
  * a retried request), only the first one to reach the database wins; the
  * second sees ok:false and throws instead of ever dispatching Scout a
- * second time. That's what prevents duplicate research runs and duplicate
- * ledger charges, not anything about request ordering.
+ * second time.
+ *
+ * This function returns as soon as the mission is queued and the research
+ * job has been dispatched — it does NOT wait for Scout to finish. The
+ * actual research runs in a durable Inngest function (see
+ * lib/jobs/scoutResearchJob.ts), which is what lets this call return
+ * immediately instead of blocking the HTTP request for the duration of a
+ * real research pass.
  */
 export async function approveMission(
   missionId: string,
   founderId: string,
   opts: { auto?: boolean } = {},
 ): Promise<Mission> {
-  const mission = getMission(missionId);
+  const mission = await getMission(missionId);
   if (!mission) throw new Error(`Mission ${missionId} not found.`);
 
   assertTransition(mission.state, "queued");
@@ -100,23 +109,30 @@ export async function approveMission(
     throw new MissionConcurrencyError(missionId, [mission.state], "queued", transition.mission.state);
   }
 
-  recordApproval({
+  await recordApproval({
     missionId,
     founderId,
     decision: "approved",
     note: opts.auto ? "auto-approved (approval gate disabled)" : undefined,
   });
-  recordActivity({
+  await recordActivity({
     missionId,
     actor: opts.auto ? "system" : `founder:${founderId}`,
     action: "mission_approved",
   });
 
-  // Dispatch synchronously (from the caller's perspective, awaited here) —
-  // Scout's research is the only work this milestone performs, and
-  // founders should see a real result rather than a fabricated
-  // "in progress" state that outlives the actual work.
-  return runScoutPipeline(missionId);
+  // A deterministic event id means Inngest itself de-duplicates a literal
+  // retried/duplicate send for the same mission — on top of (not instead
+  // of) the atomic transition above and the function's own concurrency
+  // key (see scoutResearchJob.ts), which together are what actually
+  // prevent duplicate research runs and duplicate ledger charges.
+  await inngest.send({
+    id: `mission-approved-${missionId}`,
+    name: MISSION_APPROVED_EVENT,
+    data: { missionId },
+  });
+
+  return transition.mission;
 }
 
 /**
@@ -126,7 +142,7 @@ export async function approveMission(
  * double-recording the cancellation.
  */
 export async function cancelMission(missionId: string, founderId: string, note?: string): Promise<Mission> {
-  const mission = getMission(missionId);
+  const mission = await getMission(missionId);
   if (!mission) throw new Error(`Mission ${missionId} not found.`);
   if (!isCancellable(mission.state)) {
     throw new Error(`Mission ${missionId} cannot be cancelled from state "${mission.state}".`);
@@ -137,8 +153,8 @@ export async function cancelMission(missionId: string, founderId: string, note?:
     throw new MissionConcurrencyError(missionId, [mission.state], "cancelled", transition.mission.state);
   }
 
-  recordApproval({ missionId, founderId, decision: "cancelled", note });
-  recordActivity({
+  await recordApproval({ missionId, founderId, decision: "cancelled", note });
+  await recordActivity({
     missionId,
     actor: `founder:${founderId}`,
     action: "mission_cancelled",
@@ -158,22 +174,58 @@ function nextStateForVerdict(verdict: ScoutVerdict): MissionState {
   }
 }
 
-async function runScoutPipeline(missionId: string): Promise<Mission> {
-  const mission = getMission(missionId);
+/**
+ * Runs Scout's research and settles the mission. Called from the Inngest
+ * job (lib/jobs/scoutResearchJob.ts), not directly from an HTTP request —
+ * see approveMission, which only dispatches the event.
+ *
+ * Resumable by design: a durable-execution retry can call this again for
+ * a mission that's already "researching" (its own earlier attempt got far
+ * enough to make that transition but didn't finish, e.g. the process was
+ * killed mid-run). In that case this resumes into the existing stage/
+ * assignment rows instead of duplicating them, and calls Scout again —
+ * Inngest's retry count is kept low (see scoutResearchJob.ts) specifically
+ * because this is a real, accepted tradeoff: a retried run may incur
+ * additional real API cost, documented rather than hidden.
+ */
+export async function runScoutPipeline(missionId: string): Promise<Mission> {
+  let mission = await getMission(missionId);
   if (!mission) throw new Error(`Mission ${missionId} not found.`);
 
-  assertTransition(mission.state, "researching");
-  const started = await transitionMissionState(missionId, [mission.state], "researching");
-  if (!started.ok) {
-    throw new MissionConcurrencyError(missionId, [mission.state], "researching", started.mission.state);
-  }
-  recordActivity({ missionId, actor: "system", action: "research_started" });
-
-  const scout = getAgentByKey("scout");
+  const scout = await getAgentByKey("scout");
   if (!scout) throw new Error("Scout agent is not registered — seed data is missing.");
-  assignAgent(missionId, scout.id, "lead");
 
-  const stage = startStage(missionId, "scout_research", "Scout is researching the opportunity.");
+  let stage: MissionStage;
+
+  if (mission.state === "queued") {
+    assertTransition(mission.state, "researching");
+    const started = await transitionMissionState(missionId, [mission.state], "researching");
+    if (!started.ok) {
+      throw new MissionConcurrencyError(missionId, [mission.state], "researching", started.mission.state);
+    }
+    mission = started.mission;
+    await recordActivity({ missionId, actor: "system", action: "research_started" });
+    await assignAgent(missionId, scout.id, "lead");
+    stage = await startStage(missionId, "scout_research", "Scout is researching the opportunity.");
+  } else if (mission.state === "researching") {
+    const existingStage = await getOpenStage(missionId, "scout_research");
+    stage =
+      existingStage ??
+      (await startStage(missionId, "scout_research", "Resumed after an earlier attempt did not finish."));
+    if (!(await hasAssignment(missionId, scout.id))) {
+      await assignAgent(missionId, scout.id, "lead");
+    }
+  } else {
+    // The mission moved on (most likely cancelled) before this run ever
+    // got to start real work — nothing to do, and nothing was spent.
+    await recordActivity({
+      missionId,
+      actor: "system",
+      action: "research_skipped",
+      detail: `Mission was "${mission.state}", not queued or researching, when the research job ran — skipped.`,
+    });
+    return mission;
+  }
 
   try {
     const outcome = await runScoutResearch(mission);
@@ -192,7 +244,7 @@ async function runScoutPipeline(missionId: string): Promise<Mission> {
     // The API cost was genuinely incurred either way — record it
     // regardless of whether the mission was still around to receive the
     // verdict.
-    recordCost({
+    await recordCost({
       missionId: mission.id,
       agentId: scout.id,
       model: outcome.usage.model,
@@ -208,11 +260,11 @@ async function runScoutPipeline(missionId: string): Promise<Mission> {
       // with a verdict it never asked to receive. The report itself is
       // discarded (not stored as evidence/deliverables) so nothing about
       // the mission's visible content looks like it kept progressing.
-      completeStage(
+      await completeStage(
         stage.id,
         `Research completed, but the mission was already "${settlement.mission.state}" — verdict discarded, cost still recorded.`,
       );
-      recordActivity({
+      await recordActivity({
         missionId: mission.id,
         actor: "system",
         action: "research_discarded_after_state_change",
@@ -222,18 +274,18 @@ async function runScoutPipeline(missionId: string): Promise<Mission> {
     }
 
     for (const item of outcome.evidence) {
-      recordEvidence({ missionId: mission.id, ...item });
+      await recordEvidence({ missionId: mission.id, ...item });
     }
 
-    recordDeliverable({
+    await recordDeliverable({
       missionId: mission.id,
       agentId: scout.id,
       kind: "scout_research_report",
       content: outcome.report,
     });
 
-    completeStage(stage.id, `Verdict: ${outcome.report.verdict}`);
-    recordActivity({
+    await completeStage(stage.id, `Verdict: ${outcome.report.verdict}`);
+    await recordActivity({
       missionId: mission.id,
       actor: "agent:scout",
       action: "research_completed",
@@ -260,7 +312,7 @@ async function runScoutPipeline(missionId: string): Promise<Mission> {
         );
         usdCost = null;
       }
-      recordCost({
+      await recordCost({
         missionId: mission.id,
         agentId: scout.id,
         model: usage.model,
@@ -279,11 +331,11 @@ async function runScoutPipeline(missionId: string): Promise<Mission> {
       // Same non-overwrite guarantee as the success path: if the mission
       // moved on (e.g. cancelled) while research was failing in the
       // background, leave it exactly where the founder put it.
-      failStage(
+      await failStage(
         stage.id,
         `${reason} (mission was already "${settlement.mission.state}" — left unchanged)`,
       );
-      recordActivity({
+      await recordActivity({
         missionId: mission.id,
         actor: "system",
         action: "research_discarded_after_state_change",
@@ -292,8 +344,8 @@ async function runScoutPipeline(missionId: string): Promise<Mission> {
       return settlement.mission;
     }
 
-    failStage(stage.id, reason);
-    recordActivity({
+    await failStage(stage.id, reason);
+    await recordActivity({
       missionId: mission.id,
       actor: "system",
       action: "research_failed",

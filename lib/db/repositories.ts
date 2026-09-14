@@ -1,6 +1,8 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "./client";
+import * as schema from "./schema";
 import type {
   Agent,
   AgentAssignment,
@@ -23,75 +25,89 @@ function now(): string {
 
 // --- Founders -----------------------------------------------------------
 
-export function listFounders(): Founder[] {
-  return getDb().prepare("SELECT * FROM founders ORDER BY created_at").all() as Founder[];
+export async function listFounders(): Promise<Founder[]> {
+  const db = await getDb();
+  return db.select().from(schema.founders).orderBy(schema.founders.created_at);
 }
 
-export function getFounder(id: string): Founder | undefined {
-  return getDb().prepare("SELECT * FROM founders WHERE id = ?").get(id) as
-    | Founder
-    | undefined;
+export async function getFounder(id: string): Promise<Founder | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.founders).where(eq(schema.founders.id, id));
+  return row;
+}
+
+export async function getFounderByEmail(email: string): Promise<Founder | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.founders).where(eq(schema.founders.email, email));
+  return row;
 }
 
 // --- Agents ---------------------------------------------------------------
 
-export function listAgents(): Agent[] {
-  return getDb().prepare("SELECT * FROM agents ORDER BY created_at").all() as Agent[];
+export async function listAgents(): Promise<Agent[]> {
+  const db = await getDb();
+  return db.select().from(schema.agents).orderBy(schema.agents.created_at);
 }
 
-export function getAgentByKey(key: string): Agent | undefined {
-  return getDb().prepare("SELECT * FROM agents WHERE key = ?").get(key) as
-    | Agent
-    | undefined;
+export async function getAgentByKey(key: string): Promise<Agent | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.agents).where(eq(schema.agents.key, key));
+  return row;
 }
 
 // --- Projects ---------------------------------------------------------------
 
-export function listProjects(): Project[] {
-  return getDb().prepare("SELECT * FROM projects ORDER BY created_at").all() as Project[];
+export async function listProjects(): Promise<Project[]> {
+  const db = await getDb();
+  return db.select().from(schema.projects).orderBy(schema.projects.created_at);
 }
 
-export function getDefaultProject(): Project | undefined {
-  return getDb().prepare("SELECT * FROM projects ORDER BY created_at LIMIT 1").get() as
-    | Project
-    | undefined;
+export async function getDefaultProject(): Promise<Project | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.projects).orderBy(schema.projects.created_at).limit(1);
+  return row;
 }
 
 // --- Missions ---------------------------------------------------------------
 
-export function createMission(input: {
+export async function createMission(input: {
   founderId: string;
   projectId: string | null;
   title: string;
   brief: string;
-}): Mission {
+}): Promise<Mission> {
   const id = randomUUID();
   const ts = now();
-  getDb()
-    .prepare(
-      `INSERT INTO missions (id, project_id, founder_id, title, brief, state, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)`,
-    )
-    .run(id, input.projectId, input.founderId, input.title, input.brief, ts, ts);
-  recordActivity({
+  const db = await getDb();
+  await db.insert(schema.missions).values({
+    id,
+    project_id: input.projectId,
+    founder_id: input.founderId,
+    title: input.title,
+    brief: input.brief,
+    state: "draft",
+    created_at: ts,
+    updated_at: ts,
+  });
+  await recordActivity({
     missionId: id,
     actor: `founder:${input.founderId}`,
     action: "mission_created",
     detail: input.title,
   });
-  return getMission(id)!;
+  return (await getMission(id))!;
 }
 
-export function getMission(id: string): Mission | undefined {
-  return getDb().prepare("SELECT * FROM missions WHERE id = ?").get(id) as
-    | Mission
-    | undefined;
+export async function getMission(id: string): Promise<Mission | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.missions).where(eq(schema.missions.id, id));
+  return row as Mission | undefined;
 }
 
-export function listMissions(): Mission[] {
-  return getDb()
-    .prepare("SELECT * FROM missions ORDER BY created_at DESC")
-    .all() as Mission[];
+export async function listMissions(): Promise<Mission[]> {
+  const db = await getDb();
+  const rows = await db.select().from(schema.missions).orderBy(desc(schema.missions.created_at));
+  return rows as Mission[];
 }
 
 export interface TransitionResult {
@@ -109,11 +125,6 @@ export interface TransitionResult {
  * and neither can silently overwrite a state the mission has already
  * moved past (e.g. a founder's cancellation while an agent's work is still
  * in flight).
- *
- * This function is `async` even though better-sqlite3 itself is
- * synchronous, so every call site already awaits it — swapping the body
- * for a real async Postgres client later is a body-only change, not a
- * call-site rewrite.
  */
 export async function transitionMissionState(
   id: string,
@@ -126,188 +137,271 @@ export async function transitionMissionState(
   if (fromStates.length === 0) {
     throw new Error("transitionMissionState requires at least one expected fromState.");
   }
-  const db = getDb();
+  const db = await getDb();
   const ts = now();
-  const placeholders = fromStates.map(() => "?").join(", ");
-  const result = db
-    .prepare(
-      `UPDATE missions
-       SET state = ?, updated_at = ?,
-           interpreted_mission = COALESCE(?, interpreted_mission),
-           final_status = COALESCE(?, final_status),
-           failure_reason = COALESCE(?, failure_reason)
-       WHERE id = ? AND state IN (${placeholders})`,
-    )
-    .run(
-      toState,
-      ts,
-      fields.interpreted_mission ?? null,
-      fields.final_status ?? null,
-      fields.failure_reason ?? null,
-      id,
-      ...fromStates,
-    );
-  const mission = getMission(id);
+
+  const updateValues: Record<string, unknown> = { state: toState, updated_at: ts };
+  if (fields.interpreted_mission !== undefined) updateValues.interpreted_mission = fields.interpreted_mission;
+  if (fields.final_status !== undefined) updateValues.final_status = fields.final_status;
+  if (fields.failure_reason !== undefined) updateValues.failure_reason = fields.failure_reason;
+
+  const updated = await db
+    .update(schema.missions)
+    .set(updateValues)
+    .where(and(eq(schema.missions.id, id), inArray(schema.missions.state, fromStates)))
+    .returning();
+
+  if (updated.length > 0) {
+    return { ok: true, mission: updated[0] as Mission };
+  }
+
+  const mission = await getMission(id);
   if (!mission) throw new Error(`Mission ${id} not found.`);
-  return { ok: result.changes > 0, mission };
+  return { ok: false, mission };
 }
 
 // --- Mission stages -----------------------------------------------------
 
-export function startStage(missionId: string, stageName: string, detail?: string): MissionStage {
+export async function startStage(
+  missionId: string,
+  stageName: string,
+  detail?: string,
+): Promise<MissionStage> {
+  const db = await getDb();
   const id = randomUUID();
   const ts = now();
-  getDb()
-    .prepare(
-      `INSERT INTO mission_stages (id, mission_id, stage_name, status, started_at, detail)
-       VALUES (?, ?, ?, 'in_progress', ?, ?)`,
-    )
-    .run(id, missionId, stageName, ts, detail ?? null);
-  return getStage(id)!;
+  const [row] = await db
+    .insert(schema.missionStages)
+    .values({
+      id,
+      mission_id: missionId,
+      stage_name: stageName,
+      status: "in_progress",
+      started_at: ts,
+      detail: detail ?? null,
+    })
+    .returning();
+  return row as MissionStage;
 }
 
-export function completeStage(stageId: string, detail?: string): MissionStage {
+export async function completeStage(stageId: string, detail?: string): Promise<MissionStage> {
+  const db = await getDb();
   const ts = now();
-  getDb()
-    .prepare(
-      `UPDATE mission_stages SET status = 'completed', completed_at = ?, detail = COALESCE(?, detail) WHERE id = ?`,
-    )
-    .run(ts, detail ?? null, stageId);
-  return getStage(stageId)!;
+  const updateValues: Record<string, unknown> = { status: "completed", completed_at: ts };
+  if (detail !== undefined) updateValues.detail = detail;
+  const [row] = await db
+    .update(schema.missionStages)
+    .set(updateValues)
+    .where(eq(schema.missionStages.id, stageId))
+    .returning();
+  return row as MissionStage;
 }
 
-export function failStage(stageId: string, detail?: string): MissionStage {
+export async function failStage(stageId: string, detail?: string): Promise<MissionStage> {
+  const db = await getDb();
   const ts = now();
-  getDb()
-    .prepare(
-      `UPDATE mission_stages SET status = 'failed', completed_at = ?, detail = COALESCE(?, detail) WHERE id = ?`,
+  const updateValues: Record<string, unknown> = { status: "failed", completed_at: ts };
+  if (detail !== undefined) updateValues.detail = detail;
+  const [row] = await db
+    .update(schema.missionStages)
+    .set(updateValues)
+    .where(eq(schema.missionStages.id, stageId))
+    .returning();
+  return row as MissionStage;
+}
+
+export async function listStages(missionId: string): Promise<MissionStage[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.missionStages)
+    .where(eq(schema.missionStages.mission_id, missionId))
+    .orderBy(schema.missionStages.started_at);
+  return rows as MissionStage[];
+}
+
+/**
+ * The most recent still-open stage of this name for a mission — used by
+ * the durable job workflow to resume into an existing stage row instead
+ * of creating a duplicate one when a retry finds the mission already past
+ * "queued".
+ */
+export async function getOpenStage(
+  missionId: string,
+  stageName: string,
+): Promise<MissionStage | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.missionStages)
+    .where(
+      and(
+        eq(schema.missionStages.mission_id, missionId),
+        eq(schema.missionStages.stage_name, stageName),
+        eq(schema.missionStages.status, "in_progress"),
+      ),
     )
-    .run(ts, detail ?? null, stageId);
-  return getStage(stageId)!;
+    .orderBy(desc(schema.missionStages.started_at))
+    .limit(1);
+  return row as MissionStage | undefined;
 }
 
-function getStage(id: string): MissionStage | undefined {
-  return getDb().prepare("SELECT * FROM mission_stages WHERE id = ?").get(id) as
-    | MissionStage
-    | undefined;
-}
-
-export function listStages(missionId: string): MissionStage[] {
-  return getDb()
-    .prepare("SELECT * FROM mission_stages WHERE mission_id = ? ORDER BY started_at")
-    .all(missionId) as MissionStage[];
+/** Every mission still "researching" whose stage started before `olderThan` — for the stuck-mission watchdog. */
+export async function listStaleResearchingMissions(olderThan: Date): Promise<
+  Array<{ mission: Mission; stage: MissionStage }>
+> {
+  const db = await getDb();
+  const rows = await db
+    .select({ mission: schema.missions, stage: schema.missionStages })
+    .from(schema.missions)
+    .innerJoin(
+      schema.missionStages,
+      and(
+        eq(schema.missionStages.mission_id, schema.missions.id),
+        eq(schema.missionStages.stage_name, "scout_research"),
+        eq(schema.missionStages.status, "in_progress"),
+      ),
+    )
+    .where(and(eq(schema.missions.state, "researching"), sql`${schema.missionStages.started_at} < ${olderThan.toISOString()}`));
+  return rows as Array<{ mission: Mission; stage: MissionStage }>;
 }
 
 // --- Agent assignments ----------------------------------------------------
 
-export function assignAgent(missionId: string, agentId: string, role: string): AgentAssignment {
-  const id = randomUUID();
-  getDb()
-    .prepare(
-      `INSERT INTO agent_assignments (id, mission_id, agent_id, role) VALUES (?, ?, ?, ?)`,
-    )
-    .run(id, missionId, agentId, role);
-  return getDb().prepare("SELECT * FROM agent_assignments WHERE id = ?").get(id) as AgentAssignment;
+export async function assignAgent(
+  missionId: string,
+  agentId: string,
+  role: string,
+): Promise<AgentAssignment> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.agentAssignments)
+    .values({ id: randomUUID(), mission_id: missionId, agent_id: agentId, role })
+    .returning();
+  return row!;
 }
 
-export function listAssignments(missionId: string): AgentAssignment[] {
-  return getDb()
-    .prepare("SELECT * FROM agent_assignments WHERE mission_id = ? ORDER BY assigned_at")
-    .all(missionId) as AgentAssignment[];
+export async function listAssignments(missionId: string): Promise<AgentAssignment[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(schema.agentAssignments)
+    .where(eq(schema.agentAssignments.mission_id, missionId))
+    .orderBy(schema.agentAssignments.assigned_at);
+}
+
+/** Whether this agent is already assigned to this mission — used to keep resumed retries idempotent. */
+export async function hasAssignment(missionId: string, agentId: string): Promise<boolean> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ id: schema.agentAssignments.id })
+    .from(schema.agentAssignments)
+    .where(and(eq(schema.agentAssignments.mission_id, missionId), eq(schema.agentAssignments.agent_id, agentId)))
+    .limit(1);
+  return Boolean(row);
 }
 
 // --- Evidence ---------------------------------------------------------------
 
-export function recordEvidence(entry: {
+export async function recordEvidence(entry: {
   missionId: string;
   sourceUrl?: string | null;
   sourceTitle?: string | null;
   sourceDate?: string | null;
   snippet?: string | null;
   isVerifiedFact: boolean;
-}): Evidence {
-  const id = randomUUID();
-  getDb()
-    .prepare(
-      `INSERT INTO evidence (id, mission_id, source_url, source_title, source_date, snippet, is_verified_fact)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      entry.missionId,
-      entry.sourceUrl ?? null,
-      entry.sourceTitle ?? null,
-      entry.sourceDate ?? null,
-      entry.snippet ?? null,
-      entry.isVerifiedFact ? 1 : 0,
-    );
-  return getDb().prepare("SELECT * FROM evidence WHERE id = ?").get(id) as Evidence;
+}): Promise<Evidence> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.evidence)
+    .values({
+      id: randomUUID(),
+      mission_id: entry.missionId,
+      source_url: entry.sourceUrl ?? null,
+      source_title: entry.sourceTitle ?? null,
+      source_date: entry.sourceDate ?? null,
+      snippet: entry.snippet ?? null,
+      is_verified_fact: entry.isVerifiedFact,
+    })
+    .returning();
+  return row!;
 }
 
-export function listEvidence(missionId: string): Evidence[] {
-  return getDb()
-    .prepare("SELECT * FROM evidence WHERE mission_id = ? ORDER BY retrieved_at")
-    .all(missionId) as Evidence[];
+export async function listEvidence(missionId: string): Promise<Evidence[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(schema.evidence)
+    .where(eq(schema.evidence.mission_id, missionId))
+    .orderBy(schema.evidence.retrieved_at);
 }
 
 // --- Deliverables -----------------------------------------------------------
 
-export function recordDeliverable(entry: {
+export async function recordDeliverable(entry: {
   missionId: string;
   agentId: string;
   kind: string;
   content: unknown;
-}): Deliverable {
-  const id = randomUUID();
-  getDb()
-    .prepare(
-      `INSERT INTO deliverables (id, mission_id, agent_id, kind, content_json) VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(id, entry.missionId, entry.agentId, entry.kind, JSON.stringify(entry.content));
-  return getDeliverable(id)!;
+}): Promise<Deliverable> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.deliverables)
+    .values({
+      id: randomUUID(),
+      mission_id: entry.missionId,
+      agent_id: entry.agentId,
+      kind: entry.kind,
+      content: entry.content as object,
+    })
+    .returning();
+  return row as Deliverable;
 }
 
-function getDeliverable(id: string): Deliverable | undefined {
-  const row = getDb().prepare("SELECT * FROM deliverables WHERE id = ?").get(id) as
-    | (Omit<Deliverable, "content"> & { content_json: string })
-    | undefined;
-  if (!row) return undefined;
-  return { ...row, content: JSON.parse(row.content_json) };
-}
-
-export function listDeliverables(missionId: string): Deliverable[] {
-  const rows = getDb()
-    .prepare("SELECT * FROM deliverables WHERE mission_id = ? ORDER BY created_at")
-    .all(missionId) as Array<Omit<Deliverable, "content"> & { content_json: string }>;
-  return rows.map((row) => ({ ...row, content: JSON.parse(row.content_json) }));
+export async function listDeliverables(missionId: string): Promise<Deliverable[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.deliverables)
+    .where(eq(schema.deliverables.mission_id, missionId))
+    .orderBy(schema.deliverables.created_at);
+  return rows as Deliverable[];
 }
 
 // --- Approvals ---------------------------------------------------------------
 
-export function recordApproval(entry: {
+export async function recordApproval(entry: {
   missionId: string;
   founderId: string;
   decision: "approved" | "cancelled";
   note?: string;
-}): Approval {
-  const id = randomUUID();
-  getDb()
-    .prepare(
-      `INSERT INTO approvals (id, mission_id, founder_id, decision, note) VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(id, entry.missionId, entry.founderId, entry.decision, entry.note ?? null);
-  return getDb().prepare("SELECT * FROM approvals WHERE id = ?").get(id) as Approval;
+}): Promise<Approval> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.approvals)
+    .values({
+      id: randomUUID(),
+      mission_id: entry.missionId,
+      founder_id: entry.founderId,
+      decision: entry.decision,
+      note: entry.note ?? null,
+    })
+    .returning();
+  return row!;
 }
 
-export function listApprovals(missionId: string): Approval[] {
-  return getDb()
-    .prepare("SELECT * FROM approvals WHERE mission_id = ? ORDER BY decided_at")
-    .all(missionId) as Approval[];
+export async function listApprovals(missionId: string): Promise<Approval[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(schema.approvals)
+    .where(eq(schema.approvals.mission_id, missionId))
+    .orderBy(schema.approvals.decided_at);
 }
 
 // --- Costs & ledger ---------------------------------------------------------
 
-export function recordCost(entry: {
+export async function recordCost(entry: {
   missionId: string | null;
   agentId: string | null;
   model: string;
@@ -315,89 +409,91 @@ export function recordCost(entry: {
   outputTokens: number;
   /** Null means real tokens were spent but pricing for this model is unknown — never invent a figure. */
   usdCost: number | null;
-}): CostEntry {
-  const id = randomUUID();
-  getDb()
-    .prepare(
-      `INSERT INTO costs (id, mission_id, agent_id, model, input_tokens, output_tokens, usd_cost)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      id,
-      entry.missionId,
-      entry.agentId,
-      entry.model,
-      entry.inputTokens,
-      entry.outputTokens,
-      entry.usdCost,
-    );
+}): Promise<CostEntry> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.costs)
+    .values({
+      id: randomUUID(),
+      mission_id: entry.missionId,
+      agent_id: entry.agentId,
+      model: entry.model,
+      input_tokens: entry.inputTokens,
+      output_tokens: entry.outputTokens,
+      usd_cost: entry.usdCost,
+    })
+    .returning();
 
   // Only the business ledger gets an entry when we actually know the
   // dollar amount — an unpriced model still gets its token usage recorded
   // above (for reconciliation), but the ledger must never carry a
   // fabricated $0 (or any other invented) charge.
   if (entry.usdCost !== null) {
-    getDb()
-      .prepare(
-        `INSERT INTO ledger_entries (id, mission_id, category, description, amount_usd)
-         VALUES (?, ?, 'agent_cost', ?, ?)`,
-      )
-      .run(
-        randomUUID(),
-        entry.missionId,
-        `${entry.model} usage (${entry.inputTokens} in / ${entry.outputTokens} out tokens)`,
-        -Math.abs(entry.usdCost),
-      );
+    await db.insert(schema.ledgerEntries).values({
+      id: randomUUID(),
+      mission_id: entry.missionId,
+      category: "agent_cost",
+      description: `${entry.model} usage (${entry.inputTokens} in / ${entry.outputTokens} out tokens)`,
+      amount_usd: -Math.abs(entry.usdCost),
+    });
   }
 
-  return getDb().prepare("SELECT * FROM costs WHERE id = ?").get(id) as CostEntry;
+  return row!;
 }
 
-export function listCosts(missionId: string): CostEntry[] {
-  return getDb()
-    .prepare("SELECT * FROM costs WHERE mission_id = ? ORDER BY created_at")
-    .all(missionId) as CostEntry[];
+export async function listCosts(missionId: string): Promise<CostEntry[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(schema.costs)
+    .where(eq(schema.costs.mission_id, missionId))
+    .orderBy(schema.costs.created_at);
 }
 
-export function listLedgerEntries(limit = 50): LedgerEntry[] {
-  return getDb()
-    .prepare("SELECT * FROM ledger_entries ORDER BY created_at DESC LIMIT ?")
-    .all(limit) as LedgerEntry[];
+export async function listLedgerEntries(limit = 50): Promise<LedgerEntry[]> {
+  const db = await getDb();
+  return db.select().from(schema.ledgerEntries).orderBy(desc(schema.ledgerEntries.created_at)).limit(limit);
 }
 
-export function ledgerTotalUsd(): number {
-  const row = getDb()
-    .prepare("SELECT COALESCE(SUM(amount_usd), 0) as total FROM ledger_entries")
-    .get() as { total: number };
-  return row.total;
+export async function ledgerTotalUsd(): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${schema.ledgerEntries.amount_usd}), 0)` })
+    .from(schema.ledgerEntries);
+  return row?.total ?? 0;
 }
 
 // --- Activity history -------------------------------------------------------
 
-export function recordActivity(entry: {
+export async function recordActivity(entry: {
   missionId?: string | null;
   actor: string;
   action: string;
   detail?: string | null;
-}): ActivityEntry {
-  const id = randomUUID();
-  getDb()
-    .prepare(
-      `INSERT INTO activity_history (id, mission_id, actor, action, detail) VALUES (?, ?, ?, ?, ?)`,
-    )
-    .run(id, entry.missionId ?? null, entry.actor, entry.action, entry.detail ?? null);
-  return getDb().prepare("SELECT * FROM activity_history WHERE id = ?").get(id) as ActivityEntry;
+}): Promise<ActivityEntry> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.activityHistory)
+    .values({
+      id: randomUUID(),
+      mission_id: entry.missionId ?? null,
+      actor: entry.actor,
+      action: entry.action,
+      detail: entry.detail ?? null,
+    })
+    .returning();
+  return row!;
 }
 
-export function listActivity(missionId?: string, limit = 100): ActivityEntry[] {
+export async function listActivity(missionId?: string, limit = 100): Promise<ActivityEntry[]> {
+  const db = await getDb();
   if (missionId) {
-    return getDb()
-      .prepare(
-        "SELECT * FROM activity_history WHERE mission_id = ? ORDER BY created_at DESC LIMIT ?",
-      )
-      .all(missionId, limit) as ActivityEntry[];
+    return db
+      .select()
+      .from(schema.activityHistory)
+      .where(eq(schema.activityHistory.mission_id, missionId))
+      .orderBy(desc(schema.activityHistory.created_at))
+      .limit(limit);
   }
-  return getDb()
-    .prepare("SELECT * FROM activity_history ORDER BY created_at DESC LIMIT ?")
-    .all(limit) as ActivityEntry[];
+  return db.select().from(schema.activityHistory).orderBy(desc(schema.activityHistory.created_at)).limit(limit);
 }

@@ -17,13 +17,14 @@ describe("calculateUsdCost", () => {
 });
 
 describe("cost ledger", () => {
-  beforeEach(() => {
-    resetDbForTests();
+  beforeEach(async () => {
+    await resetDbForTests();
   });
 
-  it("writes a matching, negative ledger entry for every recorded cost", () => {
-    const scout = listAgents().find((a) => a.key === "scout")!;
-    recordCost({
+  it("writes a matching, negative ledger entry for every recorded cost", async () => {
+    const agents = await listAgents();
+    const scout = agents.find((a) => a.key === "scout")!;
+    await recordCost({
       missionId: null,
       agentId: scout.id,
       model: "claude-sonnet-5",
@@ -32,18 +33,19 @@ describe("cost ledger", () => {
       usdCost: 0.007,
     });
 
-    const costs = listCosts("");
+    const costs = await listCosts("");
     expect(costs).toHaveLength(0); // scoped to a mission id, and we passed none
 
-    const entries = listLedgerEntries();
+    const entries = await listLedgerEntries();
     expect(entries).toHaveLength(1);
     expect(entries[0]?.amount_usd).toBeCloseTo(-0.007, 6);
-    expect(ledgerTotalUsd()).toBeCloseTo(-0.007, 6);
+    expect(await ledgerTotalUsd()).toBeCloseTo(-0.007, 6);
   });
 
-  it("records token usage with a null cost without inventing a ledger charge", () => {
-    const scout = listAgents().find((a) => a.key === "scout")!;
-    const cost = recordCost({
+  it("records token usage with a null cost without inventing a ledger charge", async () => {
+    const agents = await listAgents();
+    const scout = agents.find((a) => a.key === "scout")!;
+    const cost = await recordCost({
       missionId: null,
       agentId: scout.id,
       model: "some-future-model-not-in-the-pricing-table",
@@ -57,7 +59,7 @@ describe("cost ledger", () => {
     expect(cost.output_tokens).toBe(120);
 
     // No ledger entry at all for an unpriced cost — not even a fabricated $0.
-    expect(listLedgerEntries()).toHaveLength(0);
-    expect(ledgerTotalUsd()).toBe(0);
+    expect(await listLedgerEntries()).toHaveLength(0);
+    expect(await ledgerTotalUsd()).toBe(0);
   });
 });

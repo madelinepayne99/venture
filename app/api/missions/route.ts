@@ -2,22 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { listMissions, getDefaultProject } from "@/lib/db/repositories";
 import { createAndSubmitMission } from "@/lib/domain/missionWorkflow";
 import { toApiErrorResponse } from "@/lib/api/errors";
+import { requireFounderId } from "@/lib/api/session";
 
 export async function GET() {
-  return NextResponse.json({ missions: listMissions() });
+  try {
+    await requireFounderId();
+    return NextResponse.json({ missions: await listMissions() });
+  } catch (error) {
+    return toApiErrorResponse(error);
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
+    const founderId = await requireFounderId();
     const body = await request.json();
-    const { title, brief, founderId, projectId } = body ?? {};
-
-    if (typeof founderId !== "string" || !founderId) {
-      return NextResponse.json({ error: "founderId is required." }, { status: 400 });
-    }
+    const { title, brief, projectId } = body ?? {};
 
     const resolvedProjectId =
-      typeof projectId === "string" && projectId ? projectId : getDefaultProject()?.id ?? null;
+      typeof projectId === "string" && projectId ? projectId : (await getDefaultProject())?.id ?? null;
 
     const mission = await createAndSubmitMission({
       founderId,

@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import type { Agent, Founder, LedgerEntry, Mission } from "@/lib/db/types";
+import { useEffect, useState } from "react";
+import type { Agent, LedgerEntry, Mission } from "@/lib/db/types";
+import { signOutAction } from "@/lib/auth/actions";
 import { StatusBadge } from "./StatusBadge";
 import { MissionForm } from "./MissionForm";
 import { MissionDetail, type MissionDetailData } from "./MissionDetail";
@@ -9,26 +10,27 @@ import { AgentRoster } from "./AgentRoster";
 import { Ledger } from "./Ledger";
 
 interface Props {
-  initialFounders: Founder[];
+  signedInFounderName: string;
   initialAgents: Agent[];
   initialMissions: Mission[];
   initialLedgerEntries: LedgerEntry[];
   initialLedgerTotal: number;
 }
 
+const POLLING_STATES = new Set(["queued", "researching"]);
+const POLL_INTERVAL_MS = 3000;
+
 export function FoundersDeskApp({
-  initialFounders,
+  signedInFounderName,
   initialAgents,
   initialMissions,
   initialLedgerEntries,
   initialLedgerTotal,
 }: Props) {
-  const [founders] = useState(initialFounders);
   const [agents] = useState(initialAgents);
   const [missions, setMissions] = useState(initialMissions);
   const [ledgerEntries, setLedgerEntries] = useState(initialLedgerEntries);
   const [ledgerTotal, setLedgerTotal] = useState(initialLedgerTotal);
-  const [actingFounderId, setActingFounderId] = useState(founders[0]?.id ?? "");
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [missionDetail, setMissionDetail] = useState<MissionDetailData | null>(null);
   const [busyMissionId, setBusyMissionId] = useState<string | null>(null);
@@ -55,12 +57,32 @@ export function FoundersDeskApp({
     }
   }
 
+  // Scout's research now runs as a durable background job, not inline in
+  // the approve request — the approve call returns as soon as the mission
+  // is queued, well before Scout has actually done anything. This polls
+  // for the real stage/state changes as the job actually makes them,
+  // rather than faking a progress state client-side.
+  useEffect(() => {
+    const hasInFlightMission = missions.some((m) => POLLING_STATES.has(m.state));
+    if (!hasInFlightMission) return;
+
+    const interval = setInterval(() => {
+      refreshMissions();
+      if (selectedMissionId && POLLING_STATES.has(missionDetail?.mission.state ?? "")) {
+        loadDetail(selectedMissionId);
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [missions, selectedMissionId, missionDetail?.mission.state]);
+
   async function handleCreate(title: string, brief: string) {
     setError(null);
     const res = await fetch("/api/missions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, brief, founderId: actingFounderId }),
+      body: JSON.stringify({ title, brief }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -77,8 +99,6 @@ export function FoundersDeskApp({
     try {
       const res = await fetch(`/api/missions/${missionId}/approve`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ founderId: actingFounderId }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -100,7 +120,7 @@ export function FoundersDeskApp({
       const res = await fetch(`/api/missions/${missionId}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ founderId: actingFounderId }),
+        body: JSON.stringify({}),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -108,6 +128,7 @@ export function FoundersDeskApp({
         return;
       }
       await refreshMissions();
+      await refreshLedger();
       if (selectedMissionId === missionId) await loadDetail(missionId);
     } finally {
       setBusyMissionId(null);
@@ -123,20 +144,19 @@ export function FoundersDeskApp({
             The founders&apos; desk — genuine missions, genuine agents, genuine results.
           </p>
         </div>
-        <label className="text-sm text-hq-slate">
-          Acting as{" "}
-          <select
-            className="ml-2 rounded-md border border-hq-brass/40 bg-white px-2 py-1 font-medium text-hq-ink"
-            value={actingFounderId}
-            onChange={(e) => setActingFounderId(e.target.value)}
-          >
-            {founders.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="flex items-center gap-3 text-sm text-hq-slate">
+          <span>
+            Signed in as <span className="font-medium text-hq-ink">{signedInFounderName}</span>
+          </span>
+          <form action={signOutAction}>
+            <button
+              type="submit"
+              className="rounded-md border border-hq-slate/30 px-3 py-1 text-xs font-medium text-hq-slate hover:bg-hq-parchment/60"
+            >
+              Sign out
+            </button>
+          </form>
+        </div>
       </header>
 
       {error && (

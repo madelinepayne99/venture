@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { MissionValidationError } from "@/lib/domain/missionWorkflow";
 import { IllegalMissionTransitionError, MissionConcurrencyError } from "@/lib/domain/missionStates";
+import { UnauthenticatedError } from "@/lib/api/authErrors";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -9,6 +10,9 @@ import { IllegalMissionTransitionError, MissionConcurrencyError } from "@/lib/do
  * secret would leak.
  */
 export function toApiErrorResponse(error: unknown): NextResponse {
+  if (error instanceof UnauthenticatedError) {
+    return NextResponse.json({ error: error.message }, { status: 401 });
+  }
   if (error instanceof MissionValidationError) {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }

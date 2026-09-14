@@ -1,38 +1,16 @@
-// Row shapes mirror the SQLite columns exactly (snake_case) — no ORM mapping
-// layer, so what you see here is what's actually stored.
+import type { InferSelectModel } from "drizzle-orm";
+import type * as schema from "./schema";
 
-export interface Founder {
-  id: string;
-  name: string;
-  email: string | null;
-  created_at: string;
-}
+// Row shapes are inferred directly from the Drizzle schema (lib/db/schema.ts)
+// — the schema is now the single source of truth, not a hand-maintained
+// interface that can drift out of sync with it.
 
-export type AgentStatus = "active" | "planned";
+export type Founder = InferSelectModel<typeof schema.founders>;
 
-export interface Agent {
-  id: string;
-  key: string;
-  name: string;
-  role_summary: string;
-  status: AgentStatus;
-  created_at: string;
-}
-
-export interface AgentCapability {
-  id: string;
-  agent_id: string;
-  capability: string;
-  description: string;
-}
-
-export interface Project {
-  id: string;
-  name: string;
-  description: string | null;
-  platform_focus: string | null;
-  created_at: string;
-}
+export type AgentStatus = (typeof schema.agentStatusValues)[number];
+export type Agent = InferSelectModel<typeof schema.agents>;
+export type AgentCapability = InferSelectModel<typeof schema.agentCapabilities>;
+export type Project = InferSelectModel<typeof schema.projects>;
 
 export const MISSION_STATES = [
   "draft",
@@ -50,95 +28,28 @@ export type MissionState = (typeof MISSION_STATES)[number];
 
 export type ScoutVerdict = "reject" | "investigate_further" | "ready_for_founders_review";
 
-export interface Mission {
-  id: string;
-  project_id: string | null;
-  founder_id: string;
-  title: string;
-  brief: string;
-  interpreted_mission: string | null;
+// Drizzle infers `state`/`final_status` etc. as plain `string` (they're
+// untyped text columns by design — see schema.ts) — narrow them back to
+// the app's real vocabulary here, at the one boundary that matters.
+export type Mission = Omit<InferSelectModel<typeof schema.missions>, "state" | "final_status"> & {
   state: MissionState;
   final_status: ScoutVerdict | null;
-  failure_reason: string | null;
-  created_at: string;
-  updated_at: string;
-}
+};
 
 export type StageStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped";
-
-export interface MissionStage {
-  id: string;
-  mission_id: string;
-  stage_name: string;
+export type MissionStage = Omit<InferSelectModel<typeof schema.missionStages>, "status"> & {
   status: StageStatus;
-  started_at: string | null;
-  completed_at: string | null;
-  detail: string | null;
-}
+};
 
-export interface AgentAssignment {
-  id: string;
-  mission_id: string;
-  agent_id: string;
-  role: string;
-  assigned_at: string;
-}
+export type AgentAssignment = InferSelectModel<typeof schema.agentAssignments>;
+export type Evidence = InferSelectModel<typeof schema.evidence>;
 
-export interface Evidence {
-  id: string;
-  mission_id: string;
-  source_url: string | null;
-  source_title: string | null;
-  source_date: string | null;
-  snippet: string | null;
-  retrieved_at: string;
-  is_verified_fact: 0 | 1;
-}
+export type Deliverable<TContent = unknown> = Omit<
+  InferSelectModel<typeof schema.deliverables>,
+  "content"
+> & { content: TContent };
 
-export interface Deliverable<TContent = unknown> {
-  id: string;
-  mission_id: string;
-  agent_id: string;
-  kind: string;
-  content: TContent;
-  created_at: string;
-}
-
-export interface Approval {
-  id: string;
-  mission_id: string;
-  founder_id: string;
-  decision: "approved" | "cancelled";
-  note: string | null;
-  decided_at: string;
-}
-
-export interface CostEntry {
-  id: string;
-  mission_id: string | null;
-  agent_id: string | null;
-  model: string;
-  input_tokens: number;
-  output_tokens: number;
-  /** Null means real tokens were spent but pricing for this model is unknown — never a fabricated figure. */
-  usd_cost: number | null;
-  created_at: string;
-}
-
-export interface LedgerEntry {
-  id: string;
-  mission_id: string | null;
-  category: string;
-  description: string;
-  amount_usd: number;
-  created_at: string;
-}
-
-export interface ActivityEntry {
-  id: string;
-  mission_id: string | null;
-  actor: string;
-  action: string;
-  detail: string | null;
-  created_at: string;
-}
+export type Approval = InferSelectModel<typeof schema.approvals>;
+export type CostEntry = InferSelectModel<typeof schema.costs>;
+export type LedgerEntry = InferSelectModel<typeof schema.ledgerEntries>;
+export type ActivityEntry = InferSelectModel<typeof schema.activityHistory>;

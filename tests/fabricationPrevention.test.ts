@@ -50,7 +50,7 @@ describe("no fabricated progress", () => {
   });
 
   it("the schema records only real, discrete stage statuses — not a percentage column", () => {
-    const schema = fs.readFileSync(path.join(process.cwd(), "lib", "db", "schema.sql"), "utf-8");
+    const schema = fs.readFileSync(path.join(process.cwd(), "lib", "db", "schema.ts"), "utf-8");
     expect(schema).not.toMatch(/percent/i);
     expect(schema).not.toMatch(/progress_pct/i);
   });
