@@ -201,6 +201,15 @@ described below.
     exists for the same reason: `UnauthenticatedError` needs to be
     importable from `lib/api/errors.ts`, which many tests exercise, without
     pulling in `next-auth`.)
+  - `lib/auth/routeGate.ts`'s `decideRouteGate(pathname, isAuthenticated)`
+    is the same split applied to `middleware.ts`: the actual allow/redirect/
+    401 decision is a plain function with no `next-auth`/`next/server`
+    import, directly unit-tested in `tests/routeGate.test.ts`; `middleware.ts`
+    itself is just a thin wrapper that calls it and translates the result
+    into a `NextResponse`. This is also what sends an already-authenticated
+    founder from `/login` straight to `/` instead of re-showing the sign-in
+    form — the one piece of routing logic in `middleware.ts` before this
+    split existed only as an unauthenticated-request check.
   - `lib/api/session.ts`'s `requireFounderId()` is the *only* way a route
     handler should learn who the acting founder is — it calls `auth()`
     and throws `UnauthenticatedError` if there's no session. **Never**
@@ -365,7 +374,7 @@ Never hand-edit a already-generated migration or the database directly.
 
 ## Testing
 
-`npm test` (Vitest, 64 tests) runs against a **real local Postgres
+`npm test` (Vitest, 72 tests) runs against a **real local Postgres
 database** (see "Local verification vs. a real deployment" below) — there
 is no more in-memory/SQLite test mode. `vitest.config.ts` sets
 `DATABASE_URL`/`AUTH_SECRET` via `test.env` (applied before any module
@@ -394,9 +403,14 @@ stuck-mission watchdog (reaps a real stale mission, leaves an in-progress
 one alone, leaves an already-settled one alone), the founder allow-list
 (`lib/auth/allowList.ts` — allowed email, refused email, null/missing
 email, and refusing every founder before any email is configured), the
-founders' approval gate (including a mission that tries to skip it),
-secret protection, cost/ledger recording, and the fabricated-completion-
-state checks described above.
+route gate that backs `middleware.ts` (`lib/auth/routeGate.ts` —
+signed-out visitors redirected to `/login`, an already-authenticated
+founder sent from `/login` to `/` instead of re-shown the sign-in form,
+signed-out API requests refused with 401 rather than a redirect,
+`/api/auth/**` and `/api/inngest` always left ungated), the founders'
+approval gate (including a mission that tries to skip it), secret
+protection, cost/ledger recording, and the fabricated-completion-state
+checks described above.
 
 Tests never call the real Anthropic API (`runScoutResearch` takes an
 injectable client, `lib/agents/scout` is mocked at the module level for
