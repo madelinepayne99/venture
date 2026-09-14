@@ -12,14 +12,14 @@ export default function LoginPage() {
           className="mt-6"
           action={async () => {
             "use server";
-            await signIn("google");
+            await signIn("github");
           }}
         >
           <button
             type="submit"
             className="w-full rounded-md bg-hq-brass px-4 py-2 text-sm font-semibold text-white transition hover:bg-hq-brassDark"
           >
-            Sign in with Google
+            Sign in with GitHub
           </button>
         </form>
       </div>

@@ -170,7 +170,7 @@ export const activityHistory = pgTable("activity_history", {
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 
-// --- Auth.js (Google OAuth) session tables ---------------------------------
+// --- Auth.js (GitHub OAuth) session tables ---------------------------------
 //
 // These are Auth.js's own bookkeeping tables (session management only),
 // deliberately separate from `founders` (the business-identity table) and
@@ -179,8 +179,10 @@ export const activityHistory = pgTable("activity_history", {
 // (see node_modules/@auth/drizzle-adapter/src/lib/pg.ts), since that
 // third-party code accesses these fields by name directly. The WebAuthn
 // `authenticator` table is intentionally omitted — Venture HQ only ever
-// uses Google OAuth, never passkeys, so that adapter code path is never
-// invoked.
+// uses GitHub OAuth, never passkeys, so that adapter code path is never
+// invoked. These tables aren't provider-specific either way — swapping
+// the OAuth provider (as happened once already, Google → GitHub) never
+// requires a schema change here.
 
 export const authUsers = pgTable("auth_user", {
   id: text("id")

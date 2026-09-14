@@ -5,9 +5,12 @@ import { isAllowedFounderEmail, resolveFounderIdentity } from "@/lib/auth/allowL
 
 // The allow-list IS the founders table (see lib/auth/allowList.ts) — these
 // tests exercise the actual server-side check used in auth.ts's signIn
-// callback, independent of the full NextAuth/Google OAuth wiring (which
+// callback, independent of the full NextAuth/GitHub OAuth wiring (which
 // can't run under Vitest — next-auth imports "next/server", which only
-// resolves inside a real Next.js runtime).
+// resolves inside a real Next.js runtime). The check itself is
+// provider-agnostic (it matches founders.email against whatever real
+// email the OAuth provider resolves) — these tests never needed to
+// change when the provider was swapped from Google to GitHub.
 
 describe("founder allow-list", () => {
   beforeEach(async () => {
