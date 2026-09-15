@@ -363,15 +363,32 @@ described below.
     researching for. `buildScoutUserPrompt(mission, workspaceType)` is
     parameterized the same way, for the same reason.
   - `guardrails.ts` — code-level checks independent of the prompt, run
-    after parsing: `findGuaranteeLanguage` scans Scout's free-text fields
-    for guaranteed-outcome language, and `hasMeaningfulEvidence` is a
-    structural check that a `ready_for_founders_review` verdict is backed
-    by at least one verified fact tied to a real, dated source (not an
-    arbitrary source count — one authoritative source is enough). Both
-    downgrade the verdict to `investigate_further` rather than silently
-    passing a confident-sounding but unsupported report through. Defense
-    in depth: don't remove any of these because the prompt already says
-    the same thing.
+    after parsing. `findGuaranteeLanguage` recursively scans **every**
+    string value anywhere in the parsed report — not a maintained list of
+    field names — for guaranteed-outcome language; a live Service Business
+    report proved why that matters: the original version only scanned a
+    curated subset of fields, so `competition_observations`,
+    `verified_facts`, `inferences`, `unresolved_questions`,
+    `recommended_next_action`, and every Service Business field were never
+    scanned at all. The generic walk is complete by construction — a new
+    field added to either schema variant is covered automatically, with
+    nothing here to remember to update. Any hit is a **hard rejection**
+    (`assertNoGuaranteeLanguage` in `index.ts` throws a
+    `ScoutResearchError`), never a downgrade-and-annotate: an earlier
+    version rewrote the verdict and appended an explanatory sentence
+    (quoting the offending word) into `unresolved_questions`, which meant
+    a report using a banned word was still delivered to the founder as a
+    *completed* report with the guardrail's own meta-commentary embedded
+    in it. A rejected report has no partial form to deliver — the mission
+    fails the same way invalid JSON or a wrong-workspace report does, with
+    real cost still recorded. `hasMeaningfulEvidence` is a separate,
+    unrelated structural check — a `ready_for_founders_review` verdict
+    must be backed by at least one verified fact tied to a real, dated
+    source (not an arbitrary source count) — and still only downgrades to
+    `investigate_further` with an explanatory note, which is correct here:
+    weak evidence is an honest caveat about the report, not prohibited
+    content inside it. Defense in depth either way: don't remove any of
+    these because the prompt already says the same thing.
   - `index.ts` — `runScoutResearch(mission, { client? })` calls the Claude
     API with the `web_search` server tool, handles `pause_turn` by
     resuming rather than truncating, and throws a `ScoutResearchError`
@@ -521,7 +538,7 @@ Never hand-edit a already-generated migration or the database directly.
 
 ## Testing
 
-`npm test` (Vitest, 94 tests) runs against a **real local Postgres
+`npm test` (Vitest, 100 tests) runs against a **real local Postgres
 database** (see "Local verification vs. a real deployment" below) — there
 is no more in-memory/SQLite test mode. `vitest.config.ts` sets
 `DATABASE_URL`/`AUTH_SECRET` via `test.env` (applied before any module
@@ -570,8 +587,18 @@ mission's real project → workspace type, defaulting to `"commerce"` for a
 mission with no project), workspace/project creation (`createWorkspace` —
 validation for an empty name and an unrecognized workspace type, that
 invalid input writes nothing, and that creating a new workspace never
-repurposes the existing seeded Commerce project), the founders' approval
-gate (including a mission that tries to skip it), secret protection,
+repurposes the existing seeded Commerce project), the guarantee-language
+guardrail's complete coverage (a live-failure regression using the exact
+phrase a real Service Business report produced; every previously-unscanned
+core field — `competition_observations`, `verified_facts`,
+`inferences`, `unresolved_questions`, `recommended_next_action`,
+`research_questions`, `potential_customer`, `important_risks` — and every
+Commerce-only and Service-Business-only variant field, each proven to
+reject the report; hedged language like "may"/"could"/"suggests"/"cannot
+be confirmed" proven to pass through untouched; the fact/inference
+separation proven unaffected; and that the source no longer constructs
+the old self-warning sentence at all), the founders' approval gate
+(including a mission that tries to skip it), secret protection,
 cost/ledger recording, and the fabricated-completion-state checks
 described above.
 

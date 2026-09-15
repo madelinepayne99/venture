@@ -64,17 +64,26 @@ describe("runScoutResearch — structured response", () => {
     expect(outcome.evidence.some((e) => e.isVerifiedFact)).toBe(true);
   });
 
-  it("downgrades a verdict and flags the report when it contains guaranteed-outcome language", async () => {
+  it("rejects a report outright when it contains guaranteed-outcome language, rather than delivering it with a self-warning", async () => {
     const report = makeScoutReport({
       verdict: "ready_for_founders_review",
       evidence_of_demand: "This product is guaranteed to sell well on Etsy.",
     });
     const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
 
-    const outcome = await runScoutResearch(makeMission(), { client });
+    let caught: unknown;
+    try {
+      await runScoutResearch(makeMission(), { client });
+    } catch (error) {
+      caught = error;
+    }
 
-    expect(outcome.report.verdict).toBe("investigate_further");
-    expect(outcome.report.unresolved_questions.some((q) => q.includes("guardrail"))).toBe(true);
+    expect(caught).toBeInstanceOf(ScoutResearchError);
+    const scoutError = caught as ScoutResearchError;
+    expect(scoutError.message).toMatch(/prohibited certainty language/i);
+    expect(scoutError.message).toMatch(/evidence_of_demand/);
+    // The real cost is still recorded even though the report was rejected.
+    expect(scoutError.usage.inputTokens).toBeGreaterThan(0);
   });
 
   it("reports weak evidence as investigate_further with unresolved questions", async () => {
@@ -439,17 +448,16 @@ describe("runScoutResearch — workspace-aware reports", () => {
     ).rejects.toThrow(/wrong workspace type/i);
   });
 
-  it("catches guarantee language in a Service Business report's workspace-specific fields", async () => {
+  it("rejects a Service Business report containing guarantee language in its workspace-specific fields", async () => {
     const report = makeServiceBusinessReport({
       verdict: "ready_for_founders_review",
       client_retention_or_acquisition_gaps: "This loyalty scheme is guaranteed to retain clients.",
     });
     const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
 
-    const outcome = await runScoutResearch(makeMission(), { client, workspaceType: "service_business" });
-
-    expect(outcome.report.verdict).toBe("investigate_further");
-    expect(outcome.report.unresolved_questions.some((q) => q.includes("guardrail"))).toBe(true);
+    await expect(
+      runScoutResearch(makeMission(), { client, workspaceType: "service_business" }),
+    ).rejects.toThrow(/prohibited certainty language/i);
   });
 
   it("applies the same structural evidence guardrail to Service Business reports as Commerce ones", async () => {
@@ -464,5 +472,163 @@ describe("runScoutResearch — workspace-aware reports", () => {
 
     expect(outcome.report.verdict).toBe("investigate_further");
     expect(outcome.report.unresolved_questions.some((q) => q.includes("dated source"))).toBe(true);
+  });
+});
+
+describe("findGuaranteeLanguage — complete coverage across the discriminated union", () => {
+  // A live Service Business report actually produced this exact sentence
+  // inside its unresolved_questions, because the old guardrail caught the
+  // violation but then delivered the report anyway with its own
+  // meta-commentary embedded in it — including the prohibited word,
+  // quoted back:
+  const LIVE_SELF_WARNING_PHRASE =
+    "Safety guardrail: 'guaranteed' in evidence_of_demand reads as a certainty claim about " +
+    "demand/revenue/profit — verify manually before trusting this section.";
+
+  it("never lets a completed report contain that exact self-warning sentence — the mission fails instead", async () => {
+    const report = makeScoutReport({ evidence_of_demand: "Demand for this is guaranteed." });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    let caught: unknown;
+    try {
+      await runScoutResearch(makeMission(), { client });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ScoutResearchError);
+    // No report was ever returned to check — that's the point — but make
+    // the intent explicit: this phrase must not exist in the source at
+    // all anymore (it was the literal template for the old self-warning).
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const source = fs.readFileSync(
+      path.join(process.cwd(), "lib", "agents", "scout", "index.ts"),
+      "utf-8",
+    );
+    expect(source).not.toMatch(/reads as a certainty claim/);
+    void LIVE_SELF_WARNING_PHRASE; // documents the exact live phrase this test guards against
+  });
+
+  it("catches guarantee language in previously-unscanned Commerce core fields (competition_observations, verified_facts, inferences, unresolved_questions, recommended_next_action)", async () => {
+    const cases: Array<[string, Partial<ReturnType<typeof makeScoutReport>>]> = [
+      ["competition_observations", { competition_observations: "Competitors are guaranteed to lose share." }],
+      [
+        "verified_facts",
+        { verified_facts: [{ statement: "This is a guaranteed best-seller.", source_url: null }] },
+      ],
+      ["inferences", { inferences: ["This will be a guaranteed hit."] }],
+      ["unresolved_questions", { unresolved_questions: ["Is the guaranteed 100% success rate real?"] }],
+      ["recommended_next_action", { recommended_next_action: "Proceed — sales are guaranteed." }],
+      ["research_questions", { research_questions: ["Is demand truly guaranteed here?"] }],
+      ["potential_customer", { potential_customer: "Buyers guaranteed to convert." }],
+      ["important_risks", { important_risks: ["None — success is guaranteed."] }],
+    ];
+
+    for (const [label, overrides] of cases) {
+      const report = makeScoutReport(overrides);
+      const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+      await expect(
+        runScoutResearch(makeMission(), { client }),
+        `expected a rejection for guarantee language in ${label}`,
+      ).rejects.toThrow(/prohibited certainty language/i);
+    }
+  });
+
+  it("catches guarantee language in previously-unscanned Commerce-only variant fields", async () => {
+    const cases: Array<[string, Partial<ReturnType<typeof makeScoutReport>>]> = [
+      [
+        "platform_suitability.etsy_downloads",
+        {
+          platform_suitability: {
+            etsy_downloads: "Guaranteed to rank on page one.",
+            amazon_kdp_print_on_demand: "Fine.",
+            other_notes: null,
+          },
+        },
+      ],
+      ["copyright_trademark_concerns", { copyright_trademark_concerns: ["Guaranteed to be clear of any claim."] }],
+      [
+        "likely_costs.breakdown",
+        { likely_costs: { estimate: "Low.", breakdown: ["Guaranteed low design cost."] } },
+      ],
+      [
+        "estimated_production_difficulty.rationale",
+        {
+          estimated_production_difficulty: {
+            level: "low",
+            rationale: "Guaranteed to be simple to produce.",
+          },
+        },
+      ],
+    ];
+
+    for (const [label, overrides] of cases) {
+      const report = makeScoutReport(overrides);
+      const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+      await expect(
+        runScoutResearch(makeMission(), { client }),
+        `expected a rejection for guarantee language in ${label}`,
+      ).rejects.toThrow(/prohibited certainty language/i);
+    }
+  });
+
+  it("catches guarantee language in previously-unscanned Service Business variant fields", async () => {
+    const cases: Array<[string, Partial<ReturnType<typeof makeServiceBusinessReport>>]> = [
+      [
+        "regulatory_and_compliance_notes",
+        {
+          regulatory_and_compliance_notes: [
+            { note: "Compliance is guaranteed under current rules.", source_url: null, source_quality: "secondary" },
+          ],
+        },
+      ],
+      [
+        "pricing_or_service_model_considerations.considerations",
+        {
+          pricing_or_service_model_considerations: {
+            summary: "Reasonable.",
+            considerations: ["Guaranteed to reduce no-shows."],
+          },
+        },
+      ],
+      ["service_delivery_considerations", { service_delivery_considerations: "Guaranteed to fit current staffing." }],
+    ];
+
+    for (const [label, overrides] of cases) {
+      const report = makeServiceBusinessReport(overrides);
+      const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+      await expect(
+        runScoutResearch(makeMission(), { client, workspaceType: "service_business" }),
+        `expected a rejection for guarantee language in ${label}`,
+      ).rejects.toThrow(/prohibited certainty language/i);
+    }
+  });
+
+  it("still allows hedged, cautious language through untouched — no false positives", async () => {
+    const report = makeScoutReport({
+      evidence_of_demand: "Evidence suggests moderate interest, though this could change and cannot be confirmed.",
+      competition_observations: "Competitors may be established, but this is not certain.",
+      inferences: ["This category might reward variants, based on limited data."],
+      recommended_next_action: "This could plausibly proceed to founders' review.",
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+  });
+
+  it("keeps facts and inferences structurally separate — this fix does not blur that distinction", async () => {
+    const report = makeScoutReport();
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    const factStatements = outcome.report.verified_facts.map((f) => f.statement);
+    expect(factStatements).not.toContain(outcome.report.inferences[0]);
   });
 });

@@ -212,22 +212,33 @@ function parseAndValidateReport(rawText: string, usageSoFar: () => PartialUsage)
   return { ...validation.data };
 }
 
-/** Defense in depth: the prompt already asks for this, but model output isn't fully controllable. */
-function applyGuardrails(report: ScoutReport): ScoutReport {
+/**
+ * Rejects the report outright if it contains prohibited certainty
+ * language anywhere. This must never be softened into a downgrade-and-
+ * annotate — an earlier version did exactly that (rewrote the verdict and
+ * appended an explanatory sentence, quoting the offending word, into
+ * unresolved_questions), which meant a report using a banned word was
+ * still delivered to the founder as a *completed* report, just with the
+ * guardrail's own meta-commentary embedded in what looks like Scout's
+ * analysis — including the prohibited word itself, quoted back. A report
+ * that fails this check has no legitimate partial form to deliver; it
+ * fails the mission the same way invalid JSON or a wrong-workspace report
+ * does (see runScoutResearch), with the real token cost still recorded
+ * via ScoutResearchError.usage.
+ */
+function assertNoGuaranteeLanguage(report: ScoutReport, usageSoFar: () => PartialUsage): void {
   const violations = findGuaranteeLanguage(report);
   if (violations.length > 0) {
-    if (report.verdict === "ready_for_founders_review") {
-      report.verdict = "investigate_further";
-    }
-    report.unresolved_questions = [
-      ...report.unresolved_questions,
-      ...violations.map(
-        (v) =>
-          `Safety guardrail: "${v.matchedText}" in ${v.field} reads as a certainty claim about demand/revenue/profit — verify manually before trusting this section.`,
-      ),
-    ];
+    const detail = violations.map((v) => `"${v.matchedText}" in ${v.field}`).join("; ");
+    throw new ScoutResearchError(
+      `Scout's report contained prohibited certainty language about demand, revenue, or profit and was rejected: ${detail}.`,
+      usageSoFar(),
+    );
   }
+}
 
+/** Defense in depth: the prompt already asks for this, but model output isn't fully controllable. */
+function applyGuardrails(report: ScoutReport): ScoutReport {
   if (report.verdict === "ready_for_founders_review" && !hasMeaningfulEvidence(report)) {
     report.verdict = "investigate_further";
     report.unresolved_questions = [
@@ -429,6 +440,7 @@ export async function runScoutResearch(
     );
   }
 
+  assertNoGuaranteeLanguage(parsedReport, usageSoFar);
   const report = applyGuardrails(parsedReport);
 
   const usdCost = calculateUsdCost(SCOUT_MODEL, {

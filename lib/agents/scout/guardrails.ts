@@ -2,8 +2,9 @@ import type { ScoutReport } from "./schema";
 
 // Defense in depth: the system prompt instructs Scout never to promise
 // guaranteed demand/revenue/profit, but model output isn't fully
-// controllable, so we also scan the free-text fields ourselves. A hit here
-// downgrades the verdict rather than silently passing the claim through.
+// controllable, so we also scan every string in the report ourselves. A
+// hit here rejects the report outright (see runScoutResearch) rather than
+// letting the claim through in any form.
 const BANNED_PATTERNS: RegExp[] = [
   /\bguarantee(d|s)?\b/i,
   /\bwill (definitely|certainly) sell\b/i,
@@ -14,55 +15,51 @@ const BANNED_PATTERNS: RegExp[] = [
   /\b(100%|guaranteed) (profit|return|success)\b/i,
 ];
 
-// Fields present on every workspace's report (see the shared core in
-// schema.ts) — scanned regardless of workspace_type.
-const CORE_SCANNED_TEXT_FIELDS = ["evidence_of_demand", "verdict_rationale"] as const;
-
 export interface GuardrailViolation {
   field: string;
   matchedText: string;
 }
 
-function scanField(violations: GuardrailViolation[], field: string, value: unknown): void {
-  if (typeof value !== "string") return;
-  for (const pattern of BANNED_PATTERNS) {
-    const match = value.match(pattern);
-    if (match) {
-      violations.push({ field, matchedText: match[0] });
+/**
+ * Recursively walks every string value in `value` (through nested objects
+ * and arrays alike) and scans each one against BANNED_PATTERNS, recording
+ * violations with a JSON-path-style `field` label (e.g.
+ * "verified_facts[0].statement", "platform_suitability.etsy_downloads").
+ *
+ * This replaces an earlier version that scanned a manually maintained list
+ * of field names — that list quietly went stale as fields were added (a
+ * live report's evidence_of_demand tripped the guardrail correctly, but
+ * fields like competition_observations, verified_facts, inferences,
+ * unresolved_questions, and every Service Business field were never
+ * scanned at all). A generic walk over the whole object is complete by
+ * construction: every string in the report is covered automatically,
+ * including any field a future workspace variant adds, with nothing to
+ * remember to update here.
+ */
+function collectViolations(value: unknown, path: string, violations: GuardrailViolation[]): void {
+  if (typeof value === "string") {
+    for (const pattern of BANNED_PATTERNS) {
+      const match = value.match(pattern);
+      if (match) {
+        violations.push({ field: path, matchedText: match[0] });
+      }
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => collectViolations(item, `${path}[${index}]`, violations));
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, nested] of Object.entries(value)) {
+      collectViolations(nested, path ? `${path}.${key}` : key, violations);
     }
   }
 }
 
-/**
- * Workspace-specific free-text fields to scan, beyond the shared core
- * above — kept in one place so adding a new workspace type only means
- * adding one branch here, not hunting for every scan site.
- */
 export function findGuaranteeLanguage(report: ScoutReport): GuardrailViolation[] {
   const violations: GuardrailViolation[] = [];
-
-  for (const field of CORE_SCANNED_TEXT_FIELDS) {
-    scanField(violations, field, report[field]);
-  }
-
-  if (report.workspace_type === "commerce") {
-    scanField(violations, "opportunity_gaps", report.opportunity_gaps);
-    scanField(violations, "originality_considerations", report.originality_considerations);
-    scanField(violations, "likely_costs.estimate", report.likely_costs?.estimate);
-  } else {
-    scanField(violations, "service_delivery_considerations", report.service_delivery_considerations);
-    scanField(
-      violations,
-      "client_retention_or_acquisition_gaps",
-      report.client_retention_or_acquisition_gaps,
-    );
-    scanField(
-      violations,
-      "pricing_or_service_model_considerations.summary",
-      report.pricing_or_service_model_considerations?.summary,
-    );
-  }
-
+  collectViolations(report, "", violations);
   return violations;
 }
 
