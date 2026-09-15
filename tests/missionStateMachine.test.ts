@@ -4,7 +4,10 @@ import {
   canTransition,
   IllegalMissionTransitionError,
   isCancellable,
+  MISSION_DOCK_BUCKETS,
+  missionDockBucket,
 } from "@/lib/domain/missionStates";
+import { MISSION_STATES } from "@/lib/db/types";
 
 describe("mission state machine", () => {
   it("allows the honest happy path", () => {
@@ -45,5 +48,37 @@ describe("mission state machine", () => {
     expect(isCancellable("researching")).toBe(true);
     expect(isCancellable("rejected")).toBe(false);
     expect(isCancellable("cancelled")).toBe(false);
+  });
+});
+
+describe("missionDockBucket — the HQ view's compact mission-dock grouping", () => {
+  it("maps every one of the 9 real mission states to exactly one of the 6 dock buckets", () => {
+    for (const state of MISSION_STATES) {
+      expect(MISSION_DOCK_BUCKETS).toContain(missionDockBucket(state));
+    }
+  });
+
+  it("groups queued together with researching — both mean Scout is dispatched or working", () => {
+    expect(missionDockBucket("queued")).toBe("researching");
+    expect(missionDockBucket("researching")).toBe("researching");
+  });
+
+  it("groups rejected together with ready_for_founders_review under completed — both are real finished verdicts", () => {
+    expect(missionDockBucket("rejected")).toBe("completed");
+    expect(missionDockBucket("ready_for_founders_review")).toBe("completed");
+  });
+
+  it("groups cancelled together with failed — neither reached a real research verdict", () => {
+    expect(missionDockBucket("cancelled")).toBe("failed");
+    expect(missionDockBucket("failed")).toBe("failed");
+  });
+
+  it("maps draft and awaiting_founder_approval to their own distinct buckets", () => {
+    expect(missionDockBucket("draft")).toBe("draft");
+    expect(missionDockBucket("awaiting_founder_approval")).toBe("awaiting_approval");
+  });
+
+  it("maps awaiting_evidence to its own distinct bucket", () => {
+    expect(missionDockBucket("awaiting_evidence")).toBe("awaiting_evidence");
   });
 });

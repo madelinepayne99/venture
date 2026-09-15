@@ -176,6 +176,59 @@ authoritative source is enough — this does not require an arbitrary
 source count). All of this still holds and is exercised by the tests
 described below.
 
+**Milestone 4: HQ Office UI (Version 1).** A visual/product layer over the
+exact same real data and workflow above — nothing in this milestone
+touches the schema, Scout's prompts or guardrails, the approval gate,
+cost recording, or authentication.
+
+- **Two views of one dataset, not two apps.** A founder can toggle
+  between **HQ View** (a stylised 2D high-rise office scene — founder
+  desks, Scout as a worker bot, a bottom mission dock) and **Focus View**
+  (the original clean dashboard layout). Both read the same `missions`,
+  `projects`, `agents`, and `ledger_entries` state and call the exact same
+  handlers (`components/founders-desk/FoundersDeskApp.tsx` owns all state
+  and data-fetching; `FocusView.tsx` and `hq/HQView.tsx` are pure
+  presentation over it). The toggle changes rendering only — it cannot
+  change what data is fetched or what a founder is allowed to do.
+- **View mode and the active workspace are localStorage-only, client-side
+  preferences** (`FoundersDeskApp.tsx`'s `readLocalStorage`/
+  `writeLocalStorage`), read after mount specifically to avoid a
+  hydration mismatch against the server-rendered markup. There is no new
+  column or table for either — nothing here needed a migration.
+- **A top workspace bar** (`hq/WorkspaceBar.tsx`) is always visible in
+  both views. It only ever shows the two real `workspace_type` values
+  (Commerce, Local Services) as selectable — each backed by a real
+  project, using `createWorkspace` (Milestone 3) exactly as before, with
+  no new creation path. Content Studio and Game Studio appear as
+  explicitly "Planned", non-interactive entries that exist purely for
+  visibility — they are UI-only labels, not real `workspace_type` values,
+  and have no project, agent, or capability behind them.
+- **`missionDockBucket`** (`lib/domain/missionStates.ts`) is the one new
+  piece of domain logic: a pure, unit-tested function mapping each of the
+  9 real mission states onto one of 6 compact dock buckets (Draft /
+  Awaiting approval / Researching / Awaiting evidence / Completed /
+  Failed) for the HQ view's bottom dock (`hq/MissionDock.tsx`). No state
+  is invented or dropped — every real state maps to exactly one bucket —
+  and the grouping rationale (e.g. `queued` and `researching` both read
+  as "Scout is working") is documented alongside the mapping and directly
+  exercised by tests in `tests/missionStateMachine.test.ts`.
+- **Scout's worker-bot desk** (`hq/ScoutDesk.tsx`) only ever shows as
+  "working" when a real mission in the active workspace has
+  `state === "researching"` — found the same way the existing polling
+  logic already does, not a new signal. Idle means idle; there is no
+  invented animation for queued-but-not-started or any other state.
+- **Founder desks** (`hq/FounderDesk.tsx`) are a tasteful, generic
+  initial-in-circle avatar over a nameplate, driven by the real
+  `founders` table (`listFounders`, newly passed into `FoundersDeskApp`
+  from `app/page.tsx` alongside the data it already fetched) — no photo
+  upload or cosmetic system was built for Version 1, as scoped.
+- **The mission slide-out panel** (`hq/MissionSlideOver.tsx`) wraps the
+  existing `MissionDetail` component unchanged and adds the same
+  Approve/Cancel actions Focus View's mission list already exposes,
+  reusing `isCancellable` from `missionStates.ts` rather than duplicating
+  its state list. It shows the same real mission detail, evidence, and
+  cost either view would show — nothing new is computed for it.
+
 ## Architecture
 
 - **Next.js (App Router) + TypeScript + Tailwind.** Route handlers under
@@ -538,7 +591,7 @@ Never hand-edit a already-generated migration or the database directly.
 
 ## Testing
 
-`npm test` (Vitest, 100 tests) runs against a **real local Postgres
+`npm test` (Vitest, 106 tests) runs against a **real local Postgres
 database** (see "Local verification vs. a real deployment" below) — there
 is no more in-memory/SQLite test mode. `vitest.config.ts` sets
 `DATABASE_URL`/`AUTH_SECRET` via `test.env` (applied before any module
@@ -600,7 +653,11 @@ separation proven unaffected; and that the source no longer constructs
 the old self-warning sentence at all), the founders' approval gate
 (including a mission that tries to skip it), secret protection,
 cost/ledger recording, and the fabricated-completion-state checks
-described above.
+described above; and the HQ office UI's one piece of new domain logic
+(Milestone 4 — `missionDockBucket` mapping every one of the 9 real
+mission states onto exactly one of the 6 dock buckets, and the specific
+groupings — `queued`/`researching`, `rejected`/`ready_for_founders_review`,
+`cancelled`/`failed`).
 
 Tests never call the real Anthropic API (`runScoutResearch` takes an
 injectable client, `lib/agents/scout` is mocked at the module level for

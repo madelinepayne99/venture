@@ -5,14 +5,17 @@ import type { Project } from "@/lib/db/types";
 
 export function MissionForm({
   projects,
+  defaultProjectId,
   onSubmit,
 }: {
   projects: Project[];
+  /** Pre-selects the currently active workspace, if any, so a mission created from within a workspace defaults to it. */
+  defaultProjectId?: string | null;
   onSubmit: (title: string, brief: string, projectId: string) => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState("");
-  const [projectId, setProjectId] = useState(projects[0]?.id ?? "");
+  const [projectId, setProjectId] = useState(defaultProjectId ?? projects[0]?.id ?? "");
   const [submitting, setSubmitting] = useState(false);
 
   async function handleSubmit(e: FormEvent) {

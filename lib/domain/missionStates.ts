@@ -86,3 +86,53 @@ export const MISSION_STATE_LABELS: Record<MissionState, string> = {
   failed: "Failed",
   cancelled: "Cancelled",
 };
+
+/**
+ * The HQ office view's mission dock shows a compact, 6-bucket summary
+ * rather than all 9 real states — this is the one place that coarser
+ * grouping is defined, so both the dock and any test asserting on it stay
+ * in sync with the real state machine above. No state is invented or
+ * dropped: every one of the 9 real states maps to exactly one bucket.
+ *  - "queued" joins "researching" — both mean Scout is dispatched or
+ *    actively working; there's no meaningful visual distinction for a
+ *    founder glancing at the dock.
+ *  - "rejected" joins "ready_for_founders_review" under "completed" —
+ *    both mean Scout finished its research and reached a real verdict;
+ *    "rejected" is a genuine outcome, not a failure of the process.
+ *  - "cancelled" joins "failed" — neither reached a real research verdict.
+ */
+export const MISSION_DOCK_BUCKETS = [
+  "draft",
+  "awaiting_approval",
+  "researching",
+  "awaiting_evidence",
+  "completed",
+  "failed",
+] as const;
+
+export type MissionDockBucket = (typeof MISSION_DOCK_BUCKETS)[number];
+
+export const MISSION_DOCK_BUCKET_LABELS: Record<MissionDockBucket, string> = {
+  draft: "Draft",
+  awaiting_approval: "Awaiting approval",
+  researching: "Researching",
+  awaiting_evidence: "Awaiting evidence",
+  completed: "Completed",
+  failed: "Failed",
+};
+
+const STATE_TO_DOCK_BUCKET: Record<MissionState, MissionDockBucket> = {
+  draft: "draft",
+  awaiting_founder_approval: "awaiting_approval",
+  queued: "researching",
+  researching: "researching",
+  awaiting_evidence: "awaiting_evidence",
+  ready_for_founders_review: "completed",
+  rejected: "completed",
+  failed: "failed",
+  cancelled: "failed",
+};
+
+export function missionDockBucket(state: MissionState): MissionDockBucket {
+  return STATE_TO_DOCK_BUCKET[state];
+}
