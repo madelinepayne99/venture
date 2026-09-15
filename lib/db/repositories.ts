@@ -17,6 +17,7 @@ import type {
   MissionStage,
   MissionState,
   Project,
+  WorkspaceType,
 } from "./types";
 
 function now(): string {
@@ -59,13 +60,46 @@ export async function getAgentByKey(key: string): Promise<Agent | undefined> {
 
 export async function listProjects(): Promise<Project[]> {
   const db = await getDb();
-  return db.select().from(schema.projects).orderBy(schema.projects.created_at);
+  const rows = await db.select().from(schema.projects).orderBy(schema.projects.created_at);
+  return rows as Project[];
 }
 
 export async function getDefaultProject(): Promise<Project | undefined> {
   const db = await getDb();
   const [row] = await db.select().from(schema.projects).orderBy(schema.projects.created_at).limit(1);
-  return row;
+  return row as Project | undefined;
+}
+
+export async function getProject(id: string): Promise<Project | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.projects).where(eq(schema.projects.id, id));
+  return row as Project | undefined;
+}
+
+/**
+ * Creates a new project/workspace. Deliberately the only write path for
+ * workspace_type — there is no update function, so an existing workspace
+ * (and any missions already run under it) can never be silently
+ * repurposed to a different type. A founder who wants a different kind of
+ * workspace creates a new one.
+ */
+export async function createProject(input: {
+  name: string;
+  workspaceType: WorkspaceType;
+  description?: string | null;
+}): Promise<Project> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.projects)
+    .values({
+      id: randomUUID(),
+      name: input.name,
+      description: input.description ?? null,
+      platform_focus: null,
+      workspace_type: input.workspaceType,
+    })
+    .returning();
+  return row as Project;
 }
 
 // --- Missions ---------------------------------------------------------------

@@ -6,6 +6,7 @@ import {
   fakeAnthropicClientWithCalls,
   fakeAnthropicMessage,
   makeScoutReport,
+  makeServiceBusinessReport,
 } from "./testUtils";
 
 function makeMission(overrides: Partial<Mission> = {}): Mission {
@@ -393,5 +394,75 @@ describe("runScoutResearch — JSON extraction robustness", () => {
     await expect(runScoutResearch(makeMission(), { client })).rejects.toThrow(
       /failed structural validation/i,
     );
+  });
+});
+
+describe("runScoutResearch — workspace-aware reports", () => {
+  it("defaults to a Commerce report when no workspaceType is given (backward compatible)", async () => {
+    const report = makeScoutReport();
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.workspace_type).toBe("commerce");
+    if (outcome.report.workspace_type === "commerce") {
+      expect(outcome.report.platform_suitability.etsy_downloads).toBeTruthy();
+    }
+  });
+
+  it("returns a Service Business report shape when workspaceType is service_business, with no Etsy/KDP fields forced in", async () => {
+    const report = makeServiceBusinessReport();
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client, workspaceType: "service_business" });
+
+    expect(outcome.report.workspace_type).toBe("service_business");
+    if (outcome.report.workspace_type === "service_business") {
+      expect(outcome.report.service_delivery_considerations).toBeTruthy();
+      expect(outcome.report.regulatory_and_compliance_notes[0]?.source_quality).toBe("primary_regulator");
+      // TypeScript already proves platform_suitability/etc. don't exist on
+      // this variant — this is the runtime half of that same guarantee.
+      expect(outcome.report).not.toHaveProperty("platform_suitability");
+      expect(outcome.report).not.toHaveProperty("copyright_trademark_concerns");
+    }
+  });
+
+  it("throws when the model returns the wrong workspace shape for the mission it was asked to research", async () => {
+    // Asked for service_business, but the model answered with a fully
+    // valid Commerce report — this must fail loudly, not render as if it
+    // were the requested workspace's report.
+    const report = makeScoutReport();
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    await expect(
+      runScoutResearch(makeMission(), { client, workspaceType: "service_business" }),
+    ).rejects.toThrow(/wrong workspace type/i);
+  });
+
+  it("catches guarantee language in a Service Business report's workspace-specific fields", async () => {
+    const report = makeServiceBusinessReport({
+      verdict: "ready_for_founders_review",
+      client_retention_or_acquisition_gaps: "This loyalty scheme is guaranteed to retain clients.",
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client, workspaceType: "service_business" });
+
+    expect(outcome.report.verdict).toBe("investigate_further");
+    expect(outcome.report.unresolved_questions.some((q) => q.includes("guardrail"))).toBe(true);
+  });
+
+  it("applies the same structural evidence guardrail to Service Business reports as Commerce ones", async () => {
+    const report = makeServiceBusinessReport({
+      verdict: "ready_for_founders_review",
+      sources: [],
+      verified_facts: [],
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client, workspaceType: "service_business" });
+
+    expect(outcome.report.verdict).toBe("investigate_further");
+    expect(outcome.report.unresolved_questions.some((q) => q.includes("dated source"))).toBe(true);
   });
 });

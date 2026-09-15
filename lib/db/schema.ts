@@ -52,11 +52,24 @@ export const agentCapabilities = pgTable("agent_capabilities", {
   description: text("description").notNull(),
 });
 
+// A project IS a workspace — "commerce" (the original Etsy/KDP digital-
+// product focus) or "service_business" (client-facing local businesses
+// like hairdressers or garages). Missions don't carry their own workspace
+// type; it's derived from missions.project_id -> projects.workspace_type
+// (a mission with no project defaults to "commerce" — see
+// missionWorkflow.ts's resolveWorkspaceType). New values require a
+// migration to widen the app-layer vocabulary in lib/db/types.ts and
+// lib/agents/scout/schema.ts's discriminated union — same reasoning as
+// missions.state being plain text: the app layer is the source of truth,
+// not a DB enum.
+export const workspaceTypeValues = ["commerce", "service_business"] as const;
+
 export const projects = pgTable("projects", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   description: text("description"),
   platform_focus: text("platform_focus"),
+  workspace_type: text("workspace_type").notNull().default("commerce"),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 

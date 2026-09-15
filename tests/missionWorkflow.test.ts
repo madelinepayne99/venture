@@ -14,7 +14,7 @@ import {
   createMission,
   transitionMissionState,
 } from "@/lib/db/repositories";
-import { makeScoutReport } from "./testUtils";
+import { makeScoutReport, makeServiceBusinessReport } from "./testUtils";
 
 vi.mock("@/lib/agents/scout", () => {
   return {
@@ -548,5 +548,60 @@ describe("mission workflow", () => {
     expect(after).toBeLessThan(before);
     const entries = await listLedgerEntries();
     expect(entries[0]?.amount_usd).toBeLessThan(0);
+  });
+
+  it("resolves a mission's project workspace type and passes it to Scout", async () => {
+    const { createProject } = await import("@/lib/db/repositories");
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report: makeServiceBusinessReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+
+    const project = await createProject({ name: "Hair & Beauty Clients", workspaceType: "service_business" });
+
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: project.id,
+      title: "Client retention plan",
+      brief: "Research a client-retention plan for a UK independent hairdresser.",
+    });
+    await approveMission(created.id, founderId);
+    await runScoutPipeline(created.id);
+
+    expect(scoutModule.runScoutResearch).toHaveBeenCalledWith(
+      expect.objectContaining({ id: created.id }),
+      expect.objectContaining({ workspaceType: "service_business" }),
+    );
+  });
+
+  it("defaults to the commerce workspace type for a mission with no project", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title: "No-project mission",
+      brief: "A mission with no project attached should default to the commerce workspace.",
+    });
+    await approveMission(created.id, founderId);
+    await runScoutPipeline(created.id);
+
+    expect(scoutModule.runScoutResearch).toHaveBeenCalledWith(
+      expect.objectContaining({ id: created.id }),
+      expect.objectContaining({ workspaceType: "commerce" }),
+    );
   });
 });

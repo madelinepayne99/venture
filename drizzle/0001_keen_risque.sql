@@ -1,0 +1,1 @@
+ALTER TABLE "projects" ADD COLUMN "workspace_type" text DEFAULT 'commerce' NOT NULL;

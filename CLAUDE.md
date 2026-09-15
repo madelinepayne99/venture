@@ -91,6 +91,74 @@ Agents → `index.ts` below for the full mechanism, and "Local verification
 vs. a real deployment" for what this means for real-run cost going
 forward.
 
+**Milestone 3: workspace-aware Scout.** After two real Scout missions ran
+successfully — an Etsy/KDP digital-product opportunity and, separately, a
+UK independent hairdresser's client-retention plan — the second one
+exposed a real design gap: Scout flagged the hairdresser mission as
+outside its product-research scope, yet the schema and prompt *forced*
+Etsy/KDP sections into the report regardless, because both were
+Commerce-only and unconditional. Venture HQ's actual mission is a
+configurable AI workforce across different **workspaces** (Commerce,
+Content, Game Studio, and service businesses like hairdressers or
+garages), not an Etsy/KDP-only tool — this milestone makes Scout's report
+shape follow the workspace it's researching for, for the two workspace
+types actually exercised so far (Commerce, Service Business).
+
+- **A project IS a workspace.** `projects.workspace_type` (plain text,
+  default `"commerce"`) is the only new column — no new table, no new
+  column on `missions`. A mission's workspace is derived from
+  `missions.project_id → projects.workspace_type` at dispatch time
+  (`resolveWorkspaceType` in `missionWorkflow.ts`); a mission with no
+  project defaults to `"commerce"`, so every mission created before this
+  milestone (and every test that passes `projectId: null`) behaves exactly
+  as before.
+- **There is no update path for `workspace_type`.** `createProject` in
+  `repositories.ts` is the only write — a founder who wants a different
+  kind of workspace creates a new one via `POST /api/projects`
+  (`lib/domain/projectWorkflow.ts`'s `createWorkspace`, founder-gated the
+  same way every mutating route is). This is deliberate: the original
+  "Digital Products" project already has completed Commerce missions
+  attached to it and must never be silently repurposed — seed data sets
+  its `workspace_type` explicitly, not just via the column default, and
+  nothing in the codebase can change an existing project's type.
+- **`ScoutReportSchema` is now a Zod discriminated union** on
+  `workspace_type` (`CommerceReportSchema` | `ServiceBusinessReportSchema`),
+  over a shared core of fields every workspace needs (evidence, sources,
+  verdict, etc.). The Commerce variant is byte-for-byte the pre-Milestone-3
+  shape — existing Commerce reports remain readable exactly as before.
+  Service Business gets its own fields instead (service delivery,
+  client retention/acquisition, pricing/service-model, and
+  `regulatory_and_compliance_notes` — see below). `runScoutResearch` also
+  checks the returned `workspace_type` against the one actually requested
+  and throws if they don't match, so a wrong-shaped report can never
+  silently render as if it were the right one.
+- **`buildScoutSystemPrompt(workspaceType)`** (`prompt.ts`) replaces the
+  old static `SCOUT_SYSTEM_PROMPT` — the business-context paragraph, one
+  workspace-specific hard rule, and the JSON shape block are all
+  parameterized, so Scout is never even shown the Etsy/KDP shape (or asked
+  to produce it) when researching a service business. This, together with
+  the schema change above, is what actually stops irrelevant Etsy/KDP
+  sections appearing — a prompt change alone wouldn't have, since the old
+  schema still required those fields regardless of what the prompt said.
+- **Primary UK regulator sources for Service Business legal/privacy
+  claims.** The Service Business prompt variant instructs Scout to prefer
+  ico.org.uk (data protection), asa.org.uk (advertising standards), and
+  gov.uk/legislation.gov.uk (law) over secondary summaries. This is also
+  structural, not just prompt-level: every entry in
+  `regulatory_and_compliance_notes` carries a `source_quality` field
+  (`"primary_regulator"` | `"secondary"`) that the report — and the UI —
+  must set and display explicitly; there is no "unmarked" option.
+- **Guardrails, approval gate, cost recording, and evidence rules are
+  unchanged.** `hasMeaningfulEvidence` in `guardrails.ts` already only
+  touched core fields (`sources`, `verified_facts`) and needed no change;
+  `findGuaranteeLanguage`'s scanned-field list now branches by
+  `workspace_type` but scans exactly the same core fields plus the
+  workspace-specific equivalent of the fields it always scanned (e.g.
+  `likely_costs.estimate` for Commerce, `pricing_or_service_model_
+  considerations.summary` for Service Business). Nothing about
+  `transitionMissionState`, `approveMission`, `REQUIRE_FOUNDER_APPROVAL`,
+  or `recordCost` changed.
+
 Before that: a first round of correctness fixes (same infrastructure, no
 new dependencies) made every mission-state change go through
 `transitionMissionState`, an atomic conditional database update (`UPDATE
@@ -250,40 +318,50 @@ described below.
 - **Agents** (`lib/agents/`) — `types.ts` defines the `VentureAgent`
   contract every agent implements (`run(mission) → { report, usage,
   evidence }`). `scout/` is the only implementation:
-  - `schema.ts` — the Zod schema for Scout's structured report. Every
-    field in the product brief (interpreted mission, research questions,
-    potential customer, evidence of demand, competition, opportunity
-    gaps, originality, platform suitability, production difficulty,
-    likely costs, risks, copyright/trademark concerns, sources with
-    dates, verified facts, labeled inferences, unresolved questions,
-    recommended next action, and a `reject` /
-    `investigate_further` / `ready_for_founders_review` verdict) is a
-    required field here. The installed Anthropic SDK version doesn't yet
-    expose an enforced structured-output mode, so Scout is instructed via
-    the system prompt to return matching JSON; `index.ts` parses that text
-    in layers — a direct parse first, then a Markdown-code-fence extraction
-    (a real response sometimes wraps the JSON in ```json even though the
-    prompt asks it not to), then a string-aware balanced-brace scan that
-    tolerates short explanatory sentences around the object (a live mission
-    failure — "Scout's report was not valid JSON" — traced to exactly this:
-    the original naive first-"{"-to-last-"}" slice broke as soon as any
-    stray brace appeared before or after the real object) — and validates
-    whichever candidate parses against this schema; a response that doesn't
-    match still fails loudly instead of getting displayed anyway. Swap in
-    real structured-output enforcement if/when the SDK supports it; the
-    schema itself doesn't need to change. Every array field also carries a
-    generous but real
-    `.max()` cap (e.g. `sources` ≤10, `verified_facts` ≤8) — a structural
-    compactness guarantee, not just prompt guidance, that keeps an
-    unbounded enumeration from blowing up how long a report needs to be to
-    finish (see Milestone 2.2). The caps are deliberately loose enough that
-    `hasMeaningfulEvidence` in `guardrails.ts` (which only ever needs one
-    verified fact) can never be starved by them.
-  - `prompt.ts` — the system prompt, including the safety rules below and
-    an explicit compactness rule (1-3 sentences per free-text field, hard
-    maximums on every array, matching the schema's `.max()` caps) added in
-    Milestone 2.2 alongside an instruction not to leak any internal/system
-    tags into the response.
+  - `schema.ts` — `ScoutReportSchema` is a Zod **discriminated union** on
+    `workspace_type` (`"commerce"` | `"service_business"`, see Milestone 3)
+    over `ScoutReportCoreSchema`, the fields every workspace needs
+    (interpreted mission, research questions, potential customer, evidence
+    of demand, competition, important risks, sources with dates, verified
+    facts, labeled inferences, unresolved questions, recommended next
+    action, and a `reject` / `investigate_further` /
+    `ready_for_founders_review` verdict). `CommerceReportSchema` adds the
+    original Etsy/KDP-specific fields (opportunity gaps, originality,
+    platform suitability, production difficulty, likely costs,
+    copyright/trademark concerns) unchanged from before workspaces
+    existed; `ServiceBusinessReportSchema` adds service-delivery,
+    client-retention/acquisition, pricing/service-model, and
+    `regulatory_and_compliance_notes` fields instead. The installed
+    Anthropic SDK version doesn't yet expose an enforced structured-output
+    mode, so Scout is instructed via the system prompt to return matching
+    JSON; `index.ts` parses that text in layers — a direct parse first,
+    then a Markdown-code-fence extraction (a real response sometimes wraps
+    the JSON in ```json even though the prompt asks it not to), then a
+    string-aware balanced-brace scan that tolerates short explanatory
+    sentences around the object (a live mission failure — "Scout's report
+    was not valid JSON" — traced to exactly this: the original naive
+    first-"{"-to-last-"}" slice broke as soon as any stray brace appeared
+    before or after the real object) — and validates whichever candidate
+    parses against this schema (Zod's discriminant routes it to the right
+    variant automatically); a response that doesn't match, or matches the
+    wrong workspace's variant for the one requested, still fails loudly
+    instead of getting displayed anyway. Every array field also carries a
+    generous but real `.max()` cap (e.g. `sources` ≤10, `verified_facts`
+    ≤8) — a structural compactness guarantee, not just prompt guidance,
+    that keeps an unbounded enumeration from blowing up how long a report
+    needs to be to finish (see Milestone 2.2). The caps are deliberately
+    loose enough that `hasMeaningfulEvidence` in `guardrails.ts` (which
+    only ever needs one verified fact) can never be starved by them.
+  - `prompt.ts` — `buildScoutSystemPrompt(workspaceType)` composes the
+    system prompt from a shared core (the safety rules below, including
+    the compactness rule — 1-3 sentences per free-text field, hard
+    maximums on every array matching the schema's `.max()` caps, and an
+    instruction not to leak internal/system tags into the response) plus
+    one workspace-specific business-context paragraph, hard rule, and JSON
+    shape block (see Milestone 3) — so Scout is never shown, or asked to
+    fill in, a field that doesn't belong to the workspace it's actually
+    researching for. `buildScoutUserPrompt(mission, workspaceType)` is
+    parameterized the same way, for the same reason.
   - `guardrails.ts` — code-level checks independent of the prompt, run
     after parsing: `findGuaranteeLanguage` scans Scout's free-text fields
     for guaranteed-outcome language, and `hasMeaningfulEvidence` is a
@@ -348,10 +426,14 @@ design — null means real tokens were spent but pricing for that model is
 unknown; it is never coerced to 0, and `recordCost` skips the
 `ledger_entries` insert entirely when it's null, so the ledger only ever
 holds genuine, known dollar amounts. State/status columns (`missions.state`,
-`mission_stages.status`, etc.) are deliberately plain `text`, not Postgres
-enums — the app layer is the single source of truth for what values are
-legal, and a DB enum would need its own migration every time that
-vocabulary changes.
+`mission_stages.status`, `projects.workspace_type`, etc.) are deliberately
+plain `text`, not Postgres enums — the app layer is the single source of
+truth for what values are legal, and a DB enum would need its own
+migration every time that vocabulary changes.
+`projects.workspace_type` (default `"commerce"`) has no update path
+anywhere in the app — `createProject` is the only write, so an existing
+workspace (and any missions already run under it) can never be silently
+repurposed to a different type (see Milestone 3).
 
 To change the schema: edit `lib/db/schema.ts`, then run
 `npx drizzle-kit generate` to produce a new migration file in `drizzle/`.
@@ -439,7 +521,7 @@ Never hand-edit a already-generated migration or the database directly.
 
 ## Testing
 
-`npm test` (Vitest, 81 tests) runs against a **real local Postgres
+`npm test` (Vitest, 94 tests) runs against a **real local Postgres
 database** (see "Local verification vs. a real deployment" below) — there
 is no more in-memory/SQLite test mode. `vitest.config.ts` sets
 `DATABASE_URL`/`AUTH_SECRET` via `test.env` (applied before any module
@@ -478,9 +560,20 @@ exactly one compact, tools-off retry with combined real usage recorded;
 a retry that's also cut off, refused, or otherwise fails to complete
 throwing a distinct clear error while still carrying both attempts' real
 usage; the recovery call never receiving `tools`, so it can never trigger
-new search spend), the founders' approval gate (including a mission that
-tries to skip it), secret protection, cost/ledger recording, and the
-fabricated-completion-state checks described above.
+new search spend), workspace-aware Scout reports (Milestone 3 —
+`runScoutResearch` defaults to the Commerce shape with no `workspaceType`
+given, returns the Service Business shape when asked, throws when the
+model returns the wrong workspace's shape for the one requested, and
+applies both the guarantee-language and structural evidence guardrails
+identically to Service Business reports; `runScoutPipeline` resolves a
+mission's real project → workspace type, defaulting to `"commerce"` for a
+mission with no project), workspace/project creation (`createWorkspace` —
+validation for an empty name and an unrecognized workspace type, that
+invalid input writes nothing, and that creating a new workspace never
+repurposes the existing seeded Commerce project), the founders' approval
+gate (including a mission that tries to skip it), secret protection,
+cost/ledger recording, and the fabricated-completion-state checks
+described above.
 
 Tests never call the real Anthropic API (`runScoutResearch` takes an
 injectable client, `lib/agents/scout` is mocked at the module level for

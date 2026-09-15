@@ -93,25 +93,100 @@ export function MissionDetail({ detail }: { detail: MissionDetailData | null }) 
           <Section title="Potential customer">{scoutReport.potential_customer}</Section>
           <Section title="Evidence of demand">{scoutReport.evidence_of_demand}</Section>
           <Section title="Competition observations">{scoutReport.competition_observations}</Section>
-          <Section title="Opportunity gaps">{scoutReport.opportunity_gaps}</Section>
-          <Section title="Originality considerations">{scoutReport.originality_considerations}</Section>
 
-          <Section title="Platform suitability">
-            <p>
-              <span className="font-medium">Etsy downloads:</span> {scoutReport.platform_suitability.etsy_downloads}
-            </p>
-            <p className="mt-1">
-              <span className="font-medium">Amazon KDP (print-on-demand):</span>{" "}
-              {scoutReport.platform_suitability.amazon_kdp_print_on_demand}
-            </p>
-          </Section>
+          {scoutReport.workspace_type === "commerce" && (
+            <>
+              <Section title="Opportunity gaps">{scoutReport.opportunity_gaps}</Section>
+              <Section title="Originality considerations">{scoutReport.originality_considerations}</Section>
 
-          <Section title="Estimated production difficulty">
-            <span className="font-semibold capitalize">{scoutReport.estimated_production_difficulty.level}</span> —{" "}
-            {scoutReport.estimated_production_difficulty.rationale}
-          </Section>
+              <Section title="Platform suitability">
+                <p>
+                  <span className="font-medium">Etsy downloads:</span>{" "}
+                  {scoutReport.platform_suitability.etsy_downloads}
+                </p>
+                <p className="mt-1">
+                  <span className="font-medium">Amazon KDP (print-on-demand):</span>{" "}
+                  {scoutReport.platform_suitability.amazon_kdp_print_on_demand}
+                </p>
+              </Section>
 
-          <Section title="Likely costs">{scoutReport.likely_costs.estimate}</Section>
+              <Section title="Estimated production difficulty">
+                <span className="font-semibold capitalize">
+                  {scoutReport.estimated_production_difficulty.level}
+                </span>{" "}
+                — {scoutReport.estimated_production_difficulty.rationale}
+              </Section>
+
+              <Section title="Likely costs">{scoutReport.likely_costs.estimate}</Section>
+
+              <Section title="Copyright / trademark concerns">
+                {scoutReport.copyright_trademark_concerns.length === 0 ? (
+                  <p className="text-hq-slate">None identified — still worth a manual check before listing.</p>
+                ) : (
+                  <ul className="list-disc space-y-1 pl-4">
+                    {scoutReport.copyright_trademark_concerns.map((c, i) => (
+                      <li key={i}>{c}</li>
+                    ))}
+                  </ul>
+                )}
+              </Section>
+            </>
+          )}
+
+          {scoutReport.workspace_type === "service_business" && (
+            <>
+              <Section title="Service delivery considerations">
+                {scoutReport.service_delivery_considerations}
+              </Section>
+              <Section title="Client retention / acquisition gaps">
+                {scoutReport.client_retention_or_acquisition_gaps}
+              </Section>
+
+              <Section title="Pricing / service model considerations">
+                <p>{scoutReport.pricing_or_service_model_considerations.summary}</p>
+                {scoutReport.pricing_or_service_model_considerations.considerations.length > 0 && (
+                  <ul className="mt-1 list-disc space-y-1 pl-4">
+                    {scoutReport.pricing_or_service_model_considerations.considerations.map((c, i) => (
+                      <li key={i}>{c}</li>
+                    ))}
+                  </ul>
+                )}
+              </Section>
+
+              <Section title="Legal, privacy &amp; advertising notes">
+                {scoutReport.regulatory_and_compliance_notes.length === 0 ? (
+                  <p className="text-hq-slate">None identified — still worth a manual check.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {scoutReport.regulatory_and_compliance_notes.map((n, i) => (
+                      <li key={i}>
+                        <span
+                          className={`mr-1 rounded px-1.5 py-0.5 text-xs font-medium ${
+                            n.source_quality === "primary_regulator"
+                              ? "bg-status-success/15 text-status-success"
+                              : "bg-status-danger/15 text-status-danger"
+                          }`}
+                        >
+                          {n.source_quality === "primary_regulator" ? "Primary regulator" : "Secondary — verify independently"}
+                        </span>
+                        {n.note}
+                        {n.source_url && (
+                          <a
+                            href={n.source_url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ml-1 text-hq-teal underline"
+                          >
+                            source
+                          </a>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Section>
+            </>
+          )}
 
           <Section title="Important risks">
             <ul className="list-disc space-y-1 pl-4">
@@ -119,18 +194,6 @@ export function MissionDetail({ detail }: { detail: MissionDetailData | null }) 
                 <li key={i}>{risk}</li>
               ))}
             </ul>
-          </Section>
-
-          <Section title="Copyright / trademark concerns">
-            {scoutReport.copyright_trademark_concerns.length === 0 ? (
-              <p className="text-hq-slate">None identified — still worth a manual check before listing.</p>
-            ) : (
-              <ul className="list-disc space-y-1 pl-4">
-                {scoutReport.copyright_trademark_concerns.map((c, i) => (
-                  <li key={i}>{c}</li>
-                ))}
-              </ul>
-            )}
           </Section>
 
           <Section title="Verified facts">

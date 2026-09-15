@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { MissionValidationError } from "@/lib/domain/missionWorkflow";
+import { ProjectValidationError } from "@/lib/domain/projectWorkflow";
 import { IllegalMissionTransitionError, MissionConcurrencyError } from "@/lib/domain/missionStates";
 import { UnauthenticatedError } from "@/lib/api/authErrors";
 
@@ -14,6 +15,9 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 401 });
   }
   if (error instanceof MissionValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof ProjectValidationError) {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }
   if (error instanceof IllegalMissionTransitionError) {

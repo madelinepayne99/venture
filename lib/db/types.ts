@@ -10,7 +10,11 @@ export type Founder = InferSelectModel<typeof schema.founders>;
 export type AgentStatus = (typeof schema.agentStatusValues)[number];
 export type Agent = InferSelectModel<typeof schema.agents>;
 export type AgentCapability = InferSelectModel<typeof schema.agentCapabilities>;
-export type Project = InferSelectModel<typeof schema.projects>;
+
+export type WorkspaceType = (typeof schema.workspaceTypeValues)[number];
+export type Project = Omit<InferSelectModel<typeof schema.projects>, "workspace_type"> & {
+  workspace_type: WorkspaceType;
+};
 
 export const MISSION_STATES = [
   "draft",

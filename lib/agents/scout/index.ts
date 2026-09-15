@@ -1,12 +1,14 @@
 import "server-only";
 import type Anthropic from "@anthropic-ai/sdk";
-import type { Mission } from "@/lib/db/types";
+import type { Mission, WorkspaceType } from "@/lib/db/types";
 import type { AgentRunOutcome } from "@/lib/agents/types";
 import { getAnthropicClient } from "@/lib/agents/anthropicClient";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import { ScoutReportSchema, type ScoutReport } from "./schema";
-import { SCOUT_SYSTEM_PROMPT, buildScoutUserPrompt } from "./prompt";
+import { buildScoutSystemPrompt, buildScoutUserPrompt } from "./prompt";
 import { findGuaranteeLanguage, hasMeaningfulEvidence } from "./guardrails";
+
+const DEFAULT_WORKSPACE_TYPE: WorkspaceType = "commerce";
 
 export const SCOUT_MODEL = process.env.SCOUT_MODEL || "claude-sonnet-5";
 // Sonnet 5 is the deliberate default: Scout runs frequently on ordinary
@@ -61,6 +63,8 @@ export class ScoutResearchError extends Error {
 
 interface ScoutDeps {
   client?: Anthropic;
+  /** Defaults to "commerce" — the workspace type that existed before workspaces did. */
+  workspaceType?: WorkspaceType;
 }
 
 function extractRawText(content: Anthropic.Message["content"]): string {
@@ -260,6 +264,7 @@ function buildEvidence(report: ScoutReport): AgentRunOutcome<ScoutReport>["evide
 
 interface RecoveryParams {
   client: Anthropic;
+  workspaceType: WorkspaceType;
   messages: Anthropic.MessageParam[];
   partialText: string;
   accumulate: (inputTokens: number, outputTokens: number) => void;
@@ -285,7 +290,7 @@ interface RecoveryParams {
  * which is unconditional on outcome).
  */
 async function attemptBoundedRecovery(params: RecoveryParams): Promise<string> {
-  const { client, messages, partialText, accumulate, usageSoFar } = params;
+  const { client, workspaceType, messages, partialText, accumulate, usageSoFar } = params;
 
   const salvage = partialText.trim().slice(0, 4000);
   const recoveryMessages: Anthropic.MessageParam[] = [
@@ -308,7 +313,7 @@ async function attemptBoundedRecovery(params: RecoveryParams): Promise<string> {
     model: SCOUT_MODEL,
     max_tokens: RECOVERY_MAX_TOKENS,
     thinking: THINKING_DISABLED,
-    system: SCOUT_SYSTEM_PROMPT,
+    system: buildScoutSystemPrompt(workspaceType),
     messages: recoveryMessages,
   });
 
@@ -342,9 +347,11 @@ export async function runScoutResearch(
   deps: ScoutDeps = {},
 ): Promise<AgentRunOutcome<ScoutReport>> {
   const client = deps.client ?? getAnthropicClient();
+  const workspaceType = deps.workspaceType ?? DEFAULT_WORKSPACE_TYPE;
+  const systemPrompt = buildScoutSystemPrompt(workspaceType);
 
   const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: buildScoutUserPrompt(mission) },
+    { role: "user", content: buildScoutUserPrompt(mission, workspaceType) },
   ];
 
   let totalInputTokens = 0;
@@ -362,7 +369,7 @@ export async function runScoutResearch(
       model: SCOUT_MODEL,
       max_tokens: MAX_TOKENS,
       thinking: THINKING_DISABLED,
-      system: SCOUT_SYSTEM_PROMPT,
+      system: systemPrompt,
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 6 }],
       messages,
     });
@@ -396,6 +403,7 @@ export async function runScoutResearch(
   if (response.stop_reason === "max_tokens") {
     rawText = await attemptBoundedRecovery({
       client,
+      workspaceType,
       messages,
       partialText: rawText,
       accumulate: (inputTokens, outputTokens) => {
@@ -406,7 +414,22 @@ export async function runScoutResearch(
     });
   }
 
-  const report = applyGuardrails(parseAndValidateReport(rawText, usageSoFar));
+  const parsedReport = parseAndValidateReport(rawText, usageSoFar);
+
+  // Structural check, independent of the prompt: the schema only proves the
+  // report is SOME valid workspace shape, not that it's the shape actually
+  // requested — a mismatch here would otherwise render as a Commerce report
+  // for a Service Business mission (or vice versa) rather than failing
+  // loudly. This is what makes "stop Etsy/KDP sections appearing on the
+  // wrong workspace" an enforced guarantee rather than just a prompt hope.
+  if (parsedReport.workspace_type !== workspaceType) {
+    throw new ScoutResearchError(
+      `Scout's report was built for the wrong workspace type (expected "${workspaceType}", got "${parsedReport.workspace_type}").`,
+      usageSoFar(),
+    );
+  }
+
+  const report = applyGuardrails(parsedReport);
 
   const usdCost = calculateUsdCost(SCOUT_MODEL, {
     input_tokens: totalInputTokens,

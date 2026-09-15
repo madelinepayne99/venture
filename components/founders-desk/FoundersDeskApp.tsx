@@ -1,13 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Agent, LedgerEntry, Mission } from "@/lib/db/types";
+import type { Agent, LedgerEntry, Mission, Project, WorkspaceType } from "@/lib/db/types";
 import { signOutAction } from "@/lib/auth/actions";
 import { StatusBadge } from "./StatusBadge";
 import { MissionForm } from "./MissionForm";
 import { MissionDetail, type MissionDetailData } from "./MissionDetail";
 import { AgentRoster } from "./AgentRoster";
 import { Ledger } from "./Ledger";
+import { WorkspacePanel } from "./WorkspacePanel";
 
 interface Props {
   signedInFounderName: string;
@@ -15,6 +16,7 @@ interface Props {
   initialMissions: Mission[];
   initialLedgerEntries: LedgerEntry[];
   initialLedgerTotal: number;
+  initialProjects: Project[];
 }
 
 const POLLING_STATES = new Set(["queued", "researching"]);
@@ -26,11 +28,13 @@ export function FoundersDeskApp({
   initialMissions,
   initialLedgerEntries,
   initialLedgerTotal,
+  initialProjects,
 }: Props) {
   const [agents] = useState(initialAgents);
   const [missions, setMissions] = useState(initialMissions);
   const [ledgerEntries, setLedgerEntries] = useState(initialLedgerEntries);
   const [ledgerTotal, setLedgerTotal] = useState(initialLedgerTotal);
+  const [projects, setProjects] = useState(initialProjects);
   const [selectedMissionId, setSelectedMissionId] = useState<string | null>(null);
   const [missionDetail, setMissionDetail] = useState<MissionDetailData | null>(null);
   const [busyMissionId, setBusyMissionId] = useState<string | null>(null);
@@ -47,6 +51,12 @@ export function FoundersDeskApp({
     const data = await res.json();
     setLedgerEntries(data.entries);
     setLedgerTotal(data.totalUsd);
+  }
+
+  async function refreshProjects() {
+    const res = await fetch("/api/projects");
+    const data = await res.json();
+    setProjects(data.projects);
   }
 
   async function loadDetail(missionId: string) {
@@ -77,12 +87,12 @@ export function FoundersDeskApp({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [missions, selectedMissionId, missionDetail?.mission.state]);
 
-  async function handleCreate(title: string, brief: string) {
+  async function handleCreate(title: string, brief: string, projectId: string) {
     setError(null);
     const res = await fetch("/api/missions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title, brief }),
+      body: JSON.stringify({ title, brief, projectId }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -91,6 +101,21 @@ export function FoundersDeskApp({
     }
     await refreshMissions();
     await loadDetail(data.mission.id);
+  }
+
+  async function handleCreateWorkspace(name: string, workspaceType: WorkspaceType) {
+    setError(null);
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, workspaceType }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setError(data.error ?? "Could not create the workspace.");
+      return;
+    }
+    await refreshProjects();
   }
 
   async function handleApprove(missionId: string) {
@@ -172,13 +197,15 @@ export function FoundersDeskApp({
         </aside>
 
         <section className="space-y-6">
+          <WorkspacePanel projects={projects} onCreate={handleCreateWorkspace} />
+
           <div className="rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">
             <h2 className="font-display text-lg font-semibold text-hq-ink">Create a mission</h2>
             <p className="mt-1 text-sm text-hq-slate">
               Give Scout a brief. It will come back with an honest, evidence-labeled research
               report — never a guaranteed outcome.
             </p>
-            <MissionForm onSubmit={handleCreate} />
+            <MissionForm projects={projects} onSubmit={handleCreate} />
           </div>
 
           <div className="rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">

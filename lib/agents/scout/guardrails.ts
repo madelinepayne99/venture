@@ -14,40 +14,53 @@ const BANNED_PATTERNS: RegExp[] = [
   /\b(100%|guaranteed) (profit|return|success)\b/i,
 ];
 
-const SCANNED_TEXT_FIELDS: Array<keyof ScoutReport> = [
-  "evidence_of_demand",
-  "opportunity_gaps",
-  "originality_considerations",
-  "verdict_rationale",
-];
+// Fields present on every workspace's report (see the shared core in
+// schema.ts) — scanned regardless of workspace_type.
+const CORE_SCANNED_TEXT_FIELDS = ["evidence_of_demand", "verdict_rationale"] as const;
 
 export interface GuardrailViolation {
   field: string;
   matchedText: string;
 }
 
+function scanField(violations: GuardrailViolation[], field: string, value: unknown): void {
+  if (typeof value !== "string") return;
+  for (const pattern of BANNED_PATTERNS) {
+    const match = value.match(pattern);
+    if (match) {
+      violations.push({ field, matchedText: match[0] });
+    }
+  }
+}
+
+/**
+ * Workspace-specific free-text fields to scan, beyond the shared core
+ * above — kept in one place so adding a new workspace type only means
+ * adding one branch here, not hunting for every scan site.
+ */
 export function findGuaranteeLanguage(report: ScoutReport): GuardrailViolation[] {
   const violations: GuardrailViolation[] = [];
 
-  for (const field of SCANNED_TEXT_FIELDS) {
-    const value = report[field];
-    if (typeof value !== "string") continue;
-    for (const pattern of BANNED_PATTERNS) {
-      const match = value.match(pattern);
-      if (match) {
-        violations.push({ field, matchedText: match[0] });
-      }
-    }
+  for (const field of CORE_SCANNED_TEXT_FIELDS) {
+    scanField(violations, field, report[field]);
   }
 
-  const costEstimate = report.likely_costs?.estimate;
-  if (typeof costEstimate === "string") {
-    for (const pattern of BANNED_PATTERNS) {
-      const match = costEstimate.match(pattern);
-      if (match) {
-        violations.push({ field: "likely_costs.estimate", matchedText: match[0] });
-      }
-    }
+  if (report.workspace_type === "commerce") {
+    scanField(violations, "opportunity_gaps", report.opportunity_gaps);
+    scanField(violations, "originality_considerations", report.originality_considerations);
+    scanField(violations, "likely_costs.estimate", report.likely_costs?.estimate);
+  } else {
+    scanField(violations, "service_delivery_considerations", report.service_delivery_considerations);
+    scanField(
+      violations,
+      "client_retention_or_acquisition_gaps",
+      report.client_retention_or_acquisition_gaps,
+    );
+    scanField(
+      violations,
+      "pricing_or_service_model_considerations.summary",
+      report.pricing_or_service_model_considerations?.summary,
+    );
   }
 
   return violations;

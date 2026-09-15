@@ -99,6 +99,11 @@ async function seed(instance: Db) {
       description:
         "Researching, creating, launching, and promoting digital products — no physical packing or posting.",
       platform_focus: "etsy,amazon-kdp",
+      // Explicit, not just relying on the column default — this is the
+      // original workspace and must never be silently repurposed to a
+      // different workspace_type (it already has completed Commerce
+      // missions attached).
+      workspace_type: "commerce",
     });
   }
 }

@@ -1,8 +1,9 @@
 import "server-only";
-import type { Mission, MissionStage, MissionState, ScoutVerdict } from "@/lib/db/types";
+import type { Mission, MissionStage, MissionState, ScoutVerdict, WorkspaceType } from "@/lib/db/types";
 import {
   createMission,
   getMission,
+  getProject,
   transitionMissionState,
   recordApproval,
   recordActivity,
@@ -175,6 +176,19 @@ function nextStateForVerdict(verdict: ScoutVerdict): MissionState {
 }
 
 /**
+ * A mission's workspace is derived from its project, not stored on the
+ * mission itself — a mission with no project (or whose project somehow no
+ * longer exists) defaults to "commerce", the workspace type that existed
+ * before workspaces did. This is the only place that resolution happens,
+ * so Scout is never dispatched without knowing which report shape to use.
+ */
+async function resolveWorkspaceType(mission: Mission): Promise<WorkspaceType> {
+  if (!mission.project_id) return "commerce";
+  const project = await getProject(mission.project_id);
+  return project?.workspace_type ?? "commerce";
+}
+
+/**
  * Runs Scout's research and settles the mission. Called from the Inngest
  * job (lib/jobs/scoutResearchJob.ts), not directly from an HTTP request —
  * see approveMission, which only dispatches the event.
@@ -228,7 +242,8 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
   }
 
   try {
-    const outcome = await runScoutResearch(mission);
+    const workspaceType = await resolveWorkspaceType(mission);
+    const outcome = await runScoutResearch(mission, { workspaceType });
 
     // Re-check reality right before settling — the mission may have been
     // cancelled (or otherwise moved) while that call was in flight. The
