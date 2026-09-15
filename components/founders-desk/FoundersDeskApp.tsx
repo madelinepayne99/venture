@@ -97,7 +97,6 @@ export function FoundersDeskApp({
     writeLocalStorage(ACTIVE_PROJECT_STORAGE_KEY, projectId);
   }
 
-  const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
   const visibleMissions = missions.filter((m) => m.project_id === activeProjectId);
 
   async function refreshMissions() {
@@ -294,10 +293,11 @@ export function FoundersDeskApp({
       {viewMode === "hq" ? (
         <>
           <HQView
-            activeProject={activeProject}
+            projects={projects}
+            activeProjectId={activeProjectId}
             founders={founders}
             signedInFounderName={signedInFounderName}
-            missions={visibleMissions}
+            missions={missions}
             selectedMissionId={selectedMissionId}
             onSelectMission={loadDetail}
           />

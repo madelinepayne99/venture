@@ -2,10 +2,18 @@
 
 import type { Project, WorkspaceType } from "@/lib/db/types";
 
-const REAL_WORKSPACE_TYPES: Array<{ type: WorkspaceType; label: string; blurb: string }> = [
+export const REAL_WORKSPACE_TYPES: Array<{ type: WorkspaceType; label: string; blurb: string }> = [
   { type: "commerce", label: "Commerce", blurb: "Etsy downloads & Amazon KDP" },
   { type: "service_business", label: "Local Services", blurb: "Hairdressers, garages & similar" },
 ];
+
+/** The one place "most recent workspace of a type" is decided — shared by
+ * this bar's own selection target and by HQView's office carousel, so the
+ * two can never disagree about which project a workspace type resolves to. */
+export function mostRecentProjectOfType(projects: Project[], type: WorkspaceType): Project | null {
+  const matches = projects.filter((p) => p.workspace_type === type);
+  return matches.length > 0 ? matches[matches.length - 1]! : null;
+}
 
 // Named here, in the UI only — these are not real workspace_type values
 // (see lib/db/schema.ts's workspaceTypeValues) and have no project, no
@@ -51,7 +59,7 @@ export function WorkspaceBar({
           );
         }
 
-        const mostRecent = projectsOfType[projectsOfType.length - 1]!;
+        const mostRecent = mostRecentProjectOfType(projects, type)!;
 
         return (
           <button

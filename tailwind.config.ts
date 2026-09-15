@@ -39,6 +39,30 @@ export default {
       boxShadow: {
         desk: "0 1px 2px rgba(32,38,43,0.06), 0 8px 24px rgba(32,38,43,0.08)",
       },
+      // Named, reusable motion primitives for the HQ office scene — a
+      // future cosmetic skin can reuse these same three animations on
+      // different art without redefining any keyframes. Always used
+      // behind the `motion-safe:` variant at the call site so reduced-
+      // motion preferences are respected automatically.
+      keyframes: {
+        "hq-breathe": {
+          "0%, 100%": { transform: "scaleY(1)" },
+          "50%": { transform: "scaleY(1.015)" },
+        },
+        "hq-glow": {
+          "0%, 100%": { opacity: "0.55" },
+          "50%": { opacity: "0.95" },
+        },
+        "hq-bob": {
+          "0%, 100%": { transform: "translateY(0)" },
+          "50%": { transform: "translateY(-2px)" },
+        },
+      },
+      animation: {
+        "hq-breathe": "hq-breathe 6s ease-in-out infinite",
+        "hq-glow": "hq-glow 1.8s ease-in-out infinite",
+        "hq-bob": "hq-bob 1s ease-in-out infinite",
+      },
     },
   },
   plugins: [],

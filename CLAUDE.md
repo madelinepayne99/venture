@@ -182,14 +182,15 @@ touches the schema, Scout's prompts or guardrails, the approval gate,
 cost recording, or authentication.
 
 - **Two views of one dataset, not two apps.** A founder can toggle
-  between **HQ View** (a stylised 2D high-rise office scene — founder
-  desks, Scout as a worker bot, a bottom mission dock) and **Focus View**
-  (the original clean dashboard layout). Both read the same `missions`,
-  `projects`, `agents`, and `ledger_entries` state and call the exact same
-  handlers (`components/founders-desk/FoundersDeskApp.tsx` owns all state
-  and data-fetching; `FocusView.tsx` and `hq/HQView.tsx` are pure
-  presentation over it). The toggle changes rendering only — it cannot
-  change what data is fetched or what a founder is allowed to do.
+  between **HQ View** (a stylised 2D office scene — founder desks, Scout
+  as a worker bot, a wall mission board; see Milestone 4.1 for its visual
+  design) and **Focus View** (the original clean dashboard layout). Both
+  read the same `missions`, `projects`, `agents`, and `ledger_entries`
+  state and call the exact same handlers
+  (`components/founders-desk/FoundersDeskApp.tsx` owns all state and
+  data-fetching; `FocusView.tsx` and `hq/HQView.tsx` are pure presentation
+  over it). The toggle changes rendering only — it cannot change what
+  data is fetched or what a founder is allowed to do.
 - **View mode and the active workspace are localStorage-only, client-side
   preferences** (`FoundersDeskApp.tsx`'s `readLocalStorage`/
   `writeLocalStorage`), read after mount specifically to avoid a
@@ -207,27 +208,72 @@ cost recording, or authentication.
   piece of domain logic: a pure, unit-tested function mapping each of the
   9 real mission states onto one of 6 compact dock buckets (Draft /
   Awaiting approval / Researching / Awaiting evidence / Completed /
-  Failed) for the HQ view's bottom dock (`hq/MissionDock.tsx`). No state
-  is invented or dropped — every real state maps to exactly one bucket —
-  and the grouping rationale (e.g. `queued` and `researching` both read
-  as "Scout is working") is documented alongside the mapping and directly
-  exercised by tests in `tests/missionStateMachine.test.ts`.
-- **Scout's worker-bot desk** (`hq/ScoutDesk.tsx`) only ever shows as
-  "working" when a real mission in the active workspace has
-  `state === "researching"` — found the same way the existing polling
-  logic already does, not a new signal. Idle means idle; there is no
-  invented animation for queued-but-not-started or any other state.
-- **Founder desks** (`hq/FounderDesk.tsx`) are a tasteful, generic
-  initial-in-circle avatar over a nameplate, driven by the real
-  `founders` table (`listFounders`, newly passed into `FoundersDeskApp`
-  from `app/page.tsx` alongside the data it already fetched) — no photo
-  upload or cosmetic system was built for Version 1, as scoped.
+  Failed) for the HQ view's mission board (`hq/MissionBoard.tsx`). No
+  state is invented or dropped — every real state maps to exactly one
+  bucket — and the grouping rationale (e.g. `queued` and `researching`
+  both read as "Scout is working") is documented alongside the mapping
+  and directly exercised by tests in `tests/missionStateMachine.test.ts`.
+- **Founders** are driven by the real `founders` table (`listFounders`,
+  passed into `FoundersDeskApp` from `app/page.tsx` alongside the data it
+  already fetched) — no photo upload or cosmetic system was built for
+  Version 1, as scoped.
 - **The mission slide-out panel** (`hq/MissionSlideOver.tsx`) wraps the
   existing `MissionDetail` component unchanged and adds the same
   Approve/Cancel actions Focus View's mission list already exposes,
   reusing `isCancellable` from `missionStates.ts` rather than duplicating
   its state list. It shows the same real mission detail, evidence, and
   cost either view would show — nothing new is computed for it.
+
+**Milestone 4.1: HQ View reworked into a dollhouse office scene.** The
+first HQ View (flat icons in squares on a mostly empty background) read
+as an empty dashboard, not a place — this milestone replaced its visual
+and component layer without touching the real data or interaction
+contract above (Scout still only ever "works" when a real mission is
+`researching`, the slide-over still shows the same real mission detail,
+`missionDockBucket`'s grouping is unchanged). `hq/FounderDesk.tsx`,
+`hq/ScoutDesk.tsx`, and `hq/MissionDock.tsx` were deleted outright rather
+than kept alongside their replacements — this is a rework, not a second
+UI layered on top.
+
+- **`hq/RoomBackdrop.tsx`** is a purely decorative SVG "cutaway" room —
+  a back wall, two windows onto an abstract (never literal or
+  copyrighted) skyline, a floor with a slight front-facing trapezoid for
+  depth, plants, a wall-mounted flourish (a strategy chart for Commerce, a
+  clock for Local Services), and a low back console — parameterized only
+  by `workspace_type`. A future cosmetic skin only needs to extend or
+  swap its `ROOM_PALETTES` map, not rebuild the room.
+- **`hq/Worker.tsx`** replaces both `FounderDesk` and `ScoutDesk` with one
+  component: a character sitting at a desk with a chair, monitor, and
+  (for Scout) a small robot head. `isWorking` — driven by nothing but a
+  real mission's `state === "researching"`, exactly as before — controls
+  only the monitor's glow and a small hand-typing wiggle; a slow,
+  ever-present "breathing" scale on the character reads as "someone is
+  here" rather than as an activity signal. Every animation is a named
+  Tailwind utility (`animate-hq-breathe` / `-glow` / `-bob`, added to
+  `tailwind.config.ts`) used behind the `motion-safe:` variant, so
+  `prefers-reduced-motion` removes all of it automatically — the working
+  state itself (bright screen, present dot) still reads without any
+  animation.
+- **`hq/Room.tsx`** composes one office suite: the backdrop, a founder
+  `Worker` per real founder plus Scout's, and `hq/MissionBoard.tsx`
+  (the same `missionDockBucket` grouping restyled as a corkboard of
+  pinned cards rather than a plain dock row — same real missions, same
+  click behavior).
+- **`hq/HQView.tsx`** is now a small carousel: one `Room` per real
+  workspace type that already has a project (via
+  `hq/WorkspaceBar.tsx`'s exported `mostRecentProjectOfType` — the same
+  "most recent project of a type" resolution the workspace bar itself
+  uses, so the two can never disagree about which project a type means).
+  Switching workspaces slides the strip via a CSS `transform: translateX`
+  transition (skipped under `prefers-reduced-motion`) instead of swapping
+  a flat panel. The off-screen room during a slide is still mounted (so
+  the slide animates smoothly) but is `aria-hidden` and has its
+  interactive elements' `tabIndex` set to `-1` via a `interactive` prop
+  threaded through `Room` → `Worker`/`MissionBoard`, so it's reachable by
+  neither screen readers nor keyboard tab order until it becomes active.
+  A workspace type with no project yet (nothing created there) simply
+  gets no room — same "must not pretend to have agents" rule the
+  workspace bar already followed, now applied to the office view too.
 
 ## Architecture
 
