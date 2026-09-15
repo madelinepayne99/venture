@@ -66,14 +66,30 @@ export function fakeAnthropicMessage(report: unknown, overrides: Partial<Anthrop
 export function fakeAnthropicClient(
   responses: Array<ReturnType<typeof fakeAnthropicMessage>>,
 ): Anthropic {
+  return fakeAnthropicClientWithCalls(responses).client;
+}
+
+/**
+ * Same canned-response behavior as fakeAnthropicClient, but also records the
+ * params passed to every messages.create call — for tests that need to
+ * assert something about a *specific* call (e.g. that a bounded recovery
+ * call never receives `tools`, keeping it unable to trigger new search
+ * spend), not just its return value.
+ */
+export function fakeAnthropicClientWithCalls(
+  responses: Array<ReturnType<typeof fakeAnthropicMessage>>,
+): { client: Anthropic; calls: unknown[] } {
+  const calls: unknown[] = [];
   let call = 0;
-  return {
+  const client = {
     messages: {
-      create: async () => {
+      create: async (params: unknown) => {
+        calls.push(params);
         const response = responses[Math.min(call, responses.length - 1)];
         call += 1;
         return response;
       },
     },
   } as unknown as Anthropic;
+  return { client, calls };
 }

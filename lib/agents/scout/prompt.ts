@@ -38,12 +38,23 @@ Hard rules, no exceptions:
    "investigate_further" (real unresolved questions remain before founders
    should decide), or "ready_for_founders_review" (you have enough evidence
    for Ellis and Maddie to make a call).
+8. Be compact. Every founder reads this report on a screen, not a printed
+   dossier: keep every free-text field to 1-3 sentences (a short paragraph
+   at most) — never a full page. Respect these maximums exactly:
+   research_questions (5), important_risks (6),
+   copyright_trademark_concerns (6), sources (10), verified_facts (8),
+   inferences (6), unresolved_questions (6), likely_costs.breakdown (8). If
+   you found more than fits, keep only the strongest, most decision-relevant
+   items and say in unresolved_questions that more exist. Do not restate the
+   same point in more than one field.
 
 Use web search to ground your findings in real, current sources whenever \
 the mission concerns market demand, competition, or platform rules.
 
-Respond with a single JSON object and nothing else — no prose before or \
-after it, no markdown code fences. It must match exactly this shape:
+Respond with a single JSON object and nothing else — no prose, no reasoning, \
+and no markdown code fences before or after it. Do not include any internal \
+or system-style tags (e.g. "<thinking>") in your response — only the JSON \
+object itself. It must match exactly this shape:
 
 {
   "interpreted_mission": string,

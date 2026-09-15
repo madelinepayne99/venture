@@ -67,6 +67,30 @@ contained. Initially both founders sign in through **one shared GitHub
 account** (only one `founders.email` row is configured); Maddie's own
 separate account can be added later with no code change at all.
 
+**Milestone 2.2: fixed a real, live truncation bug in Scout's output.**
+After the first live Anthropic API runs (the first time this codebase's
+Scout code path had ever been exercised against the real model — see
+"Local verification vs. a real deployment"), two genuinely focused
+missions both failed with "Scout's report was cut off before it finished."
+Root cause: every call to the model left `thinking` unset, and on this
+model that runs Claude's adaptive extended thinking *by default* — those
+thinking tokens are generated from inside the same fixed `max_tokens`
+ceiling as the visible response, not on top of it. Scout's job is a single
+structured synthesis-and-formatting pass, not open-ended agentic
+reasoning, so an invisible, uncontrolled thinking pass had no business
+silently consuming an unpredictable share of the budget meant for the
+JSON report itself. The fix (see `lib/agents/scout/index.ts` and
+`schema.ts` below) is deliberately not "give it more room and hope": it
+disables thinking explicitly (safe here specifically because Scout has no
+client-defined tools), tightens the report format itself (array-length
+caps in the schema, a compactness rule in the prompt), raises the token
+ceiling only modestly as a bounded safety margin, and adds exactly one
+bounded, tools-off recovery attempt for the rare case a report is still
+cut off — never unbounded retries, never silently dropped cost. See
+Agents → `index.ts` below for the full mechanism, and "Local verification
+vs. a real deployment" for what this means for real-run cost going
+forward.
+
 Before that: a first round of correctness fixes (same infrastructure, no
 new dependencies) made every mission-state change go through
 `transitionMissionState`, an atomic conditional database update (`UPDATE
@@ -241,8 +265,18 @@ described below.
     against this schema — a response that doesn't match fails loudly
     instead of getting displayed anyway. Swap in real structured-output
     enforcement if/when the SDK supports it; the schema itself doesn't
-    need to change.
-  - `prompt.ts` — the system prompt, including the safety rules below.
+    need to change. Every array field also carries a generous but real
+    `.max()` cap (e.g. `sources` ≤10, `verified_facts` ≤8) — a structural
+    compactness guarantee, not just prompt guidance, that keeps an
+    unbounded enumeration from blowing up how long a report needs to be to
+    finish (see Milestone 2.2). The caps are deliberately loose enough that
+    `hasMeaningfulEvidence` in `guardrails.ts` (which only ever needs one
+    verified fact) can never be starved by them.
+  - `prompt.ts` — the system prompt, including the safety rules below and
+    an explicit compactness rule (1-3 sentences per free-text field, hard
+    maximums on every array, matching the schema's `.max()` caps) added in
+    Milestone 2.2 alongside an instruction not to leak any internal/system
+    tags into the response.
   - `guardrails.ts` — code-level checks independent of the prompt, run
     after parsing: `findGuaranteeLanguage` scans Scout's free-text fields
     for guaranteed-outcome language, and `hasMeaningfulEvidence` is a
@@ -257,7 +291,31 @@ described below.
     API with the `web_search` server tool, handles `pause_turn` by
     resuming rather than truncating, and throws a `ScoutResearchError`
     carrying partial token usage on any failure so the caller can still
-    record real cost for a failed run.
+    record real cost for a failed run. Every call explicitly sets
+    `thinking: { type: "disabled" }` (see Milestone 2.2 — an unset
+    `thinking` runs adaptive extended thinking by default on this model,
+    generated from inside the same `max_tokens` ceiling as the visible
+    report, which is what was causing real truncation failures; disabling
+    it is safe here specifically because Scout has no client-defined tools,
+    only the server-executed `web_search` tool). `MAX_TOKENS` is 10,000 (up
+    from 8,000, a bounded safety margin, not the primary fix).
+    If a response still comes back with `stop_reason: "max_tokens"`,
+    `attemptBoundedRecovery` makes **exactly one** additional call — never
+    more — asking Scout to redo the same report compactly, informed by
+    (not literally continuing) the partial output already produced;
+    Anthropic's current API rejects assistant-message prefill on this
+    model, so token-level continuation of a truncated response isn't a
+    technically available option, which is why recovery is a fresh bounded
+    request rather than a resume. That request deliberately omits `tools`
+    entirely, so it can never trigger a new web search or any further
+    research spend beyond the one bounded completion. Its real token usage
+    is folded into the run's total either way — on success **and** on
+    failure — so cost is never dropped or under-recorded just because a
+    recovery attempt didn't produce a usable report. If the recovery
+    attempt is also cut off, refused, or otherwise fails, `runScoutResearch`
+    throws a distinct, clearly-worded `ScoutResearchError` (still carrying
+    the full combined usage of both attempts) rather than pretending
+    success or retrying further.
   - `client` is injectable (`{ client }` on `runScoutResearch`) precisely
     so tests never make a real network call.
 - **`lib/agents/anthropicClient.ts`** is the only file that reads
@@ -374,7 +432,7 @@ Never hand-edit a already-generated migration or the database directly.
 
 ## Testing
 
-`npm test` (Vitest, 72 tests) runs against a **real local Postgres
+`npm test` (Vitest, 76 tests) runs against a **real local Postgres
 database** (see "Local verification vs. a real deployment" below) — there
 is no more in-memory/SQLite test mode. `vitest.config.ts` sets
 `DATABASE_URL`/`AUTH_SECRET` via `test.env` (applied before any module
@@ -407,10 +465,15 @@ route gate that backs `middleware.ts` (`lib/auth/routeGate.ts` —
 signed-out visitors redirected to `/login`, an already-authenticated
 founder sent from `/login` to `/` instead of re-shown the sign-in form,
 signed-out API requests refused with 401 rather than a redirect,
-`/api/auth/**` and `/api/inngest` always left ungated), the founders'
-approval gate (including a mission that tries to skip it), secret
-protection, cost/ledger recording, and the fabricated-completion-state
-checks described above.
+`/api/auth/**` and `/api/inngest` always left ungated), Scout's bounded
+truncation-recovery path (Milestone 2.2 — a cut-off report recovered by
+exactly one compact, tools-off retry with combined real usage recorded;
+a retry that's also cut off, refused, or otherwise fails to complete
+throwing a distinct clear error while still carrying both attempts' real
+usage; the recovery call never receiving `tools`, so it can never trigger
+new search spend), the founders' approval gate (including a mission that
+tries to skip it), secret protection, cost/ledger recording, and the
+fabricated-completion-state checks described above.
 
 Tests never call the real Anthropic API (`runScoutResearch` takes an
 injectable client, `lib/agents/scout` is mocked at the module level for
@@ -445,9 +508,27 @@ against a simulated job runner:
   oversight. (The provider was originally Google, then swapped to GitHub
   — see Milestone 2.1 — but neither provider's live sign-in flow has ever
   been exercised; no external OAuth app of either kind has been created.)
-- No `ANTHROPIC_API_KEY` has been available in any session that has
-  worked on this codebase — Scout's behavior against the real Claude API
-  has never been exercised live.
+- Scout has since been exercised against the real Claude API in live use
+  (not from within this development sandbox, which has still never held an
+  `ANTHROPIC_API_KEY`) — the first two such runs failed with a genuine
+  truncation bug, diagnosed and fixed in Milestone 2.2 above. That fix
+  itself has only been verified against a mocked client (see Testing
+  above); it has not yet been re-exercised against the real API. Per-run
+  cost is still real and still uncapped by anything in this codebase — the
+  Anthropic Console's own spend limit is the only actual backstop, not
+  application logic here.
+  **Worst-case ceiling for one Scout run, post-fix:** up to `MAX_ITERATIONS`
+  (4) main-loop calls plus at most one bounded recovery call, each capped
+  at `MAX_TOKENS` (10,000) output tokens with thinking disabled — a
+  theoretical maximum of 50,000 output tokens (≈$0.50 at Sonnet 5's output
+  rate) plus input tokens (system prompt, search results, growing
+  conversation history — harder to bound precisely, but the recovery call
+  specifically adds none, since it omits `tools` and carries only a short
+  extra instruction). This ceiling is rarely approached in practice —
+  disabling thinking and capping the report's arrays should make most
+  focused missions complete well under $1 total, not because of a new
+  application-level cap (there isn't one) but because the failure mode
+  that was inflating cost and reliability is what got fixed.
 
 **Nothing has been deployed. No GitHub OAuth App, Inngest Cloud, or Vercel
 account has been created or connected.** (A real Neon Postgres project

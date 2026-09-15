@@ -18,11 +18,22 @@ export const ScoutFactSchema = z.object({
   source_url: z.string().nullable().describe("The source this fact is grounded in, or null only for general, uncontestable background knowledge."),
 });
 
+// Array-length caps below are a structural compactness guarantee, not just
+// prompt guidance — see prompt.ts's matching compactness rule. They exist so
+// an unbounded enumeration (a model deciding to list 40 "sources" or 30
+// "risks") can't by itself blow up the length of a report — that's part of
+// what was leaving genuinely-focused missions without enough max_tokens
+// budget left to *finish* the report (see the comment on MAX_TOKENS in
+// scout/index.ts for the full diagnosis). Caps are deliberately generous
+// relative to the prompt's own compact targets, so a genuinely
+// evidence-rich report is never blocked by this — hasMeaningfulEvidence in
+// guardrails.ts only ever needs one verified fact, so none of these caps
+// can starve that check.
 export const ScoutReportSchema = z.object({
   interpreted_mission: z
     .string()
     .describe("Scout's restatement of what the founder actually asked for."),
-  research_questions: z.array(z.string()).min(1),
+  research_questions: z.array(z.string()).min(1).max(5),
   potential_customer: z.string(),
   evidence_of_demand: z
     .string()
@@ -43,19 +54,21 @@ export const ScoutReportSchema = z.object({
   }),
   likely_costs: z.object({
     estimate: z.string().describe("A hedged cost estimate — never a guaranteed figure."),
-    breakdown: z.array(z.string()).default([]),
+    breakdown: z.array(z.string()).max(8).default([]),
   }),
-  important_risks: z.array(z.string()).min(1),
+  important_risks: z.array(z.string()).min(1).max(6),
   copyright_trademark_concerns: z
     .array(z.string())
+    .max(6)
     .describe("Concerns requiring further legal/compliance checks before any listing is created. Empty array only if genuinely none identified."),
-  sources: z.array(ScoutSourceSchema).default([]),
-  verified_facts: z.array(ScoutFactSchema).default([]),
+  sources: z.array(ScoutSourceSchema).max(10).default([]),
+  verified_facts: z.array(ScoutFactSchema).max(8).default([]),
   inferences: z
     .array(z.string())
+    .max(6)
     .default([])
     .describe("Scout's own reasoning or judgment calls, clearly separate from verified_facts."),
-  unresolved_questions: z.array(z.string()).default([]),
+  unresolved_questions: z.array(z.string()).max(6).default([]),
   recommended_next_action: z.string(),
   verdict: ScoutVerdictSchema,
   verdict_rationale: z.string(),

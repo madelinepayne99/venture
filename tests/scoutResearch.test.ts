@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
 import type { Mission } from "@/lib/db/types";
-import { fakeAnthropicClient, fakeAnthropicMessage, makeScoutReport } from "./testUtils";
+import {
+  fakeAnthropicClient,
+  fakeAnthropicClientWithCalls,
+  fakeAnthropicMessage,
+  makeScoutReport,
+} from "./testUtils";
 
 function makeMission(overrides: Partial<Mission> = {}): Mission {
   return {
@@ -207,5 +212,90 @@ describe("runScoutResearch — failure handling", () => {
     ]);
 
     await expect(runScoutResearch(makeMission(), { client })).rejects.toThrow(/declined/i);
+  });
+});
+
+describe("runScoutResearch — truncation and bounded recovery", () => {
+  function truncatedResponse(text = '{"interpreted_mission": "truncated mid-wa') {
+    return fakeAnthropicMessage(null, {
+      stop_reason: "max_tokens",
+      content: [{ type: "text", text, citations: null }],
+    });
+  }
+
+  it("treats a cut-off report as recoverable rather than an immediate failure, and completes via one bounded compact retry", async () => {
+    const report = makeScoutReport();
+    const { client, calls } = fakeAnthropicClientWithCalls([
+      truncatedResponse(),
+      fakeAnthropicMessage(report), // the compact retry succeeds
+    ]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+    // Exactly one extra call was made — the original attempt plus one
+    // bounded recovery, never more.
+    expect(calls).toHaveLength(2);
+    // Real cost from BOTH calls is recorded, not just the successful one.
+    expect(outcome.usage.inputTokens).toBe(2000);
+    expect(outcome.usage.outputTokens).toBe(1000);
+    expect(outcome.usage.usdCost).toBeGreaterThan(0);
+  });
+
+  it("keeps the recovery call tightly bounded — no tools, so it can never trigger new search spend", async () => {
+    const report = makeScoutReport();
+    const { client, calls } = fakeAnthropicClientWithCalls([
+      truncatedResponse(),
+      fakeAnthropicMessage(report),
+    ]);
+
+    await runScoutResearch(makeMission(), { client });
+
+    expect(calls).toHaveLength(2);
+    const recoveryCall = calls[1] as Record<string, unknown>;
+    expect(recoveryCall.tools).toBeUndefined();
+    expect(recoveryCall.max_tokens).toBeTypeOf("number");
+    expect(recoveryCall.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("throws a clear, distinct error when the compact retry is also cut off, while still recording all real spend from both attempts", async () => {
+    const { client, calls } = fakeAnthropicClientWithCalls([
+      truncatedResponse('{"interpreted_mission": "still truncated'),
+      truncatedResponse('{"interpreted_mission": "truncated again'),
+    ]);
+
+    let caught: unknown;
+    try {
+      await runScoutResearch(makeMission(), { client });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ScoutResearchError);
+    const scoutError = caught as ScoutResearchError;
+    expect(scoutError.message).toMatch(/cut off again/i);
+    expect(calls).toHaveLength(2); // never loops past the one bounded retry
+    expect(scoutError.usage.inputTokens).toBe(2000);
+    expect(scoutError.usage.outputTokens).toBe(1000);
+  });
+
+  it("never attempts a second recovery — a non-truncation failure on the compact retry still fails cleanly", async () => {
+    const { client, calls } = fakeAnthropicClientWithCalls([
+      truncatedResponse(),
+      fakeAnthropicMessage(null, { stop_reason: "refusal", content: [] }),
+    ]);
+
+    let caught: unknown;
+    try {
+      await runScoutResearch(makeMission(), { client });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(ScoutResearchError);
+    expect((caught as ScoutResearchError).message).toMatch(/declined to complete the compact retry/i);
+    expect(calls).toHaveLength(2);
+    // Both calls' real usage is still recorded even though the run failed.
+    expect((caught as ScoutResearchError).usage.inputTokens).toBe(2000);
   });
 });
