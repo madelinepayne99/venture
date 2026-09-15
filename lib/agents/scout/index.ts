@@ -70,26 +70,130 @@ function extractRawText(content: Anthropic.Message["content"]): string {
   return textBlocks.map((block) => block.text).join("");
 }
 
+/**
+ * Extracts the content of a Markdown-style code fence (```json ... ``` or a
+ * plain ``` ... ```), if the text has one. The model has no enforced
+ * structured-output mode in this SDK version — it's instructed via the
+ * prompt to return raw JSON with no fence, but a real response sometimes
+ * wraps the object in one anyway (and/or adds a short sentence of prose
+ * before/after it).
+ */
+function extractFencedJson(text: string): string | null {
+  const match = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
+  return match ? (match[1] ?? "").trim() : null;
+}
+
+/**
+ * Scans `text` starting at index `start` (which must point at a `{`) for
+ * the matching closing brace, tracking nesting depth and skipping over
+ * braces that appear inside a JSON string literal (so a stray "{"/"}"
+ * inside a quoted value — or inside surrounding prose that got swept into
+ * an earlier failed attempt — can't prematurely end the match). Returns
+ * the balanced `{...}` substring, or null if the object never closes.
+ */
+function extractBalancedObjectAt(text: string, start: number): string | null {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i++) {
+    const char = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Tries every "{" in `text` in order, extracting the balanced object that
+ * starts there and attempting to parse it, and returns the first one that
+ * parses successfully. This is what lets a real response survive short
+ * explanatory text around the JSON (even text that itself happens to
+ * contain a brace, e.g. "Note: I weighed {timing} carefully.") — a naive
+ * first-"{"-to-last-"}" slice can't distinguish that from the real object
+ * and pulls in everything in between, however far apart they are.
+ */
+function findFirstParseableJsonObject(text: string): unknown | null {
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "{") continue;
+    const candidate = extractBalancedObjectAt(text, i);
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
 function parseAndValidateReport(rawText: string, usageSoFar: () => PartialUsage): ScoutReport {
-  if (!rawText.trim()) {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
     throw new ScoutResearchError("Scout returned no report text.", usageSoFar());
   }
 
   let parsedJson: unknown;
+  let parsed = false;
+
+  // 1. The common, expected case: the whole response is nothing but JSON.
   try {
-    parsedJson = JSON.parse(rawText.trim());
+    parsedJson = JSON.parse(trimmed);
+    parsed = true;
   } catch {
-    // The model has no enforced structured-output mode in this SDK version
-    // — it was instructed to return only JSON, but fall back to extracting
-    // the outermost { ... } block in case it added any stray prose.
-    const start = rawText.indexOf("{");
-    const end = rawText.lastIndexOf("}");
-    try {
-      if (start === -1 || end === -1 || end < start) throw new Error("no JSON object found");
-      parsedJson = JSON.parse(rawText.slice(start, end + 1));
-    } catch (error) {
-      throw new ScoutResearchError("Scout's report was not valid JSON.", usageSoFar(), error);
+    // fall through
+  }
+
+  // 2. A Markdown code fence around the JSON (with or without a "json"
+  //    language tag) — extract its contents specifically and try that.
+  if (!parsed) {
+    const fenced = extractFencedJson(trimmed);
+    if (fenced) {
+      try {
+        parsedJson = JSON.parse(fenced);
+        parsed = true;
+      } catch {
+        // fall through — the fence contents themselves weren't clean JSON
+        // (e.g. more prose got swept in); the general scan below still
+        // gets a chance to find the real object inside it.
+      }
     }
+  }
+
+  // 3. General fallback: scan the whole text (fence markers and all) for
+  //    the first balanced {...} object that actually parses. Covers short
+  //    explanatory sentences before/after the JSON, with or without a fence.
+  if (!parsed) {
+    const found = findFirstParseableJsonObject(trimmed);
+    if (found !== null) {
+      parsedJson = found;
+      parsed = true;
+    }
+  }
+
+  if (!parsed) {
+    throw new ScoutResearchError("Scout's report was not valid JSON.", usageSoFar());
   }
 
   const validation = ScoutReportSchema.safeParse(parsedJson);

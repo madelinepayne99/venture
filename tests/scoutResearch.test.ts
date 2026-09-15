@@ -299,3 +299,99 @@ describe("runScoutResearch — truncation and bounded recovery", () => {
     expect((caught as ScoutResearchError).usage.inputTokens).toBe(2000);
   });
 });
+
+describe("runScoutResearch — JSON extraction robustness", () => {
+  // A live mission failed with "Scout's report was not valid JSON." because
+  // a real response can come back as clean JSON, JSON inside a Markdown
+  // code fence, or JSON with a short sentence of prose around it — these
+  // four cases lock in that extraction handles all of them, and still
+  // rejects genuinely malformed output rather than accepting it.
+
+  it("parses clean JSON with nothing else in the response", async () => {
+    const report = makeScoutReport();
+    const client = fakeAnthropicClient([
+      fakeAnthropicMessage(null, {
+        content: [{ type: "text", text: JSON.stringify(report), citations: null }],
+      }),
+    ]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+    expect(outcome.report.interpreted_mission).toBe(report.interpreted_mission);
+  });
+
+  it("parses JSON wrapped in a ```json Markdown code fence", async () => {
+    const report = makeScoutReport();
+    const fenced = "```json\n" + JSON.stringify(report, null, 2) + "\n```";
+    const client = fakeAnthropicClient([
+      fakeAnthropicMessage(null, {
+        content: [{ type: "text", text: fenced, citations: null }],
+      }),
+    ]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+    expect(outcome.report.interpreted_mission).toBe(report.interpreted_mission);
+  });
+
+  it("parses JSON surrounded by short explanatory text, with no fence", async () => {
+    const report = makeScoutReport();
+    const surrounded =
+      "Here is my research report:\n\n" +
+      JSON.stringify(report) +
+      "\n\nLet me know if you'd like me to look into anything else.";
+    const client = fakeAnthropicClient([
+      fakeAnthropicMessage(null, {
+        content: [{ type: "text", text: surrounded, citations: null }],
+      }),
+    ]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+    expect(outcome.report.interpreted_mission).toBe(report.interpreted_mission);
+  });
+
+  it("still throws a clear error for genuinely invalid output, rather than accepting garbage", async () => {
+    const client = fakeAnthropicClient([
+      fakeAnthropicMessage(null, {
+        content: [
+          {
+            type: "text",
+            text: "I wasn't able to complete this research — here's what I found, in no particular structure: demand seems moderate but I don't have a clean report to give you.",
+            citations: null,
+          },
+        ],
+      }),
+    ]);
+
+    await expect(runScoutResearch(makeMission(), { client })).rejects.toThrow(
+      /not valid JSON/i,
+    );
+
+    let caught: unknown;
+    try {
+      await runScoutResearch(makeMission(), { client });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ScoutResearchError);
+    expect((caught as ScoutResearchError).usage.inputTokens).toBeGreaterThan(0);
+  });
+
+  it("still rejects a fenced, well-formed JSON object that fails schema validation", async () => {
+    const incomplete = { interpreted_mission: "incomplete report" };
+    const fenced = "```json\n" + JSON.stringify(incomplete) + "\n```";
+    const client = fakeAnthropicClient([
+      fakeAnthropicMessage(null, {
+        content: [{ type: "text", text: fenced, citations: null }],
+      }),
+    ]);
+
+    await expect(runScoutResearch(makeMission(), { client })).rejects.toThrow(
+      /failed structural validation/i,
+    );
+  });
+});

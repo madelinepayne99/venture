@@ -261,11 +261,18 @@ described below.
     required field here. The installed Anthropic SDK version doesn't yet
     expose an enforced structured-output mode, so Scout is instructed via
     the system prompt to return matching JSON; `index.ts` parses that text
-    (with a bracket-extraction fallback for stray prose) and validates it
-    against this schema — a response that doesn't match fails loudly
-    instead of getting displayed anyway. Swap in real structured-output
-    enforcement if/when the SDK supports it; the schema itself doesn't
-    need to change. Every array field also carries a generous but real
+    in layers — a direct parse first, then a Markdown-code-fence extraction
+    (a real response sometimes wraps the JSON in ```json even though the
+    prompt asks it not to), then a string-aware balanced-brace scan that
+    tolerates short explanatory sentences around the object (a live mission
+    failure — "Scout's report was not valid JSON" — traced to exactly this:
+    the original naive first-"{"-to-last-"}" slice broke as soon as any
+    stray brace appeared before or after the real object) — and validates
+    whichever candidate parses against this schema; a response that doesn't
+    match still fails loudly instead of getting displayed anyway. Swap in
+    real structured-output enforcement if/when the SDK supports it; the
+    schema itself doesn't need to change. Every array field also carries a
+    generous but real
     `.max()` cap (e.g. `sources` ≤10, `verified_facts` ≤8) — a structural
     compactness guarantee, not just prompt guidance, that keeps an
     unbounded enumeration from blowing up how long a report needs to be to
@@ -432,7 +439,7 @@ Never hand-edit a already-generated migration or the database directly.
 
 ## Testing
 
-`npm test` (Vitest, 76 tests) runs against a **real local Postgres
+`npm test` (Vitest, 81 tests) runs against a **real local Postgres
 database** (see "Local verification vs. a real deployment" below) — there
 is no more in-memory/SQLite test mode. `vitest.config.ts` sets
 `DATABASE_URL`/`AUTH_SECRET` via `test.env` (applied before any module
