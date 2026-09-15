@@ -25,6 +25,7 @@ export function HQView({
   missions,
   selectedMissionId,
   onSelectMission,
+  onAssignWork,
 }: {
   projects: Project[];
   activeProjectId: string | null;
@@ -33,6 +34,7 @@ export function HQView({
   missions: Mission[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
+  onAssignWork: () => void;
 }) {
   const rooms = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
     .filter((project): project is Project => project !== null)
@@ -43,8 +45,8 @@ export function HQView({
 
   if (rooms.length === 0) {
     return (
-      <div className="overflow-hidden rounded-3xl border border-hq-brass/20 bg-gradient-to-b from-hq-brass/10 via-hq-cream to-hq-cream p-10 text-center shadow-desk">
-        <p className="text-sm text-hq-slate">
+      <div className="overflow-hidden rounded-3xl border border-hq-brass/30 bg-night-bg p-10 text-center shadow-desk">
+        <p className="text-sm text-night-textDim">
           The office is unfurnished — no workspace exists yet. Create one from the workspace bar
           above, or switch to Focus View to get started.
         </p>
@@ -57,7 +59,7 @@ export function HQView({
 
   return (
     <div>
-      <div className="overflow-hidden rounded-3xl border border-hq-brass/20 shadow-desk">
+      <div className="overflow-hidden rounded-3xl border border-hq-brass/30 shadow-desk">
         <div
           className="flex transition-transform duration-500 ease-out motion-reduce:transition-none motion-reduce:duration-0"
           style={{ transform: `translateX(-${activeIndex * 100}%)` }}
@@ -72,6 +74,7 @@ export function HQView({
                 missions={room.missions}
                 selectedMissionId={selectedMissionId}
                 onSelectMission={onSelectMission}
+                onAssignWork={onAssignWork}
                 interactive={i === activeIndex}
               />
             </div>

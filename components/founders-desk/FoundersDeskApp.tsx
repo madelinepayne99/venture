@@ -8,6 +8,7 @@ import { FocusView } from "./FocusView";
 import { WorkspaceBar } from "./hq/WorkspaceBar";
 import { HQView } from "./hq/HQView";
 import { MissionSlideOver } from "./hq/MissionSlideOver";
+import { AssignWorkModal } from "./hq/AssignWorkModal";
 
 interface Props {
   signedInFounderName: string;
@@ -62,6 +63,7 @@ export function FoundersDeskApp({
   const [missionDetail, setMissionDetail] = useState<MissionDetailData | null>(null);
   const [busyMissionId, setBusyMissionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [assignWorkOpen, setAssignWorkOpen] = useState(false);
 
   // View mode and the active workspace are presentation/navigation state
   // only — never persisted server-side, never affecting what data is
@@ -300,6 +302,7 @@ export function FoundersDeskApp({
             missions={missions}
             selectedMissionId={selectedMissionId}
             onSelectMission={loadDetail}
+            onAssignWork={() => setAssignWorkOpen(true)}
           />
           <MissionSlideOver
             detail={missionDetail}
@@ -307,6 +310,13 @@ export function FoundersDeskApp({
             onApprove={handleApprove}
             onCancel={handleCancel}
             onClose={closeMissionPanel}
+          />
+          <AssignWorkModal
+            open={assignWorkOpen}
+            projects={projects}
+            defaultProjectId={activeProjectId}
+            onSubmit={handleCreate}
+            onClose={() => setAssignWorkOpen(false)}
           />
         </>
       ) : (

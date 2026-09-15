@@ -183,7 +183,7 @@ cost recording, or authentication.
 
 - **Two views of one dataset, not two apps.** A founder can toggle
   between **HQ View** (a stylised 2D office scene — founder desks, Scout
-  as a worker bot, a wall mission board; see Milestone 4.1 for its visual
+  as a worker bot, a wall mission board; see Milestones 4.1–4.2 for its visual
   design) and **Focus View** (the original clean dashboard layout). Both
   read the same `missions`, `projects`, `agents`, and `ledger_entries`
   state and call the exact same handlers
@@ -274,6 +274,67 @@ UI layered on top.
   A workspace type with no project yet (nothing created there) simply
   gets no room — same "must not pretend to have agents" rule the
   workspace bar already followed, now applied to the office view too.
+
+**Milestone 4.2: HQ View rebuilt as a cinematic night office, and made
+genuinely interactive.** Milestone 4.1's dollhouse still read as flat and
+sparse rather than "a living world," and had no way to create a mission
+without leaving HQ View. This milestone replaces the room's visual
+language entirely and adds one new real interaction — again without
+touching the schema, Scout, guardrails, approval gate, cost recording, or
+authentication.
+
+- **A dark, cinematic palette, scoped only to the office scene.**
+  `hq/RoomBackdrop.tsx`'s `ROOM_PALETTES` moved from a bright daytime
+  parchment room to charcoal walls with a forest-green undertone, a warm
+  brass/gold light pool over the desks, and windows onto an abstract
+  night skyline with a fixed (not random, so server/client markup always
+  match) scatter of lit windows. This is deliberately *not* a change to
+  the app's own brand palette (`BRAND.md`, `hq.*` tokens) — the page
+  chrome, workspace bar, and Focus View are untouched; only the room
+  itself goes dark. The one new addition to `tailwind.config.ts` is a
+  small `night.*` surface-color set (`night-bg` / `night-panel` /
+  `night-panelLight` / `night-border` / `night-text` / `night-textDim`)
+  for the scene's HTML chrome (the mission board, the assign-work modal)
+  — the gold/forest accent colors still come from the existing
+  `hq.brass*` / `hq.teal*` tokens, reused rather than duplicated.
+  `RoomBackdrop.tsx` also gained bookshelves (flanking the windows) and a
+  vignette + light-pool radial gradient for depth, replacing the flatter
+  Milestone 4.1 shell.
+- **`hq/Worker.tsx` was redrawn.** Founders no longer show a plain
+  initial-in-a-circle — a hair-silhouette shape (varying by `tone`)
+  distinguishes them instead, identified by the real nameplate below,
+  same as before. Scout's head is a proper visor-band "helmet" with a
+  glowing antenna tip instead of two dots and a bar. Every desk now has a
+  lamp (a warm, gently flickering glow — `animate-hq-flicker`, the one
+  other new Tailwind animation this milestone added, always on
+  regardless of `isWorking` since it's ambient, not an activity signal)
+  and a small flavor prop (papers for a founder, a book stack + a
+  magnifying glass for Scout's "research desk"). `isWorking`'s real
+  signal and gating are unchanged from Milestone 4.1 — only the art
+  around it changed.
+- **`hq/MissionBoard.tsx` was restyled** from a corkboard-with-pushpins
+  look into a brass-framed wall board: each mission is a ticket-style
+  card with a left accent bar colored by its dock bucket (reusing the
+  existing `status.*` palette — success green for Completed, danger rust
+  for Failed, etc.), and the Researching column's cards carry the same
+  `motion-safe:animate-hq-glow` used elsewhere for real active work. The
+  grouping is still exactly `missionDockBucket`; only the presentation
+  changed.
+- **The "Assign work" interaction is new and real.** `hq/AssignWorkModal.tsx`
+  wraps the *exact same* `MissionForm` component and `onCreateMission`
+  handler Focus View already uses — it is not a second mission-creation
+  path, just Focus View's existing form opened as a modal, preselecting
+  whichever workspace is currently active
+  (`defaultProjectId={activeProjectId}`, the same prop `FocusView`
+  already threads through). `MissionBoard.tsx` renders the trigger
+  (`+ Assign work`) in its header, gated by the same `interactive` prop
+  every other in-room control already uses, so it's neither clickable nor
+  keyboard-reachable on an off-screen room during the carousel's slide.
+  Submitting closes the modal and runs through the same
+  `handleCreate` → `refreshMissions` → `loadDetail` flow a Focus View
+  submission already does — nothing new is invented, and the mission
+  still starts in `draft` exactly as before, requiring the same founder
+  approval gate before Scout is ever dispatched.
 
 ## Architecture
 

@@ -25,6 +25,20 @@ export default {
           success: "#1E7A4C",
           danger: "#B3462C",
         },
+        // A dark, cinematic surface set used only by the HQ office scene's
+        // HTML chrome (the mission board frame, the assign-work modal) —
+        // the scene itself is charcoal/forest-green/brass at night, while
+        // the rest of the app (including Focus View) stays on the bright
+        // hq.* palette above. Gold/forest accents still come from
+        // hq.brass* / hq.teal* — this only adds the dark surfaces they sit on.
+        night: {
+          bg: "#141917",
+          panel: "#1D2622",
+          panelLight: "#28362F",
+          border: "#3E4F46",
+          text: "#F3EEDD",
+          textDim: "#9DA89F",
+        },
       },
       fontFamily: {
         display: ["Georgia", "Cambria", "serif"],
@@ -57,11 +71,16 @@ export default {
           "0%, 100%": { transform: "translateY(0)" },
           "50%": { transform: "translateY(-2px)" },
         },
+        "hq-flicker": {
+          "0%, 100%": { opacity: "0.85" },
+          "50%": { opacity: "1" },
+        },
       },
       animation: {
         "hq-breathe": "hq-breathe 6s ease-in-out infinite",
         "hq-glow": "hq-glow 1.8s ease-in-out infinite",
         "hq-bob": "hq-bob 1s ease-in-out infinite",
+        "hq-flicker": "hq-flicker 4s ease-in-out infinite",
       },
     },
   },
