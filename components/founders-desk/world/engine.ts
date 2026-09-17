@@ -183,8 +183,12 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   return {
     moveTo,
     setExploring(value: boolean) { exploring = value; },
-    syncMissions(missions: readonly { state: string }[], snap = false) {
-      const next = researchDestination(missions); working = next === "research";
+    syncMissions(
+      missions: readonly { id: string; state: string }[],
+      leadAssignments: readonly { mission_id: string; agent_key: string }[],
+      snap = false,
+    ) {
+      const next = researchDestination(missions, leadAssignments); working = next === "research";
       if (lastDestination === undefined || snap) {
         route = []; setMoving(false); const p = MARKS[next]; scout.root.position.set(p.x, .04, p.z); scout.root.rotation.y = next === "research" ? Math.PI : .45;
       } else if (next !== lastDestination) moveTo(MARKS[next], next);

@@ -28,10 +28,49 @@ describe("office world navigation", () => {
     expect(findPath(MARKS.hub, { x: .55, z: -1 })).toEqual([]);
     expect(findPath(MARKS.hub, { x: 12, z: 0 })).toEqual([]);
   });
-  it("keeps Scout in research until the last researching mission leaves", () => {
-    expect(researchDestination([])).toBe("hub");
-    expect(researchDestination([{ state: "researching" }, { state: "researching" }])).toBe("research");
-    expect(researchDestination([{ state: "failed" }, { state: "researching" }])).toBe("research");
-    expect(researchDestination([{ state: "awaiting_evidence" }, { state: "cancelled" }])).toBe("hub");
+  it("keeps Scout in research until his last led, researching mission leaves", () => {
+    expect(researchDestination([], [])).toBe("hub");
+    expect(
+      researchDestination(
+        [{ id: "m1", state: "researching" }, { id: "m2", state: "researching" }],
+        [{ mission_id: "m1", agent_key: "scout" }, { mission_id: "m2", agent_key: "scout" }],
+      ),
+    ).toBe("research");
+    expect(
+      researchDestination(
+        [{ id: "m1", state: "failed" }, { id: "m2", state: "researching" }],
+        [{ mission_id: "m2", agent_key: "scout" }],
+      ),
+    ).toBe("research");
+    expect(
+      researchDestination(
+        [{ id: "m1", state: "awaiting_evidence" }, { id: "m2", state: "cancelled" }],
+        [{ mission_id: "m1", agent_key: "scout" }],
+      ),
+    ).toBe("hub");
+  });
+
+  it("never moves Scout for a researching mission he isn't the real lead on", () => {
+    // A mission genuinely researching, but with no assignment row at all yet
+    // (e.g. the transition landed before assignAgent ran) — Scout must not
+    // teleport into the research room on state alone.
+    expect(researchDestination([{ id: "m1", state: "researching" }], [])).toBe("hub");
+    // A mission researching and led by a different real agent — proves this
+    // can never animate the wrong character once a second agent exists.
+    expect(
+      researchDestination(
+        [{ id: "m1", state: "researching" }],
+        [{ mission_id: "m1", agent_key: "inventor" }],
+      ),
+    ).toBe("hub");
+    // Scout is assigned, but as a non-lead role wouldn't be recorded by
+    // listLeadAssignments in the first place — simulated here by simply
+    // omitting it, same outcome as the no-assignment case above.
+    expect(
+      researchDestination(
+        [{ id: "m1", state: "researching" }, { id: "m2", state: "queued" }],
+        [{ mission_id: "m2", agent_key: "scout" }],
+      ),
+    ).toBe("hub");
   });
 });

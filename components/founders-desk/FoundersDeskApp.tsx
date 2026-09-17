@@ -1,7 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Agent, Founder, LedgerEntry, Mission, Project, WorkspaceType } from "@/lib/db/types";
+import type {
+  Agent,
+  Founder,
+  LedgerEntry,
+  Mission,
+  MissionLeadAssignment,
+  Project,
+  WorkspaceType,
+} from "@/lib/db/types";
 import { signOutAction } from "@/lib/auth/actions";
 import type { MissionDetailData } from "./MissionDetail";
 import { FocusView } from "./FocusView";
@@ -14,6 +22,7 @@ interface Props {
   signedInFounderName: string;
   initialAgents: Agent[];
   initialMissions: Mission[];
+  initialLeadAssignments: MissionLeadAssignment[];
   initialLedgerEntries: LedgerEntry[];
   initialLedgerTotal: number;
   initialProjects: Project[];
@@ -48,6 +57,7 @@ export function FoundersDeskApp({
   signedInFounderName,
   initialAgents,
   initialMissions,
+  initialLeadAssignments,
   initialLedgerEntries,
   initialLedgerTotal,
   initialProjects,
@@ -56,6 +66,7 @@ export function FoundersDeskApp({
   const [agents] = useState(initialAgents);
   const [founders] = useState(initialFounders);
   const [missions, setMissions] = useState(initialMissions);
+  const [leadAssignments, setLeadAssignments] = useState(initialLeadAssignments);
   const [ledgerEntries, setLedgerEntries] = useState(initialLedgerEntries);
   const [ledgerTotal, setLedgerTotal] = useState(initialLedgerTotal);
   const [projects, setProjects] = useState(initialProjects);
@@ -105,6 +116,7 @@ export function FoundersDeskApp({
     const res = await fetch("/api/missions");
     const data = await res.json();
     setMissions(data.missions);
+    setLeadAssignments(data.leadAssignments);
   }
 
   async function refreshLedger() {
@@ -298,6 +310,7 @@ export function FoundersDeskApp({
             projects={projects}
             activeProjectId={activeProjectId}
             missions={missions}
+            leadAssignments={leadAssignments}
             selectedMissionId={selectedMissionId}
             onSelectMission={loadDetail}
             onAssignWork={() => setAssignWorkOpen(true)}

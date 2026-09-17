@@ -14,6 +14,7 @@ import type {
   Founder,
   LedgerEntry,
   Mission,
+  MissionLeadAssignment,
   MissionStage,
   MissionState,
   Project,
@@ -322,6 +323,24 @@ export async function listAssignments(missionId: string): Promise<AgentAssignmen
     .from(schema.agentAssignments)
     .where(eq(schema.agentAssignments.mission_id, missionId))
     .orderBy(schema.agentAssignments.assigned_at);
+}
+
+/**
+ * The lead agent (by real `agents.key`, e.g. "scout") currently on record
+ * for each mission that has one. This is the real signal the HQ office
+ * scene uses to decide which agent's character should be animated for a
+ * given mission — never inferred from mission state alone, so a future
+ * second agent's work in progress can never make an unrelated agent's
+ * character appear to move.
+ */
+export async function listLeadAssignments(): Promise<MissionLeadAssignment[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ mission_id: schema.agentAssignments.mission_id, agent_key: schema.agents.key })
+    .from(schema.agentAssignments)
+    .innerJoin(schema.agents, eq(schema.agentAssignments.agent_id, schema.agents.id))
+    .where(eq(schema.agentAssignments.role, "lead"));
+  return rows;
 }
 
 /** Whether this agent is already assigned to this mission — used to keep resumed retries idempotent. */

@@ -336,6 +336,40 @@ authentication.
   still starts in `draft` exactly as before, requiring the same founder
   approval gate before Scout is ever dispatched.
 
+**Milestone 4.3: the office scene moved to real Three.js, and Scout's
+location now follows his real assignment, not aggregate mission state.**
+The PixiJS scene described above (`hq/scene/HQScene.tsx`, `hq/Worker.tsx`,
+`isWorking`) was subsequently replaced outright by
+`components/founders-desk/world/` — a direct-Three.js "dollhouse" office
+(see that package's own README) wired into `hq/Room.tsx` in place of
+`HQScene`; `hq/Worker.tsx`/`hq/scene/HQScene.tsx` are dead code left on
+disk, not part of any render path, and should be deleted the next time
+this section gets a real rewrite rather than an addendum. A follow-up bug
+fix then closed a real integration gap in that package: `world/layout.ts`'s
+`researchDestination` originally animated Scout purely from "is any
+mission in this room `researching`" — true and harmless today only because
+Scout is the sole agent that can ever be assigned, but exactly the
+aggregate-state shortcut this repo's own testing discipline warns against,
+and not what "the architecture will support multiple agents working
+independently later" requires. `researchDestination` now takes the room's
+real missions **and** real lead assignments, and only sends Scout to the
+research room when a mission is genuinely `researching` **and** a real
+`agent_assignments` row (role `"lead"`) names him — never from mission
+state alone. Making that real requires exposing assignment data to the
+client for the first time: `listLeadAssignments()` in `repositories.ts`
+joins `agent_assignments` (role `"lead"`) to `agents` for its real `key`,
+`GET /api/missions` now returns `{ missions, leadAssignments }` instead of
+just `{ missions }`, and `FoundersDeskApp.tsx` fetches/holds/refreshes
+both together, threading `leadAssignments` down through `HQView.tsx` (
+filtered per room the same way `missions` already is) → `Room.tsx` →
+`OfficeWorld`/`engine.ts`'s `syncMissions`, which now takes both. Nothing
+about mission state, the approval gate, or `agent_assignments` itself
+changed — this only makes the office scene read the assignment data that
+already existed. `tests/officeWorld.test.ts` covers the previously-unsafe
+cases directly: a `researching` mission with no assignment row yet, and a
+`researching` mission led by a different agent key, both correctly keep
+Scout at the hub.
+
 ## Architecture
 
 - **Next.js (App Router) + TypeScript + Tailwind.** Route handlers under

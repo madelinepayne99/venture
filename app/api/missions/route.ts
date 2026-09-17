@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listMissions, getDefaultProject } from "@/lib/db/repositories";
+import { listMissions, listLeadAssignments, getDefaultProject } from "@/lib/db/repositories";
 import { createAndSubmitMission } from "@/lib/domain/missionWorkflow";
 import { toApiErrorResponse } from "@/lib/api/errors";
 import { requireFounderId } from "@/lib/api/session";
@@ -7,7 +7,8 @@ import { requireFounderId } from "@/lib/api/session";
 export async function GET() {
   try {
     await requireFounderId();
-    return NextResponse.json({ missions: await listMissions() });
+    const [missions, leadAssignments] = await Promise.all([listMissions(), listLeadAssignments()]);
+    return NextResponse.json({ missions, leadAssignments });
   } catch (error) {
     return toApiErrorResponse(error);
   }

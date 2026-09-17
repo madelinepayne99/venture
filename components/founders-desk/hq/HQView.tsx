@@ -1,4 +1,4 @@
-import type { Mission, Project } from "@/lib/db/types";
+import type { Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
 import { REAL_WORKSPACE_TYPES, mostRecentProjectOfType } from "./WorkspaceBar";
 import { Room } from "./Room";
 
@@ -21,6 +21,7 @@ export function HQView({
   projects,
   activeProjectId,
   missions,
+  leadAssignments,
   selectedMissionId,
   onSelectMission,
   onAssignWork,
@@ -28,16 +29,22 @@ export function HQView({
   projects: Project[];
   activeProjectId: string | null;
   missions: Mission[];
+  leadAssignments: MissionLeadAssignment[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
 }) {
   const rooms = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
     .filter((project): project is Project => project !== null)
-    .map((project) => ({
-      project,
-      missions: missions.filter((m) => m.project_id === project.id),
-    }));
+    .map((project) => {
+      const roomMissions = missions.filter((m) => m.project_id === project.id);
+      const roomMissionIds = new Set(roomMissions.map((m) => m.id));
+      return {
+        project,
+        missions: roomMissions,
+        leadAssignments: leadAssignments.filter((a) => roomMissionIds.has(a.mission_id)),
+      };
+    });
 
   if (rooms.length === 0) {
     return (
@@ -66,6 +73,7 @@ export function HQView({
                 project={room.project}
                 roomLabel={ROOM_LABELS[room.project.workspace_type] ?? "Office"}
                 missions={room.missions}
+                leadAssignments={room.leadAssignments}
                 selectedMissionId={selectedMissionId}
                 onSelectMission={onSelectMission}
                 onAssignWork={onAssignWork}

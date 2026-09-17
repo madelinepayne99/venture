@@ -71,6 +71,21 @@ export function findPath(start: Point, destination: Point): Point[] {
   });
 }
 
-export function researchDestination(missions: readonly { state: string }[]): "hub" | "research" {
-  return missions.some(m => m.state === "researching") ? "research" : "hub";
+/** The one real agent this scene renders. A future second agent's own scene binds its own key here. */
+export const SCOUT_AGENT_KEY = "scout";
+
+/**
+ * Where Scout belongs right now, derived from his own real assignment —
+ * never from "is any mission in this room researching." A mission only
+ * pulls Scout into the research room while it is both `researching` AND
+ * he is genuinely its lead-assigned agent; a mission some other agent
+ * leads (once other agents exist) can never move Scout's character.
+ */
+export function researchDestination(
+  missions: readonly { id: string; state: string }[],
+  leadAssignments: readonly { mission_id: string; agent_key: string }[],
+  agentKey: string = SCOUT_AGENT_KEY,
+): "hub" | "research" {
+  const led = new Set(leadAssignments.filter(a => a.agent_key === agentKey).map(a => a.mission_id));
+  return missions.some(m => m.state === "researching" && led.has(m.id)) ? "research" : "hub";
 }

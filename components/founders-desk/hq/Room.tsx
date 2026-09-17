@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import type { Mission, Project } from "@/lib/db/types";
+import type { Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
 import { MissionBoard } from "./MissionBoard";
 
 const OfficeWorld = dynamic(
@@ -15,10 +15,12 @@ const OfficeWorld = dynamic(
  * `components/founders-desk/world/` scene (direct Three.js — see its own
  * README, integrated verbatim per its "Integrate into the existing
  * Venture app" section). Everything the scene shows is derived from this
- * room's real missions: `world/layout.ts`'s `researchDestination` decides
- * whether Scout is in his research room purely from whether any real
- * mission is `researching`, and the mission board below lists the same
- * real missions Focus View would.
+ * room's real missions and real lead assignments: `world/layout.ts`'s
+ * `researchDestination` moves Scout to his research room only when a
+ * mission is `researching` AND a real `agent_assignments` row names him
+ * (not any agent) as its lead — never from mission state alone, so a
+ * future second agent's work can never animate the wrong character. The
+ * mission board below lists the same real missions Focus View would.
  *
  * The world's own `onSelect` targets are wired to the exact same real
  * handlers Focus View already uses — no new mission-creation path, no
@@ -43,6 +45,7 @@ export function Room({
   project,
   roomLabel,
   missions,
+  leadAssignments,
   selectedMissionId,
   onSelectMission,
   onAssignWork,
@@ -51,6 +54,7 @@ export function Room({
   project: Project;
   roomLabel: string;
   missions: Mission[];
+  leadAssignments: MissionLeadAssignment[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
@@ -78,7 +82,12 @@ export function Room({
     <div className="bg-night-bg">
       <div className="relative w-full overflow-hidden" style={{ height: "70vh", minHeight: 420 }}>
         {interactive ? (
-          <OfficeWorld workspaceId={project.id} missions={missions} onSelect={handleSelect} />
+          <OfficeWorld
+            workspaceId={project.id}
+            missions={missions}
+            leadAssignments={leadAssignments}
+            onSelect={handleSelect}
+          />
         ) : (
           <div className="h-full w-full bg-night-bg" aria-hidden="true" />
         )}

@@ -46,6 +46,9 @@ export type MissionStage = Omit<InferSelectModel<typeof schema.missionStages>, "
 };
 
 export type AgentAssignment = InferSelectModel<typeof schema.agentAssignments>;
+
+/** A lead-role assignment, joined down to just what the UI needs: which real agent leads which mission. */
+export type MissionLeadAssignment = { mission_id: string; agent_key: string };
 export type Evidence = InferSelectModel<typeof schema.evidence>;
 
 export type Deliverable<TContent = unknown> = Omit<
