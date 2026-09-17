@@ -5,7 +5,7 @@ import type { AgentRunOutcome } from "@/lib/agents/types";
 import { getAnthropicClient } from "@/lib/agents/anthropicClient";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import { ScoutReportSchema, type ScoutReport } from "./schema";
-import { buildScoutSystemPrompt, buildScoutUserPrompt } from "./prompt";
+import { buildScoutSystemPrompt, buildScoutUserPrompt, type ScoutFollowupContext } from "./prompt";
 import { findGuaranteeLanguage, hasMeaningfulEvidence } from "./guardrails";
 
 const DEFAULT_WORKSPACE_TYPE: WorkspaceType = "commerce";
@@ -65,6 +65,8 @@ interface ScoutDeps {
   client?: Anthropic;
   /** Defaults to "commerce" — the workspace type that existed before workspaces did. */
   workspaceType?: WorkspaceType;
+  /** Present only for the automatic second pass — see missionWorkflow.ts's MAX_RESEARCH_PASSES. */
+  followupContext?: ScoutFollowupContext;
 }
 
 function extractRawText(content: Anthropic.Message["content"]): string {
@@ -362,7 +364,7 @@ export async function runScoutResearch(
   const systemPrompt = buildScoutSystemPrompt(workspaceType);
 
   const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: buildScoutUserPrompt(mission, workspaceType) },
+    { role: "user", content: buildScoutUserPrompt(mission, workspaceType, deps.followupContext) },
   ];
 
   let totalInputTokens = 0;

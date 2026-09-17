@@ -30,7 +30,14 @@ interface Props {
   initialFounders: Founder[];
 }
 
-const POLLING_STATES = new Set(["queued", "researching"]);
+// "awaiting_evidence" is always transient under the two-pass evidence loop
+// (see missionWorkflow.ts's MAX_RESEARCH_PASSES / nextStateForVerdict): a
+// mission only ever lands there when an automatic follow-up pass is about
+// to be dispatched, never as a resting state. Without it here, polling
+// would stop the instant pass 1 settles into it, and the frontend (and
+// Scout's HQ animation) would silently freeze until a manual refresh even
+// though the backend is correctly dispatching pass 2.
+const POLLING_STATES = new Set(["queued", "researching", "awaiting_evidence"]);
 const POLL_INTERVAL_MS = 3000;
 
 type ViewMode = "hq" | "focus";
@@ -118,6 +125,7 @@ export function FoundersDeskApp({
     const data = await res.json();
     setMissions(data.missions);
     setLeadAssignments(data.leadAssignments);
+    return data.missions as Mission[];
   }
 
   async function refreshLedger() {
@@ -166,11 +174,28 @@ export function FoundersDeskApp({
   useMissionPolling(
     hasInFlightMission,
     () => {
-      refreshMissions();
-      const currentSelectedId = selectedMissionIdRef.current;
-      if (currentSelectedId && POLLING_STATES.has(missionDetailRef.current?.mission.state ?? "")) {
-        loadDetail(currentSelectedId);
-      }
+      (async () => {
+        const freshMissions = await refreshMissions();
+        const currentSelectedId = selectedMissionIdRef.current;
+        if (!currentSelectedId) return;
+        // Refresh the detail panel if the selected mission was in flight as
+        // of our last known detail snapshot, OR the list we just fetched
+        // still shows it in flight. Checking only the pre-tick ref (as this
+        // used to) misses the exact tick where a mission settles: that
+        // tick's own fetch can land in the narrow window between the
+        // mission's state going terminal and its deliverable actually being
+        // written (see missionWorkflow.ts's settlement order), permanently
+        // freezing the panel on an incomplete report with no state change
+        // left to ever trigger another refresh. Checking the fresh list too
+        // guarantees at least one more refresh after settlement is fully
+        // committed.
+        const selectedMission = freshMissions.find((m) => m.id === currentSelectedId);
+        const wasInFlight = POLLING_STATES.has(missionDetailRef.current?.mission.state ?? "");
+        const stillInFlight = selectedMission ? POLLING_STATES.has(selectedMission.state) : false;
+        if (wasInFlight || stillInFlight) {
+          loadDetail(currentSelectedId);
+        }
+      })();
     },
     POLL_INTERVAL_MS,
   );

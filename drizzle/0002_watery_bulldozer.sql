@@ -1,0 +1,1 @@
+ALTER TABLE "missions" ADD COLUMN "research_pass_count" integer DEFAULT 0 NOT NULL;

@@ -17,7 +17,16 @@ const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
     "failed",
     "cancelled",
   ],
-  awaiting_evidence: ["ready_for_founders_review", "rejected", "cancelled", "failed"],
+  // "researching" is the automatic targeted follow-up pass (see
+  // missionWorkflow.ts's MAX_RESEARCH_PASSES) — the only real way out of
+  // this state besides a founder cancelling. The old
+  // ready_for_founders_review/rejected/failed edges here were legal in
+  // the graph but structurally unreachable (nothing ever called
+  // transitionMissionState with awaiting_evidence as the fromState) —
+  // dropped rather than left as a misleading dead path; a settled
+  // follow-up pass now reaches those states via researching, same as the
+  // original pass always did.
+  awaiting_evidence: ["researching", "cancelled"],
   ready_for_founders_review: ["cancelled"],
   rejected: [],
   failed: ["awaiting_founder_approval"], // founder may resubmit after a technical failure

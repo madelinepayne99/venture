@@ -73,4 +73,20 @@ describe("office world navigation", () => {
       ),
     ).toBe("hub");
   });
+
+  it("sends Scout back to the Research Room for a genuine second pass, using the same lead assignment pass 1 already created", () => {
+    // The two-pass evidence loop (missionWorkflow.ts's MAX_RESEARCH_PASSES)
+    // never creates a second agent_assignments row for pass 2 — the real
+    // "lead" row from pass 1 is reused as-is (see runScoutPipeline's
+    // hasAssignment guard). This proves the animation fix generalizes to a
+    // real second pass with zero changes needed here: the mission simply
+    // genuinely re-enters "researching," and the one, never-deleted
+    // assignment row is all researchDestination needs to route Scout back.
+    const leadAssignments = [{ mission_id: "m1", agent_key: "scout" }];
+    // Pass 1 settles out of researching (e.g. into awaiting_evidence) — Scout heads home.
+    expect(researchDestination([{ id: "m1", state: "awaiting_evidence" }], leadAssignments)).toBe("hub");
+    // The automatic follow-up dispatch flips the same mission back to
+    // "researching" — same mission id, same assignment row, no new insert.
+    expect(researchDestination([{ id: "m1", state: "researching" }], leadAssignments)).toBe("research");
+  });
 });

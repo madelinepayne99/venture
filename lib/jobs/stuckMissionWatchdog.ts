@@ -1,7 +1,9 @@
 import "server-only";
-import { inngest } from "@/lib/inngest/client";
+import { inngest, MISSION_FOLLOWUP_NEEDED_EVENT } from "@/lib/inngest/client";
+import { MAX_RESEARCH_PASSES } from "@/lib/domain/missionWorkflow";
 import {
   listStaleResearchingMissions,
+  listStaleAwaitingEvidenceMissions,
   transitionMissionState,
   failStage,
   recordActivity,
@@ -49,5 +51,67 @@ export const stuckMissionWatchdog = inngest.createFunction(
   { id: "stuck-mission-watchdog", triggers: [{ cron: "*/5 * * * *" }] },
   async ({ step }) => {
     return step.run("reap-stale-missions", () => reapStaleResearchingMissions());
+  },
+);
+
+// A mission that just settled into "awaiting_evidence" should have its one
+// automatic follow-up pass dispatched near-instantly (see runScoutPipeline's
+// success path). Sitting here past this threshold means that dispatch send
+// genuinely failed (see the followup_dispatch_failed activity entry it
+// records) — no real research work was lost, the mission just needs the
+// same event sent again. Much shorter than STALE_AFTER_MS above on purpose:
+// a healthy dispatch is fast, so there's no reason to wait 10 minutes to
+// notice one didn't happen.
+const AWAITING_EVIDENCE_STALE_AFTER_MS = 2 * 60 * 1000;
+
+/**
+ * The actual self-healing logic, separate from the Inngest function
+ * definition below for the same unit-testability reason as
+ * reapStaleResearchingMissions. Re-sending is safe and idempotent: the
+ * deterministic event id (mission-followup-<missionId>, the same one the
+ * original send used) means Inngest itself dedupes a genuine duplicate,
+ * and the atomic awaiting_evidence -> researching transition in
+ * runScoutPipeline means even a duplicate delivery can only ever start
+ * pass 2 once — never a second real Scout call, never a second charge.
+ */
+export async function resendStaleFollowupDispatches(now: Date = new Date()): Promise<{ resent: number }> {
+  const cutoff = new Date(now.getTime() - AWAITING_EVIDENCE_STALE_AFTER_MS);
+  const stale = await listStaleAwaitingEvidenceMissions(cutoff);
+
+  let resent = 0;
+  for (const mission of stale) {
+    // Belt-and-suspenders: a mission at the pass cap should never legally
+    // be sitting in "awaiting_evidence" in the first place (see
+    // nextStateForVerdict), but this watchdog must never be the thing that
+    // dispatches a pass beyond the cap if that invariant is ever violated.
+    if (mission.research_pass_count >= MAX_RESEARCH_PASSES) continue;
+
+    try {
+      await inngest.send({
+        id: `mission-followup-${mission.id}`,
+        name: MISSION_FOLLOWUP_NEEDED_EVENT,
+        data: { missionId: mission.id },
+      });
+      await recordActivity({
+        missionId: mission.id,
+        actor: "system",
+        action: "followup_dispatch_resent",
+        detail:
+          "Re-sent the follow-up dispatch event after the mission sat in awaiting_evidence longer than expected — the original send likely failed.",
+      });
+      resent += 1;
+    } catch {
+      // Still failing — leave it for the next sweep rather than letting
+      // one mission's send failure abort the rest of this run's.
+    }
+  }
+
+  return { resent };
+}
+
+export const followupDispatchWatchdog = inngest.createFunction(
+  { id: "followup-dispatch-watchdog", triggers: [{ cron: "*/1 * * * *" }] },
+  async ({ step }) => {
+    return step.run("resend-stale-followup-dispatches", () => resendStaleFollowupDispatches());
   },
 );

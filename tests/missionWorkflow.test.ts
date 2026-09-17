@@ -33,6 +33,7 @@ vi.mock("@/lib/agents/scout", () => {
 vi.mock("@/lib/inngest/client", () => ({
   inngest: { send: vi.fn() },
   MISSION_APPROVED_EVENT: "mission/approved",
+  MISSION_FOLLOWUP_NEEDED_EVENT: "mission/followup_needed",
 }));
 
 describe("mission workflow", () => {
@@ -619,5 +620,399 @@ describe("mission workflow", () => {
       expect.objectContaining({ id: created.id }),
       expect.objectContaining({ workspaceType: "commerce" }),
     );
+  });
+});
+
+describe("two-pass evidence loop (awaiting_evidence -> automatic follow-up)", () => {
+  let founderId: string;
+
+  beforeEach(async () => {
+    await resetDbForTests();
+    process.env.REQUIRE_FOUNDER_APPROVAL = "true";
+    founderId = (await listFounders())[0]!.id;
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockReset();
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(inngestModule.inngest.send).mockClear();
+  });
+
+  async function createAndApprove(title: string) {
+    const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title,
+      brief: "A mission whose first pass comes back inconclusive.",
+    });
+    await approveMission(created.id, founderId);
+    return created;
+  }
+
+  it("pass 1 investigate_further settles to awaiting_evidence, pass_count 1, and dispatches exactly one automatic follow-up", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report: makeScoutReport({
+        verdict: "investigate_further",
+        verdict_rationale: "The one source found doesn't confirm real demand.",
+        unresolved_questions: ["Is there genuine search volume for this term?"],
+      }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Inconclusive pass 1");
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("awaiting_evidence");
+    expect(settled.research_pass_count).toBe(1);
+    expect(settled.final_status).toBe("investigate_further");
+
+    const followupSends = vi
+      .mocked(inngestModule.inngest.send)
+      .mock.calls.filter(([evt]) => (evt as { name?: string }).name === "mission/followup_needed");
+    expect(followupSends).toHaveLength(1);
+    expect(followupSends[0]![0]).toMatchObject({ data: { missionId: created.id } });
+  });
+
+  it("dispatching the follow-up increments research_pass_count to 2, starts a distinct follow-up stage, and re-assigns Scout idempotently", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { listStages, listAssignments } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Two-pass mission");
+    await runScoutPipeline(created.id); // pass 1 -> awaiting_evidence
+
+    // Simulate the Inngest job picking up mission/followup_needed.
+    const settled = await runScoutPipeline(created.id); // pass 2
+
+    expect(settled.research_pass_count).toBe(2);
+    expect(settled.state).toBe("ready_for_founders_review");
+
+    const stageNames = (await listStages(created.id)).map((s) => s.stage_name);
+    expect(stageNames).toEqual(["scout_research", "scout_followup_research"]);
+
+    // Scout was already assigned during pass 1 — pass 2 must not create a
+    // second assignment row for the same mission/agent pair.
+    expect(await listAssignments(created.id)).toHaveLength(1);
+  });
+
+  it("builds pass 2's follow-up context from pass 1's own unresolved_questions, verdict_rationale, verified_facts, and sources", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const pass1Report = makeScoutReport({
+      verdict: "investigate_further",
+      verdict_rationale: "Only one weak source was found for demand.",
+      unresolved_questions: ["Does this term have real monthly search volume?", "Are competitors actually selling well?"],
+      verified_facts: [{ statement: "Etsy supports digital downloads in this category.", source_url: "https://example.com/etsy-trends" }],
+      sources: [
+        { url: "https://example.com/etsy-trends", title: "Etsy seller trends report", published_date: "2026-01-15", accessed_date: "2026-09-13" },
+      ],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: pass1Report,
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Follow-up context mission");
+    await runScoutPipeline(created.id);
+    await runScoutPipeline(created.id);
+
+    expect(scoutModule.runScoutResearch).toHaveBeenCalledTimes(2);
+    const secondCallArgs = vi.mocked(scoutModule.runScoutResearch).mock.calls[1]!;
+    expect(secondCallArgs[1]).toMatchObject({
+      followupContext: {
+        passNumber: 2,
+        maxPasses: 2,
+        priorVerdictRationale: pass1Report.verdict_rationale,
+        unresolvedQuestions: pass1Report.unresolved_questions,
+        priorVerifiedFacts: pass1Report.verified_facts,
+        priorSources: [{ url: "https://example.com/etsy-trends", title: "Etsy seller trends report" }],
+      },
+    });
+
+    // Pass 1's own call must never have received a followupContext.
+    const firstCallArgs = vi.mocked(scoutModule.runScoutResearch).mock.calls[0]!;
+    expect(firstCallArgs[1]).toMatchObject({ followupContext: undefined });
+  });
+
+  it("never overwrites pass 1's deliverable, and records pass 2 as a separate scout_followup_report", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { listDeliverables } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+    const pass1Report = makeScoutReport({ verdict: "investigate_further", verdict_rationale: "Pass 1 rationale." });
+    const pass2Report = makeScoutReport({ verdict: "ready_for_founders_review", verdict_rationale: "Pass 2 rationale." });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: pass1Report,
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: pass2Report,
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Preserve both reports");
+    await runScoutPipeline(created.id);
+
+    const afterPass1 = await listDeliverables(created.id);
+    expect(afterPass1).toHaveLength(1);
+    expect(afterPass1[0]?.kind).toBe("scout_research_report");
+    expect(afterPass1[0]?.content).toEqual(pass1Report);
+
+    await runScoutPipeline(created.id);
+
+    const afterPass2 = await listDeliverables(created.id);
+    expect(afterPass2).toHaveLength(2);
+    const original = afterPass2.find((d) => d.kind === "scout_research_report");
+    const followup = afterPass2.find((d) => d.kind === "scout_followup_report");
+    // Pass 1's row must be byte-for-byte unchanged by pass 2 running.
+    expect(original?.content).toEqual(pass1Report);
+    expect(original?.id).toBe(afterPass1[0]?.id);
+    expect(followup?.content).toEqual(pass2Report);
+  });
+
+  it("pass 2 ready_for_founders_review settles cleanly, with no further automatic dispatch", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Pass 2 resolves positively");
+    await runScoutPipeline(created.id);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(settled.final_status).toBe("ready_for_founders_review");
+
+    const followupSends = vi
+      .mocked(inngestModule.inngest.send)
+      .mock.calls.filter(([evt]) => (evt as { name?: string }).name === "mission/followup_needed");
+    expect(followupSends).toHaveLength(1); // only the original one dispatch, never a second
+  });
+
+  it("pass 2 reject settles the mission as rejected", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "reject", verdict_rationale: "Pass 2 confirms this isn't viable." }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Pass 2 resolves negatively");
+    await runScoutPipeline(created.id);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("rejected");
+    expect(settled.final_status).toBe("reject");
+  });
+
+  it("pass 2 still investigate_further stops automatic research: settles to ready_for_founders_review with the genuine investigate_further final_status preserved, and never dispatches a third pass", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const inngestModule = await import("@/lib/inngest/client");
+    const pass2Rationale = "Even after a targeted follow-up, genuine uncertainty remains.";
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further", verdict_rationale: pass2Rationale }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Still inconclusive after two passes");
+    await runScoutPipeline(created.id);
+    const settled = await runScoutPipeline(created.id);
+
+    // Never silently upgraded to look resolved — the real verdict is kept.
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(settled.final_status).toBe("investigate_further");
+    expect(settled.research_pass_count).toBe(2);
+
+    // No third dispatch — settling into ready_for_founders_review (not
+    // awaiting_evidence a second time) means the "fire on awaiting_evidence"
+    // trigger never runs again for this mission.
+    const followupSends = vi
+      .mocked(inngestModule.inngest.send)
+      .mock.calls.filter(([evt]) => (evt as { name?: string }).name === "mission/followup_needed");
+    expect(followupSends).toHaveLength(1);
+
+    // The pass 2 report itself is still fully preserved for the founder to read.
+    const { listDeliverables } = await import("@/lib/db/repositories");
+    const followup = (await listDeliverables(created.id)).find((d) => d.kind === "scout_followup_report");
+    expect((followup?.content as { verdict_rationale: string }).verdict_rationale).toBe(pass2Rationale);
+  });
+
+  it("layer 2 defense: refuses to dispatch a third pass even if a mission somehow re-enters awaiting_evidence at the pass cap", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { transitionMissionState, getMission } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+
+    const created = await createAndApprove("Forced past the cap");
+    // Force the mission directly to the state this should never legally
+    // reach on its own (nextStateForVerdict never produces it) — proving
+    // the dispatch-time guard is a real, independent backstop and not
+    // just untested reasoning about the first layer.
+    await transitionMissionState(created.id, ["queued"], "awaiting_evidence", { research_pass_count: 2 });
+
+    const result = await runScoutPipeline(created.id);
+
+    expect(result.state).toBe("awaiting_evidence");
+    expect(result.research_pass_count).toBe(2);
+    expect(scoutModule.runScoutResearch).not.toHaveBeenCalled();
+
+    const actions = (await listActivity(created.id)).map((a) => a.action);
+    expect(actions).toContain("followup_skipped_pass_cap");
+
+    const untouched = await getMission(created.id);
+    expect(untouched?.state).toBe("awaiting_evidence");
+  });
+
+  it("duplicate follow-up dispatch events cannot cause a duplicate pass 2 or a duplicate charge", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { MissionConcurrencyError } = await import("@/lib/domain/missionStates");
+    const { listCosts } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Duplicate follow-up dispatch race");
+    await runScoutPipeline(created.id); // pass 1 -> awaiting_evidence
+
+    // Two genuinely concurrent triggers for the same mission/followup_needed.
+    const results = await Promise.allSettled([runScoutPipeline(created.id), runScoutPipeline(created.id)]);
+
+    const rejected = results.filter((r) => r.status === "rejected");
+    for (const r of rejected) {
+      expect((r as PromiseRejectedResult).reason).toBeInstanceOf(MissionConcurrencyError);
+    }
+
+    const { getMission } = await import("@/lib/db/repositories");
+    const settled = await getMission(created.id);
+    expect(settled?.state).toBe("ready_for_founders_review");
+    expect(settled?.research_pass_count).toBe(2);
+
+    // Scout was called once for pass 1, and exactly once more for pass 2 —
+    // never twice for the same pass.
+    expect(scoutModule.runScoutResearch).toHaveBeenCalledTimes(2);
+    expect(await listCosts(created.id)).toHaveLength(2);
+  });
+
+  it("cancelling a mission while pass 2 is researching discards the pass-2 report but keeps pass 1's, and still records real cost", async () => {
+    const { runScoutPipeline, cancelMission } = await import("@/lib/domain/missionWorkflow");
+    const { getMission, listDeliverables } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+    const pass2Usage = { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 };
+
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 },
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockImplementationOnce(async (mission) => {
+      expect((await getMission(mission.id))?.state).toBe("researching");
+      await cancelMission(mission.id, founderId, "Changed my mind during the follow-up.");
+      return { report: makeScoutReport({ verdict: "ready_for_founders_review" }), usage: pass2Usage, evidence: [] };
+    });
+
+    const created = await createAndApprove("Cancelled during pass 2");
+    await runScoutPipeline(created.id); // pass 1 settles to awaiting_evidence
+    const settled = await runScoutPipeline(created.id); // pass 2, cancelled mid-flight
+
+    expect(settled.state).toBe("cancelled");
+    expect((await getMission(created.id))?.state).toBe("cancelled");
+
+    // Pass 1's real deliverable survives; pass 2's report was discarded,
+    // never stored, exactly like a cancelled pass 1 always has been.
+    const deliverables = await listDeliverables(created.id);
+    expect(deliverables).toHaveLength(1);
+    expect(deliverables[0]?.kind).toBe("scout_research_report");
+
+    const costs = await listCosts(created.id);
+    expect(costs).toHaveLength(2); // pass 1's real cost, plus pass 2's real cost — both genuinely spent
+    expect(costs[1]?.usd_cost).toBeCloseTo(pass2Usage.usdCost, 6);
+  });
+
+  it("recovers pass 2 into its own existing stage (not pass 1's) after a simulated crash mid-follow-up", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { transitionMissionState, getAgentByKey, assignAgent, startStage, listStages, recordDeliverable } =
+      await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Crashed mid-follow-up");
+    const scoutForDeliverable = (await getAgentByKey("scout"))!;
+    // Simulate: pass 1 genuinely ran and completed (real deliverable
+    // recorded, state at awaiting_evidence, pass_count 1), then the
+    // follow-up dispatch got as far as "researching" + pass_count 2 + a
+    // fresh stage row, then the process died before ever calling Scout
+    // for pass 2 — a real crash-recovery scenario always has pass 1's
+    // report already on record, which is what pass 2 needs to resume into.
+    await recordDeliverable({
+      missionId: created.id,
+      agentId: scoutForDeliverable.id,
+      kind: "scout_research_report",
+      content: makeScoutReport({ verdict: "investigate_further" }),
+    });
+    await transitionMissionState(created.id, ["queued"], "awaiting_evidence", { research_pass_count: 1 });
+    await transitionMissionState(created.id, ["awaiting_evidence"], "researching", { research_pass_count: 2 });
+    const scout = (await getAgentByKey("scout"))!;
+    await assignAgent(created.id, scout.id, "lead");
+    await startStage(created.id, "scout_followup_research", "Scout is doing a targeted follow-up pass.");
+
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    const stages = await listStages(created.id);
+    // Must resume into the one existing follow-up stage, never duplicate it.
+    expect(stages.filter((s) => s.stage_name === "scout_followup_research")).toHaveLength(1);
   });
 });

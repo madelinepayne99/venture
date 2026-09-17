@@ -23,6 +23,21 @@ describe("mission state machine", () => {
     expect(canTransition("researching", "failed")).toBe(true);
   });
 
+  it("allows the automatic follow-up pass out of awaiting_evidence, and nothing else", () => {
+    // The one real way out of awaiting_evidence besides a founder
+    // cancelling: the automatic targeted follow-up pass (see
+    // missionWorkflow.ts's MAX_RESEARCH_PASSES). The old direct edges to
+    // ready_for_founders_review/rejected/failed were legal but
+    // structurally unreachable — dropped rather than left as a
+    // misleading dead path; a settled follow-up pass now reaches those
+    // states via researching, same as the original pass always did.
+    expect(canTransition("awaiting_evidence", "researching")).toBe(true);
+    expect(canTransition("awaiting_evidence", "cancelled")).toBe(true);
+    expect(canTransition("awaiting_evidence", "ready_for_founders_review")).toBe(false);
+    expect(canTransition("awaiting_evidence", "rejected")).toBe(false);
+    expect(canTransition("awaiting_evidence", "failed")).toBe(false);
+  });
+
   it("never allows skipping straight to a completion state — no fabricated progress", () => {
     expect(canTransition("draft", "ready_for_founders_review")).toBe(false);
     expect(canTransition("draft", "researching")).toBe(false);

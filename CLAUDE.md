@@ -404,6 +404,223 @@ open to give research a realistic duration): Scout now reliably walks to
 the Research Room while genuinely `researching` and walks back to the Hub
 once the mission settles, across multiple consecutive real runs.
 
+**Milestone 4.5: `awaiting_evidence` is no longer a dead end — Scout gets
+one automatic, targeted second research pass.** An investigation into a
+real mission stuck at `awaiting_evidence` (see that investigation's own
+report, preserved in this session's history) confirmed the state was
+functioning exactly as coded but exposed a genuinely missing piece: no
+mechanism — human or agent — ever moved a mission out of it. This
+milestone closes that gap. The lifecycle is now:
+
+```
+queued → researching (pass 1) →
+  ready_for_founders_review           (sufficient evidence)
+  rejected                            (Scout concludes it isn't worth pursuing)
+  awaiting_evidence → researching (pass 2, automatic) →
+    ready_for_founders_review         (pass 2 resolves it either way)
+    rejected
+    ready_for_founders_review, final_status "investigate_further"
+                                       (still inconclusive — automatic
+                                       research stops; a founder decides)
+```
+
+- **`missions.research_pass_count`** (new column, `integer not null
+  default 0`, migration `drizzle/0002_watery_bulldozer.sql`) is the one
+  new piece of state — how many real Scout research passes a mission has
+  actually had. `transitionMissionState`'s `fields` parameter widened to
+  accept it, written atomically alongside every state change exactly like
+  `interpreted_mission`/`final_status`/`failure_reason` already were — no
+  separate read-then-write gap for a race to land in.
+- **`ALLOWED_TRANSITIONS.awaiting_evidence`** (`missionStates.ts`) is now
+  `["researching", "cancelled"]` — the automatic follow-up pass, or a
+  founder cancelling. The old direct edges to `ready_for_founders_review`/
+  `rejected`/`failed` were legal in the graph but structurally
+  unreachable (confirmed by the investigation — nothing ever called
+  `transitionMissionState` with `awaiting_evidence` as the fromState);
+  dropped rather than left as a misleading dead path.
+- **`MAX_RESEARCH_PASSES = 2`** (`missionWorkflow.ts`, a version-controlled
+  constant, deliberately not an env var — `REQUIRE_FOUNDER_APPROVAL` is a
+  safety/consent toggle a deployment might legitimately flip; this is a
+  cost/quality tuning knob that should go through code review). Enforced
+  in three independent layers, never trusting a single code path with
+  real model spend: (1) `nextStateForVerdict(verdict, passCount)` never
+  routes `"investigate_further"` back to `"awaiting_evidence"` once a
+  mission has already had `MAX_RESEARCH_PASSES` real passes — it routes to
+  `"ready_for_founders_review"` instead; (2) `runScoutPipeline`'s
+  `"awaiting_evidence"` branch independently checks the same cap *before*
+  ever calling `runScoutResearch` again, refusing (with a logged
+  `followup_skipped_pass_cap` activity entry) even if layer 1 somehow
+  didn't hold; (3) the Inngest function's existing `concurrency: { limit:
+  1, key: "event.data.missionId" }` plus the atomic
+  `["awaiting_evidence"] → "researching"` transition mean a duplicate
+  follow-up dispatch can never start pass 2 twice or charge twice
+  (proven directly — two genuinely concurrent triggers for the same
+  mission's follow-up, only one dispatches, Scout billed exactly once).
+- **`runScoutPipeline`** (`missionWorkflow.ts`) gained a third real branch
+  alongside its existing `"queued"` (pass 1) and `"researching"`-resume
+  ones: `"awaiting_evidence"` — the pass-cap guard above, then the atomic
+  `awaiting_evidence → researching` transition with
+  `research_pass_count` incremented, a `followup_research_started`
+  activity entry, and a new `scout_followup_research` stage (distinct
+  from pass 1's `scout_research`, so both show up separately in "What
+  Scout is doing" with zero UI changes needed there). The crash-resume
+  branch (`mission.state === "researching"`) now derives *which* stage
+  name to resume into from `research_pass_count` itself
+  (`>= 2` → `scout_followup_research`) rather than assuming the original
+  stage — a crashed pass 2 must resume into its own stage, not duplicate
+  pass 1's. `listStaleResearchingMissions` (the 10-minute stuck-mission
+  watchdog's own query) was widened the same way — it originally
+  hardcoded the `"scout_research"` stage name, which would have silently
+  never reaped a crashed pass 2.
+- **The follow-up prompt is not the original prompt replayed.**
+  `buildScoutUserPrompt` (`prompt.ts`) gained an optional
+  `ScoutFollowupContext` parameter (`passNumber`, `maxPasses`,
+  `priorVerdictRationale`, `unresolvedQuestions`, `priorVerifiedFacts`,
+  `priorSources`) — when present, the user prompt explicitly frames the
+  task as a targeted, non-repeating second pass, quotes pass 1's own
+  rationale and unresolved questions back to Scout as the specific gaps
+  to close, lists what's already verified so Scout doesn't re-search or
+  re-cite it, and tells Scout plainly that this is genuinely the last
+  automated pass — so its own `verdict_rationale` is honest about that if
+  real uncertainty remains, rather than implying a third pass is coming.
+  `runScoutResearch`'s `ScoutDeps` gained the matching optional
+  `followupContext` field. Deliberately **no schema or guardrail
+  changes** — `ScoutReportSchema`, `applyGuardrails`,
+  `hasMeaningfulEvidence`, and `findGuaranteeLanguage` all operate on the
+  parsed `ScoutReport` object regardless of which prompt produced it, and
+  a test proves the guardrails apply identically to a follow-up report.
+- **Both passes' reports are preserved, never overwritten.**
+  `deliverables.kind` gets a new value, `"scout_followup_report"`,
+  alongside the existing `"scout_research_report"` — `deliverables` was
+  already insert-only, so pass 2 is simply a second row, pass 1's row is
+  never touched (proven byte-for-byte in a test). `evidence` and `costs`
+  remain what they already were — insert-only per item — so both passes'
+  sources and real spend accumulate automatically; nothing needed to
+  change there for "cumulative and auditable" to hold.
+  `lib/api/missionDetail.ts`'s `getMissionDetail()` now returns both
+  `scoutReport` (pass 1) and `followupReport` (pass 2, `null` for an
+  ordinary one-pass mission) instead of just one report field.
+- **`MissionDetail.tsx`** extracts the existing report-rendering markup
+  into a shared `ScoutReportBody` component, rendered once under an
+  "Initial research" label and again under "Follow-up investigation" when
+  a `followupReport` exists (a one-pass mission renders exactly as
+  before, no added labels). A new `FounderReviewBanner` is the actual
+  mechanism for the founder-facing distinction Ellis and Maddie need: it
+  reads `mission.state`/`mission.final_status` (never a separate mission
+  state — see below) and renders one of three genuinely different
+  treatments — a success-styled "Scout recommends founder review," a
+  danger-styled "Scout recommends rejection," or, when
+  `final_status === "investigate_further"` after landing in
+  `ready_for_founders_review` anyway, an amber "Evidence inconclusive
+  after N investigations" banner that states plainly that automatic
+  research has stopped and this is not a recommendation either way. A
+  founder can still approve an inconclusive mission — the banner informs
+  the decision, it never blocks it.
+- **No new mission state for "inconclusive after two passes."** Reuses
+  `ready_for_founders_review`, distinguished by the real, never-silently-
+  upgraded `final_status`/`verdict` — considered and rejected adding a
+  distinct state (e.g. `needs_founder_decision`) specifically because the
+  next planned milestone (a founder approving a researched opportunity to
+  hand off to a future Content Bot) reads most naturally as one gate over
+  one predecessor state; a second state would force that future gate to
+  special-case two similar-but-different predecessors, or block a founder
+  from approving an inconclusive-but-still-worth-pursuing mission without
+  first somehow reclassifying it. `final_status` already existed to carry
+  exactly this nuance — the state machine's job stays "what happens next
+  automatically" (nothing, for either case — a founder decides), not
+  "how did we get here."
+- **`mission/followup_needed`** (`lib/inngest/client.ts`) is fired the
+  moment pass 1 settles into `awaiting_evidence` — same "send the event,
+  return immediately" pattern as `approveMission`'s own
+  `mission/approved`. `scoutResearchJob.ts` (`lib/jobs/`) is not
+  duplicated into a second job file — the same function now has two
+  triggers, both calling the same `runScoutPipeline`, which already
+  branches on the mission's real current state rather than on which
+  event fired it; the concurrency key, retry policy, and
+  `NonRetriableError` wrapping apply identically to either pass for free.
+- **Failure handling for the automatic dispatch itself.** The
+  `inngest.send()` call for `mission/followup_needed` is wrapped in its
+  own try/catch inside `runScoutPipeline` — a failure there is recorded
+  as a `followup_dispatch_failed` activity entry and never undoes or
+  corrupts pass 1's already-committed settlement (this was a real,
+  necessary addition beyond the base design — without it, a transient
+  send failure would silently reproduce the exact dead-end bug this
+  milestone exists to fix, one step later). `stuckMissionWatchdog.ts`
+  gained a second scheduled Inngest function,
+  `followupDispatchWatchdog` (every minute, much shorter than the
+  10-minute stuck-`researching` threshold, since a healthy dispatch
+  lands near-instantly), backed by the testable
+  `resendStaleFollowupDispatches` — any mission sitting in
+  `awaiting_evidence` for over ~2 minutes with `research_pass_count`
+  under the cap gets `mission/followup_needed` re-sent, using the *same*
+  deterministic event id as the original send
+  (`mission-followup-<missionId>`), so Inngest's own dedup is a second
+  backstop on top of the atomic transition guard against ever actually
+  running pass 2 twice.
+- **`FoundersDeskApp.tsx`'s `POLLING_STATES`** gained `"awaiting_evidence"`
+  — under this design it's always a transient state (a mission only ever
+  lands there when a follow-up genuinely will dispatch automatically;
+  `nextStateForVerdict` never lets it become a resting state once the
+  pass cap is hit), so without this the frontend would stop polling the
+  instant pass 1 settles there and silently miss pass 2's dispatch
+  landing — freezing the mission board, and Scout's HQ animation, until a
+  manual refresh, undercutting the animation fix from the previous
+  milestone. Verified live: with this in place, a founder watching HQ
+  View sees the real sequence happen without refreshing — Scout walks to
+  the Research Room, the tag reads "Researching," the mission board shows
+  "Awaiting evidence" briefly, Scout genuinely walks back to the Research
+  Room a second time as pass 2 starts, then walks back to the Founders'
+  Hub once the mission finally settles.
+- **Cost note:** a mission can now genuinely spend up to
+  `MAX_RESEARCH_PASSES` (2) full research calls, not 1 — see "Local
+  verification vs. a real deployment" below for the updated worst-case
+  ceiling.
+
+**Milestone 4.6: the shared-world architecture principle, locked in ahead
+of Content Bot.** No code changed for this — Content Bot itself is not
+built yet (still `status = 'planned'` in `agents`, per Milestone 1). This
+records a binding architectural decision made before that milestone
+starts, specifically so nothing built in the meantime makes it harder:
+
+- **Venture HQ is one persistent, shared physical world.** Scout, a future
+  Content Bot, and every agent after it live and work inside the *same*
+  `components/founders-desk/world/` scene — not a separate Three.js scene,
+  a separate world instance, or an isolated environment per agent or per
+  department. As agents are added, the world expands (more characters,
+  more desks, more rooms/workstations, more destinations in
+  `world/layout.ts`'s waypoint graph) — it is never forked.
+- **Business workspaces (Commerce, Local Services, and the still-planned
+  Content Studio / Game Studio tabs in `hq/WorkspaceBar.tsx`) are a
+  domain/data concept, not a physical one.** A mission belonging to a
+  particular workspace does not imply a separate physical space for the
+  agents working on it — the founders' desk, Scout's research desk, and
+  (later) Content Bot's workstation all exist in the one HQ scene
+  regardless of which workspace the mission they're working on belongs
+  to. Keep `lib/domain/*` (workspace/business logic) and
+  `components/founders-desk/world/*` (the physical scene) as separate,
+  non-overlapping concerns the way they already are — a workspace type is
+  never a reason to instantiate a new `OfficeWorld`.
+- **Per-agent runtime state, not aggregate mission-state checks.** This is
+  the exact shortcut Milestone 4.3/4.4 already corrected for Scout:
+  `world/layout.ts`'s `researchDestination(missions, leadAssignments)`
+  moves Scout only when a mission is genuinely `researching` *and* a real
+  `agent_assignments` row names him specifically as its lead — never from
+  "is any mission in this room researching." Any future agent's own
+  destination/working-state function must follow the identical pattern —
+  driven by that agent's own real assignment rows, never by a shared
+  "is anything happening" flag — so that, once Content Bot exists, Scout
+  researching Mission A and Content Bot producing Mission B can be
+  visibly, independently true in the same room at the same time, each
+  correctly reading only its own real work.
+- **The next real milestone** is a separate founder-approval gate — a
+  founder reviewing Scout's real evidence/verdict at
+  `ready_for_founders_review` and explicitly approving *production*
+  (distinct from the existing approval that dispatches Scout to research
+  in the first place) — which then gives Content Bot a real assignment it
+  responds to inside this same world. Not built yet; recorded here so the
+  gate is designed as its own real transition when that milestone starts,
+  not smuggled in early.
+
 ## Architecture
 
 - **Next.js (App Router) + TypeScript + Tailwind.** Route handlers under
@@ -881,18 +1098,31 @@ against a simulated job runner:
   cost is still real and still uncapped by anything in this codebase — the
   Anthropic Console's own spend limit is the only actual backstop, not
   application logic here.
-  **Worst-case ceiling for one Scout run, post-fix:** up to `MAX_ITERATIONS`
-  (4) main-loop calls plus at most one bounded recovery call, each capped
-  at `MAX_TOKENS` (10,000) output tokens with thinking disabled — a
-  theoretical maximum of 50,000 output tokens (≈$0.50 at Sonnet 5's output
-  rate) plus input tokens (system prompt, search results, growing
-  conversation history — harder to bound precisely, but the recovery call
-  specifically adds none, since it omits `tools` and carries only a short
-  extra instruction). This ceiling is rarely approached in practice —
-  disabling thinking and capping the report's arrays should make most
-  focused missions complete well under $1 total, not because of a new
-  application-level cap (there isn't one) but because the failure mode
-  that was inflating cost and reliability is what got fixed.
+  **Worst-case ceiling for one Scout research *pass*, post-fix:** up to
+  `MAX_ITERATIONS` (4) main-loop calls plus at most one bounded recovery
+  call, each capped at `MAX_TOKENS` (10,000) output tokens with thinking
+  disabled — a theoretical maximum of 50,000 output tokens (≈$0.50 at
+  Sonnet 5's output rate) plus input tokens (system prompt, search
+  results, growing conversation history — harder to bound precisely, but
+  the recovery call specifically adds none, since it omits `tools` and
+  carries only a short extra instruction). This ceiling is rarely
+  approached in practice — disabling thinking and capping the report's
+  arrays should make most focused passes complete well under $1, not
+  because of a new application-level cap (there isn't one) but because
+  the failure mode that was inflating cost and reliability is what got
+  fixed.
+  **Worst-case ceiling per *mission*, since Milestone 4.5:** up to
+  `MAX_RESEARCH_PASSES` (2) real passes — a mission whose first pass comes
+  back `investigate_further` genuinely gets one automatic, targeted
+  follow-up pass, each independently subject to the per-pass ceiling
+  above. Worst case is therefore roughly double the single-pass figure
+  (~$1, not ~$0.50) — a real, deliberate tradeoff (see Milestone 4.5),
+  bounded at exactly 2 passes in three independent layers, never
+  unbounded. In practice the follow-up prompt is markedly more targeted
+  than the original (it's handed the specific unresolved questions to
+  close, not the whole mission again), so it should typically cost less
+  than pass 1, not the same — but the ceiling above is the real worst
+  case, not the typical one.
 
 **Nothing has been deployed. No GitHub OAuth App, Inngest Cloud, or Vercel
 account has been created or connected.** (A real Neon Postgres project

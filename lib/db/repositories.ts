@@ -166,7 +166,7 @@ export async function transitionMissionState(
   fromStates: MissionState[],
   toState: MissionState,
   fields: Partial<
-    Pick<Mission, "interpreted_mission" | "final_status" | "failure_reason">
+    Pick<Mission, "interpreted_mission" | "final_status" | "failure_reason" | "research_pass_count">
   > = {},
 ): Promise<TransitionResult> {
   if (fromStates.length === 0) {
@@ -179,6 +179,7 @@ export async function transitionMissionState(
   if (fields.interpreted_mission !== undefined) updateValues.interpreted_mission = fields.interpreted_mission;
   if (fields.final_status !== undefined) updateValues.final_status = fields.final_status;
   if (fields.failure_reason !== undefined) updateValues.failure_reason = fields.failure_reason;
+  if (fields.research_pass_count !== undefined) updateValues.research_pass_count = fields.research_pass_count;
 
   const updated = await db
     .update(schema.missions)
@@ -281,7 +282,15 @@ export async function getOpenStage(
   return row as MissionStage | undefined;
 }
 
-/** Every mission still "researching" whose stage started before `olderThan` — for the stuck-mission watchdog. */
+/**
+ * Every mission still "researching" whose stage started before `olderThan`
+ * — for the stuck-mission watchdog. Matches either research stage name —
+ * the original pass ("scout_research") or the automatic follow-up pass
+ * ("scout_followup_research", see missionWorkflow.ts's MAX_RESEARCH_PASSES)
+ * — so a crashed second pass is reaped exactly the same as a crashed first
+ * one, not silently left forever because the join only looked for the
+ * original stage name.
+ */
 export async function listStaleResearchingMissions(olderThan: Date): Promise<
   Array<{ mission: Mission; stage: MissionStage }>
 > {
@@ -293,12 +302,35 @@ export async function listStaleResearchingMissions(olderThan: Date): Promise<
       schema.missionStages,
       and(
         eq(schema.missionStages.mission_id, schema.missions.id),
-        eq(schema.missionStages.stage_name, "scout_research"),
+        inArray(schema.missionStages.stage_name, ["scout_research", "scout_followup_research"]),
         eq(schema.missionStages.status, "in_progress"),
       ),
     )
     .where(and(eq(schema.missions.state, "researching"), sql`${schema.missionStages.started_at} < ${olderThan.toISOString()}`));
   return rows as Array<{ mission: Mission; stage: MissionStage }>;
+}
+
+/**
+ * Every mission still "awaiting_evidence" (i.e. its automatic follow-up
+ * dispatch hasn't landed yet) whose last state change was before
+ * `olderThan` — for the follow-up-dispatch self-healing watchdog. A
+ * healthy dispatch lands near-instantly; a mission stuck here past a
+ * short threshold means the mission/followup_needed event send failed
+ * (see runScoutPipeline's followup_dispatch_failed handling) and needs
+ * re-sending, not a "failed" verdict — no real research work was lost.
+ */
+export async function listStaleAwaitingEvidenceMissions(olderThan: Date): Promise<Mission[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.missions)
+    .where(
+      and(
+        eq(schema.missions.state, "awaiting_evidence"),
+        sql`${schema.missions.updated_at} < ${olderThan.toISOString()}`,
+      ),
+    );
+  return rows as Mission[];
 }
 
 // --- Agent assignments ----------------------------------------------------

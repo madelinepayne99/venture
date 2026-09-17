@@ -1,5 +1,7 @@
 import "server-only";
 import type { Mission, MissionStage, MissionState, ScoutVerdict, WorkspaceType } from "@/lib/db/types";
+import type { ScoutReport } from "@/lib/agents/scout/schema";
+import type { ScoutFollowupContext } from "@/lib/agents/scout/prompt";
 import {
   createMission,
   getMission,
@@ -16,13 +18,26 @@ import {
   getAgentByKey,
   recordEvidence,
   recordDeliverable,
+  listDeliverables,
   recordCost,
 } from "@/lib/db/repositories";
 import { validateMissionInput, type MissionInput } from "@/lib/domain/missionValidation";
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
 import { calculateUsdCost } from "@/lib/agents/pricing";
-import { inngest, MISSION_APPROVED_EVENT } from "@/lib/inngest/client";
+import { inngest, MISSION_APPROVED_EVENT, MISSION_FOLLOWUP_NEEDED_EVENT } from "@/lib/inngest/client";
+
+// The one and only cap on automatic Scout research: a mission whose first
+// pass comes back "investigate_further" gets exactly one automatic,
+// targeted follow-up pass — never more. Deliberately a version-controlled
+// constant, not an env var: REQUIRE_FOUNDER_APPROVAL is a safety/consent
+// toggle a deployment might legitimately flip; this is a cost/quality
+// tuning knob that should go through code review, not a silent env change.
+// Enforced in three independent layers (see nextStateForVerdict, the
+// awaiting_evidence branch of runScoutPipeline, and the Inngest
+// concurrency key on scoutResearchJob.ts) — never trust a single code
+// path with real, uncapped model spend.
+export const MAX_RESEARCH_PASSES = 2;
 
 export class MissionValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -197,14 +212,26 @@ export async function cancelMission(missionId: string, founderId: string, note?:
   return transition.mission;
 }
 
-function nextStateForVerdict(verdict: ScoutVerdict): MissionState {
+/**
+ * Layer 1 of the research-pass cap: once a mission has already had
+ * MAX_RESEARCH_PASSES real passes, "investigate_further" can no longer
+ * route to "awaiting_evidence" (which is what triggers another automatic
+ * pass) — it routes straight to "ready_for_founders_review" instead. The
+ * mission's real final_status/verdict is still recorded as
+ * "investigate_further" by the caller (never silently upgraded to look
+ * resolved); this only decides which *state* it settles into. A founder
+ * remains the only path forward from there, same as any other
+ * ready_for_founders_review mission — see MissionDetail.tsx for how that
+ * genuine distinction is surfaced without a separate mission state.
+ */
+function nextStateForVerdict(verdict: ScoutVerdict, passCount: number): MissionState {
   switch (verdict) {
     case "ready_for_founders_review":
       return "ready_for_founders_review";
-    case "investigate_further":
-      return "awaiting_evidence";
     case "reject":
       return "rejected";
+    case "investigate_further":
+      return passCount >= MAX_RESEARCH_PASSES ? "ready_for_founders_review" : "awaiting_evidence";
   }
 }
 
@@ -246,7 +273,9 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
 
   if (mission.state === "queued") {
     assertTransition(mission.state, "researching");
-    const started = await transitionMissionState(missionId, [mission.state], "researching");
+    const started = await transitionMissionState(missionId, [mission.state], "researching", {
+      research_pass_count: 1,
+    });
     if (!started.ok) {
       throw new MissionConcurrencyError(missionId, [mission.state], "researching", started.mission.state);
     }
@@ -254,11 +283,56 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
     await recordActivity({ missionId, actor: "system", action: "research_started" });
     await assignAgent(missionId, scout.id, "lead");
     stage = await startStage(missionId, "scout_research", "Scout is researching the opportunity.");
+  } else if (mission.state === "awaiting_evidence") {
+    // Layer 2 of the research-pass cap: a hard backstop against real spend,
+    // independent of nextStateForVerdict (layer 1). Should be structurally
+    // unreachable — nextStateForVerdict never routes a mission back into
+    // "awaiting_evidence" once it's already had MAX_RESEARCH_PASSES real
+    // passes — but this is exactly the kind of thing not to trust a single
+    // code path with (see guardrails.ts's guarantee-language check for the
+    // same "the prompt already says this, check it in code too" instinct).
+    if (mission.research_pass_count >= MAX_RESEARCH_PASSES) {
+      await recordActivity({
+        missionId,
+        actor: "system",
+        action: "followup_skipped_pass_cap",
+        detail: `Mission already had ${mission.research_pass_count} research pass(es) (cap: ${MAX_RESEARCH_PASSES}) — refusing to dispatch another automated pass.`,
+      });
+      return mission;
+    }
+    assertTransition(mission.state, "researching");
+    const started = await transitionMissionState(missionId, [mission.state], "researching", {
+      research_pass_count: mission.research_pass_count + 1,
+    });
+    if (!started.ok) {
+      throw new MissionConcurrencyError(missionId, [mission.state], "researching", started.mission.state);
+    }
+    mission = started.mission;
+    await recordActivity({
+      missionId,
+      actor: "system",
+      action: "followup_research_started",
+      detail: `Pass ${mission.research_pass_count} of ${MAX_RESEARCH_PASSES} — targeted follow-up to resolve the evidence gaps from pass 1.`,
+    });
+    if (!(await hasAssignment(missionId, scout.id))) {
+      await assignAgent(missionId, scout.id, "lead");
+    }
+    stage = await startStage(
+      missionId,
+      "scout_followup_research",
+      "Scout is doing a targeted follow-up pass to resolve the evidence gaps from pass 1.",
+    );
   } else if (mission.state === "researching") {
-    const existingStage = await getOpenStage(missionId, "scout_research");
+    // Resuming after a crash mid-run. research_pass_count already tells us
+    // definitively which pass was in flight (set atomically by whichever
+    // branch above started it), so the correct stage name to resume into
+    // is derived from it rather than assumed — a crashed pass 2 must
+    // resume into "scout_followup_research", not duplicate "scout_research".
+    const stageName = mission.research_pass_count >= 2 ? "scout_followup_research" : "scout_research";
+    const existingStage = await getOpenStage(missionId, stageName);
     stage =
       existingStage ??
-      (await startStage(missionId, "scout_research", "Resumed after an earlier attempt did not finish."));
+      (await startStage(missionId, stageName, "Resumed after an earlier attempt did not finish."));
     if (!(await hasAssignment(missionId, scout.id))) {
       await assignAgent(missionId, scout.id, "lead");
     }
@@ -269,21 +343,43 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
       missionId,
       actor: "system",
       action: "research_skipped",
-      detail: `Mission was "${mission.state}", not queued or researching, when the research job ran — skipped.`,
+      detail: `Mission was "${mission.state}", not queued, awaiting_evidence, or researching, when the research job ran — skipped.`,
     });
     return mission;
   }
 
   try {
     const workspaceType = await resolveWorkspaceType(mission);
-    const outcome = await runScoutResearch(mission, { workspaceType });
+    const isFollowupPass = mission.research_pass_count >= 2;
+
+    let followupContext: ScoutFollowupContext | undefined;
+    if (isFollowupPass) {
+      const priorReport = (
+        await listDeliverables(missionId)
+      ).find((d) => d.kind === "scout_research_report")?.content as ScoutReport | undefined;
+      if (!priorReport) {
+        throw new Error(
+          `Mission ${missionId} is on research pass ${mission.research_pass_count} but has no original scout_research_report deliverable to build a follow-up from.`,
+        );
+      }
+      followupContext = {
+        passNumber: mission.research_pass_count,
+        maxPasses: MAX_RESEARCH_PASSES,
+        priorVerdictRationale: priorReport.verdict_rationale,
+        unresolvedQuestions: priorReport.unresolved_questions,
+        priorVerifiedFacts: priorReport.verified_facts,
+        priorSources: priorReport.sources.map((s) => ({ url: s.url, title: s.title })),
+      };
+    }
+
+    const outcome = await runScoutResearch(mission, { workspaceType, followupContext });
 
     // Re-check reality right before settling — the mission may have been
     // cancelled (or otherwise moved) while that call was in flight. The
     // WHERE clause inside transitionMissionState is what actually performs
     // this check; there is no separate read-then-write gap for a race to
     // land in.
-    const nextState = nextStateForVerdict(outcome.report.verdict);
+    const nextState = nextStateForVerdict(outcome.report.verdict, mission.research_pass_count);
     const settlement = await transitionMissionState(mission.id, ["researching"], nextState, {
       interpreted_mission: outcome.report.interpreted_mission,
       final_status: outcome.report.verdict,
@@ -325,20 +421,49 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
       await recordEvidence({ missionId: mission.id, ...item });
     }
 
+    // Pass 1's report keeps its original kind forever — never overwritten,
+    // never reused for pass 2. Pass 2 gets its own distinct kind, so both
+    // are preserved as separate rows a founder can review side by side
+    // (see missionDetail.ts / MissionDetail.tsx).
     await recordDeliverable({
       missionId: mission.id,
       agentId: scout.id,
-      kind: "scout_research_report",
+      kind: isFollowupPass ? "scout_followup_report" : "scout_research_report",
       content: outcome.report,
     });
 
-    await completeStage(stage.id, `Verdict: ${outcome.report.verdict}`);
+    await completeStage(stage.id, `Pass ${mission.research_pass_count} verdict: ${outcome.report.verdict}`);
     await recordActivity({
       missionId: mission.id,
       actor: "agent:scout",
       action: "research_completed",
-      detail: `Verdict: ${outcome.report.verdict}`,
+      detail: `Pass ${mission.research_pass_count} verdict: ${outcome.report.verdict}`,
     });
+
+    if (settlement.mission.state === "awaiting_evidence") {
+      // Automatic dispatch of the one allowed follow-up pass — mirrors
+      // approveMission's "send the event, don't wait" pattern exactly.
+      // A failure here must never undo or corrupt the settlement above,
+      // which already committed successfully — see the self-healing
+      // watchdog (stuckMissionWatchdog.ts) for how a failed send here
+      // gets retried rather than leaving the mission stranded.
+      try {
+        await inngest.send({
+          id: `mission-followup-${mission.id}`,
+          name: MISSION_FOLLOWUP_NEEDED_EVENT,
+          data: { missionId: mission.id },
+        });
+      } catch (sendError) {
+        await recordActivity({
+          missionId: mission.id,
+          actor: "system",
+          action: "followup_dispatch_failed",
+          detail: `Could not send the automatic follow-up dispatch event: ${
+            sendError instanceof Error ? sendError.message : "unknown error"
+          }. The mission remains correctly settled at "awaiting_evidence" — the self-healing watchdog will retry the dispatch.`,
+        });
+      }
+    }
 
     return settlement.mission;
   } catch (error) {

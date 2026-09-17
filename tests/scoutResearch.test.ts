@@ -20,6 +20,7 @@ function makeMission(overrides: Partial<Mission> = {}): Mission {
     state: "researching",
     final_status: null,
     failure_reason: null,
+    research_pass_count: 1,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
@@ -630,5 +631,79 @@ describe("findGuaranteeLanguage — complete coverage across the discriminated u
 
     const factStatements = outcome.report.verified_facts.map((f) => f.statement);
     expect(factStatements).not.toContain(outcome.report.inferences[0]);
+  });
+});
+
+describe("runScoutResearch — targeted follow-up pass (two-pass evidence loop)", () => {
+  const followupContext = {
+    passNumber: 2,
+    maxPasses: 2,
+    priorVerdictRationale: "Only one weak source was found for real demand.",
+    unresolvedQuestions: [
+      "Is there genuine monthly search volume for this term?",
+      "Do any competitors actually have verified sales?",
+    ],
+    priorVerifiedFacts: [
+      { statement: "Etsy allows digital downloads in this category.", source_url: "https://example.com/etsy-trends" },
+    ],
+    priorSources: [{ url: "https://example.com/etsy-trends", title: "Etsy seller trends report" }],
+  };
+
+  it("sends a user prompt that includes the prior rationale and every unresolved question verbatim", async () => {
+    const report = makeScoutReport({ verdict: "ready_for_founders_review" });
+    const { client, calls } = fakeAnthropicClientWithCalls([fakeAnthropicMessage(report)]);
+
+    await runScoutResearch(makeMission({ research_pass_count: 2 }), { client, followupContext });
+
+    const sentPrompt = (calls[0] as { messages: Array<{ content: string }> }).messages[0]!.content;
+    expect(sentPrompt).toContain(followupContext.priorVerdictRationale);
+    for (const question of followupContext.unresolvedQuestions) {
+      expect(sentPrompt).toContain(question);
+    }
+    expect(sentPrompt).toContain(followupContext.priorVerifiedFacts[0]!.statement);
+    expect(sentPrompt).toContain(followupContext.priorSources[0]!.url);
+  });
+
+  it("explicitly frames the follow-up as targeted and non-repeating, not a fresh research job", async () => {
+    const report = makeScoutReport({ verdict: "ready_for_founders_review" });
+    const { client, calls } = fakeAnthropicClientWithCalls([fakeAnthropicMessage(report)]);
+
+    await runScoutResearch(makeMission({ research_pass_count: 2 }), { client, followupContext });
+
+    const sentPrompt = (calls[0] as { messages: Array<{ content: string }> }).messages[0]!.content;
+    expect(sentPrompt).toMatch(/targeted follow-up investigation/i);
+    expect(sentPrompt).toMatch(/do not repeat the original broad research/i);
+    expect(sentPrompt).toMatch(/last automated research pass/i);
+  });
+
+  it("omits the follow-up framing entirely when no followupContext is given (pass 1's prompt is unchanged)", async () => {
+    const report = makeScoutReport();
+    const { client, calls } = fakeAnthropicClientWithCalls([fakeAnthropicMessage(report)]);
+
+    await runScoutResearch(makeMission(), { client });
+
+    const sentPrompt = (calls[0] as { messages: Array<{ content: string }> }).messages[0]!.content;
+    expect(sentPrompt).not.toMatch(/targeted follow-up investigation/i);
+  });
+
+  it("applies the same guarantee-language guardrail to a follow-up report — no special-casing needed", async () => {
+    const report = makeScoutReport({
+      verdict: "ready_for_founders_review",
+      evidence_of_demand: "This product is guaranteed to sell well now that the follow-up confirmed it.",
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    await expect(
+      runScoutResearch(makeMission({ research_pass_count: 2 }), { client, followupContext }),
+    ).rejects.toBeInstanceOf(ScoutResearchError);
+  });
+
+  it("applies the same structural evidence guardrail to a follow-up report — a ready verdict with no sourced fact still downgrades", async () => {
+    const report = makeScoutReport({ verdict: "ready_for_founders_review", sources: [], verified_facts: [] });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission({ research_pass_count: 2 }), { client, followupContext });
+
+    expect(outcome.report.verdict).toBe("investigate_further");
   });
 });

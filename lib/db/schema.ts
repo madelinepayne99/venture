@@ -85,6 +85,12 @@ export const missions = pgTable("missions", {
   state: text("state").notNull().default("draft"),
   final_status: text("final_status"),
   failure_reason: text("failure_reason"),
+  // How many real Scout research passes this mission has actually had
+  // (0 = none yet, 1 = the original pass, 2 = the one automatic targeted
+  // follow-up). Capped at MAX_RESEARCH_PASSES in missionWorkflow.ts — this
+  // column is what that cap is actually enforced against, not just a
+  // display counter. See CLAUDE.md's evidence-loop milestone.
+  research_pass_count: integer("research_pass_count").notNull().default(0),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });

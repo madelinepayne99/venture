@@ -141,12 +141,78 @@ ${config.jsonShapeFields}
 }`;
 }
 
-export function buildScoutUserPrompt(mission: Mission, workspaceType: WorkspaceType): string {
+/**
+ * What a targeted follow-up pass needs from the prior pass's own report —
+ * deliberately narrow (not the whole prior report) so the follow-up prompt
+ * stays focused on what's actually unresolved, matching the compactness
+ * discipline the rest of this prompt already follows.
+ */
+export interface ScoutFollowupContext {
+  passNumber: number;
+  maxPasses: number;
+  priorVerdictRationale: string;
+  unresolvedQuestions: string[];
+  priorVerifiedFacts: Array<{ statement: string; source_url: string | null }>;
+  priorSources: Array<{ url: string; title: string }>;
+}
+
+export function buildScoutUserPrompt(
+  mission: Mission,
+  workspaceType: WorkspaceType,
+  followupContext?: ScoutFollowupContext,
+): string {
   const config = WORKSPACE_PROMPTS[workspaceType];
-  return `Mission title: ${mission.title}
+
+  if (!followupContext) {
+    return `Mission title: ${mission.title}
 
 Founder's brief:
 ${mission.brief}
 
 ${config.userPromptFraming} Produce the complete structured report.`;
+  }
+
+  const { passNumber, maxPasses, priorVerdictRationale, unresolvedQuestions, priorVerifiedFacts, priorSources } =
+    followupContext;
+
+  const factsList = priorVerifiedFacts.length
+    ? priorVerifiedFacts.map((f) => `- ${f.statement}${f.source_url ? ` (${f.source_url})` : ""}`).join("\n")
+    : "(none established yet)";
+  const sourcesList = priorSources.length
+    ? priorSources.map((s) => `- ${s.title}: ${s.url}`).join("\n")
+    : "(none)";
+  const questionsList = unresolvedQuestions.map((q) => `- ${q}`).join("\n");
+
+  return `Mission title: ${mission.title}
+
+Founder's brief:
+${mission.brief}
+
+This is a targeted follow-up investigation (pass ${passNumber} of ${maxPasses}) — not a fresh \
+research job. Your first pass on this mission was inconclusive; here is exactly why, in your \
+own words:
+
+Your prior verdict rationale:
+"${priorVerdictRationale}"
+
+Your prior unresolved questions — this pass exists specifically to make real progress on these:
+${questionsList}
+
+Facts you already verified (do not re-search or re-cite these from scratch — build on them):
+${factsList}
+
+Sources you already consulted (avoid re-finding these; search for what's still missing):
+${sourcesList}
+
+Do NOT repeat the original broad research or restate what you already found. Direct your web \
+searches and reasoning specifically at closing the gaps listed above. Produce a new, complete \
+structured report (the full JSON shape below, not a diff) reflecting what you learned on this \
+pass, informed by everything above.
+
+This is genuinely the last automated research pass on this mission — after this, a founder \
+decides how to proceed regardless of your verdict. If real uncertainty still remains even after \
+this targeted pass, set verdict to "investigate_further" again and say so plainly in \
+verdict_rationale (state clearly that this was pass ${passNumber} of ${maxPasses} and what \
+specifically is still unresolved) — do not imply another automated pass is coming, and never \
+paper over genuine uncertainty with unwarranted confidence just because this is the last pass.`;
 }

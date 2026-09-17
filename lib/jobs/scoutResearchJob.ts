@@ -1,6 +1,6 @@
 import "server-only";
 import { NonRetriableError } from "inngest";
-import { inngest, MISSION_APPROVED_EVENT } from "@/lib/inngest/client";
+import { inngest, MISSION_APPROVED_EVENT, MISSION_FOLLOWUP_NEEDED_EVENT } from "@/lib/inngest/client";
 import { runScoutPipeline } from "@/lib/domain/missionWorkflow";
 
 /**
@@ -31,13 +31,23 @@ import { runScoutPipeline } from "@/lib/domain/missionWorkflow";
  *   won't fix it, so those are wrapped as NonRetriableError.
  * - A retried run may incur additional real Anthropic API cost. That's an
  *   accepted, bounded tradeoff (capped at one retry), not an oversight.
+ *
+ * Two triggers, one function: MISSION_APPROVED_EVENT starts the original
+ * pass, MISSION_FOLLOWUP_NEEDED_EVENT starts the one automatic follow-up
+ * pass (see missionWorkflow.ts's MAX_RESEARCH_PASSES) — both call the same
+ * runScoutPipeline, which already branches on the mission's real current
+ * state ("queued" vs "awaiting_evidence" vs "researching"-resume) rather
+ * than on which event fired it. Deliberately not a second job file: the
+ * concurrency key, retry policy, and NonRetriableError wrapping all need
+ * to apply identically to either pass, so reusing the same function is
+ * what keeps that guarantee from having to be maintained twice.
  */
 export const scoutResearchJob = inngest.createFunction(
   {
     id: "scout-research",
     retries: 1,
     concurrency: { limit: 1, key: "event.data.missionId" },
-    triggers: [{ event: MISSION_APPROVED_EVENT }],
+    triggers: [{ event: MISSION_APPROVED_EVENT }, { event: MISSION_FOLLOWUP_NEEDED_EVENT }],
   },
   async ({ event, step }) => {
     const { missionId } = event.data as { missionId: string };
