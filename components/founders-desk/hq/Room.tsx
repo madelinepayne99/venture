@@ -1,24 +1,47 @@
-import type { Founder, Mission, Project } from "@/lib/db/types";
-import { RoomBackdrop } from "./RoomBackdrop";
-import { Worker } from "./Worker";
+"use client";
+
+import { useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import type { Mission, Project } from "@/lib/db/types";
 import { MissionBoard } from "./MissionBoard";
 
+const OfficeWorld = dynamic(
+  () => import("../world/OfficeWorld").then((mod) => mod.OfficeWorld),
+  { ssr: false }
+);
+
 /**
- * One office "suite" — a real workspace's room. Everything shown is real:
- * the founders come from the founders table, Scout only appears as
- * working when this workspace genuinely has a mission with
- * state === "researching", and the mission board lists this workspace's
- * real missions. `interactive` is false while this room is off-screen
- * during the HQ carousel's slide (see HQView.tsx) — its Scout desk,
- * "Assign work" trigger, and mission cards are still rendered (so the
- * slide animates smoothly) but are not reachable by click or keyboard
- * until it becomes the active room.
+ * One office "suite" — a real workspace's room, rendered with the
+ * `components/founders-desk/world/` scene (direct Three.js — see its own
+ * README, integrated verbatim per its "Integrate into the existing
+ * Venture app" section). Everything the scene shows is derived from this
+ * room's real missions: `world/layout.ts`'s `researchDestination` decides
+ * whether Scout is in his research room purely from whether any real
+ * mission is `researching`, and the mission board below lists the same
+ * real missions Focus View would.
+ *
+ * The world's own `onSelect` targets are wired to the exact same real
+ * handlers Focus View already uses — no new mission-creation path, no
+ * new backend endpoint:
+ *  - "desk" (and "scout"/"research" with nothing actually researching)
+ *    open the real Assign Work modal.
+ *  - "scout"/"research" while a mission is researching opens that
+ *    mission's real detail slide-over.
+ *  - "board" scrolls the real `MissionBoard` already rendered below the
+ *    scene into view — the wall board and the dock are the same data,
+ *    just two ways to reach it.
+ *  - "lounge" has no backing feature yet; rather than silently doing
+ *    nothing or fabricating one, clicking it shows a small, honestly
+ *    labeled notice that there's nothing there yet.
+ *
+ * Only the active carousel room mounts a live scene (see `interactive`
+ * below) — the world's own README asks for this specifically, so hidden
+ * rooms never hold a second live WebGL context or remain reachable by
+ * keyboard while off-screen.
  */
 export function Room({
   project,
   roomLabel,
-  founders,
-  signedInFounderName,
   missions,
   selectedMissionId,
   onSelectMission,
@@ -27,53 +50,64 @@ export function Room({
 }: {
   project: Project;
   roomLabel: string;
-  founders: Founder[];
-  signedInFounderName: string;
   missions: Mission[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
   interactive: boolean;
 }) {
-  const researchingMission = missions.find((m) => m.state === "researching") ?? null;
+  const boardRef = useRef<HTMLDivElement>(null);
+  const [loungeNoticeOpen, setLoungeNoticeOpen] = useState(false);
+
+  const activeResearch = missions.find((m) => m.state === "researching");
+
+  function handleSelect(target: "desk" | "scout" | "board" | "research" | "lounge") {
+    if (target === "desk") {
+      onAssignWork();
+    } else if (target === "scout" || target === "research") {
+      if (activeResearch) onSelectMission(activeResearch.id);
+      else onAssignWork();
+    } else if (target === "board") {
+      boardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } else {
+      setLoungeNoticeOpen(true);
+    }
+  }
 
   return (
     <div className="bg-night-bg">
-      <div className="relative aspect-[1000/520] w-full overflow-hidden">
-        <RoomBackdrop variant={project.workspace_type} />
-        <div className="relative z-10 flex h-full flex-col px-8 pt-8">
-          <p className="text-xs font-medium uppercase tracking-widest text-hq-brass/80">
-            {project.name} · {roomLabel}
-          </p>
-          <div className="mt-auto flex flex-wrap items-end justify-between gap-4 pb-6">
-            {founders.map((founder) => (
-              <Worker
-                key={founder.id}
-                kind="founder"
-                label={founder.name}
-                tone={founder.name === signedInFounderName ? "signed-in" : "peer"}
-                isWorking={false}
-              />
-            ))}
-            <Worker
-              kind="scout"
-              label="Scout"
-              tone="scout"
-              isWorking={Boolean(researchingMission)}
-              onClick={researchingMission ? () => onSelectMission(researchingMission.id) : undefined}
-              focusable={interactive}
-            />
+      <div className="relative w-full overflow-hidden" style={{ height: "70vh", minHeight: 420 }}>
+        {interactive ? (
+          <OfficeWorld workspaceId={project.id} missions={missions} onSelect={handleSelect} />
+        ) : (
+          <div className="h-full w-full bg-night-bg" aria-hidden="true" />
+        )}
+        {loungeNoticeOpen && (
+          <div
+            role="status"
+            className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-hq-brass/40 bg-night-panel px-4 py-2 text-xs text-night-text shadow-desk"
+          >
+            The lounge — nothing to configure here yet.
+            <button
+              type="button"
+              onClick={() => setLoungeNoticeOpen(false)}
+              className="ml-3 text-hq-brass underline"
+            >
+              Dismiss
+            </button>
           </div>
-        </div>
+        )}
       </div>
 
-      <MissionBoard
-        missions={missions}
-        selectedMissionId={selectedMissionId}
-        onSelectMission={onSelectMission}
-        onAssignWork={onAssignWork}
-        focusable={interactive}
-      />
+      <div ref={boardRef}>
+        <MissionBoard
+          missions={missions}
+          selectedMissionId={selectedMissionId}
+          onSelectMission={onSelectMission}
+          onAssignWork={onAssignWork}
+          focusable={interactive}
+        />
+      </div>
     </div>
   );
 }
