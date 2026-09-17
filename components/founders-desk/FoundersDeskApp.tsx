@@ -297,8 +297,6 @@ export function FoundersDeskApp({
           <HQView
             projects={projects}
             activeProjectId={activeProjectId}
-            founders={founders}
-            signedInFounderName={signedInFounderName}
             missions={missions}
             selectedMissionId={selectedMissionId}
             onSelectMission={loadDetail}

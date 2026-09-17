@@ -1,4 +1,4 @@
-import type { Founder, Mission, Project } from "@/lib/db/types";
+import type { Mission, Project } from "@/lib/db/types";
 import { REAL_WORKSPACE_TYPES, mostRecentProjectOfType } from "./WorkspaceBar";
 import { Room } from "./Room";
 
@@ -20,8 +20,6 @@ const ROOM_LABELS: Record<string, string> = {
 export function HQView({
   projects,
   activeProjectId,
-  founders,
-  signedInFounderName,
   missions,
   selectedMissionId,
   onSelectMission,
@@ -29,8 +27,6 @@ export function HQView({
 }: {
   projects: Project[];
   activeProjectId: string | null;
-  founders: Founder[];
-  signedInFounderName: string;
   missions: Mission[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
@@ -69,8 +65,6 @@ export function HQView({
               <Room
                 project={room.project}
                 roomLabel={ROOM_LABELS[room.project.workspace_type] ?? "Office"}
-                founders={founders}
-                signedInFounderName={signedInFounderName}
                 missions={room.missions}
                 selectedMissionId={selectedMissionId}
                 onSelectMission={onSelectMission}
