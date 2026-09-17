@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   Agent,
   Founder,
@@ -17,6 +17,7 @@ import { WorkspaceBar } from "./hq/WorkspaceBar";
 import { HQView } from "./hq/HQView";
 import { MissionSlideOver } from "./hq/MissionSlideOver";
 import { AssignWorkModal } from "./hq/AssignWorkModal";
+import { useMissionPolling } from "./useMissionPolling";
 
 interface Props {
   signedInFounderName: string;
@@ -149,21 +150,30 @@ export function FoundersDeskApp({
   // the approve request — the approve call returns as soon as the mission
   // is queued, well before Scout has actually done anything. This polls
   // for the real stage/state changes as the job actually makes them,
-  // rather than faking a progress state client-side.
-  useEffect(() => {
-    const hasInFlightMission = missions.some((m) => POLLING_STATES.has(m.state));
-    if (!hasInFlightMission) return;
+  // rather than faking a progress state client-side. See
+  // useMissionPolling's own doc comment for why the interval is keyed on
+  // the derived `hasInFlightMission` boolean rather than on `missions`/
+  // `missionDetail` directly — depending on values a tick's own fetch call
+  // mutates was the actual bug that silently stopped Scout's HQ animation
+  // from ever updating past "Ready" once a real mission was approved.
+  const selectedMissionIdRef = useRef(selectedMissionId);
+  selectedMissionIdRef.current = selectedMissionId;
+  const missionDetailRef = useRef(missionDetail);
+  missionDetailRef.current = missionDetail;
 
-    const interval = setInterval(() => {
+  const hasInFlightMission = missions.some((m) => POLLING_STATES.has(m.state));
+
+  useMissionPolling(
+    hasInFlightMission,
+    () => {
       refreshMissions();
-      if (selectedMissionId && POLLING_STATES.has(missionDetail?.mission.state ?? "")) {
-        loadDetail(selectedMissionId);
+      const currentSelectedId = selectedMissionIdRef.current;
+      if (currentSelectedId && POLLING_STATES.has(missionDetailRef.current?.mission.state ?? "")) {
+        loadDetail(currentSelectedId);
       }
-    }, POLL_INTERVAL_MS);
-
-    return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [missions, selectedMissionId, missionDetail?.mission.state]);
+    },
+    POLL_INTERVAL_MS,
+  );
 
   async function handleCreate(title: string, brief: string, projectId: string) {
     setError(null);

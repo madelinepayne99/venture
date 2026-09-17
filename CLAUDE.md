@@ -370,6 +370,40 @@ cases directly: a `researching` mission with no assignment row yet, and a
 `researching` mission led by a different agent key, both correctly keep
 Scout at the hub.
 
+**Milestone 4.4: fixed a real production bug where Scout's HQ animation**
+**never left "Ready" even though his research was genuinely running.**
+Milestone 4.3's assignment-based `researchDestination` was correct, and a
+live reproduction proved the walk/arrival mechanics themselves worked —
+but a real UI-driven run (Assign work → Submit → Approve, through the
+actual Inngest job, not a simulated state write) showed the frontend
+simply stopped asking: `GET /api/missions` fired exactly once right after
+approval and never again, even while the mission stayed genuinely
+`researching` for tens of real seconds. Root cause was
+`FoundersDeskApp.tsx`'s polling `useEffect`: it was keyed on `missions`
+and `missionDetail?.mission.state` — the *exact* values its own interval
+tick mutates via `refreshMissions()`/`loadDetail()`. Every tick therefore
+tore the interval down and rebuilt it, which usually still produced
+roughly-3-second polling by luck, but the rebuild could race and simply
+never happen — permanently and silently ending polling while research was
+still genuinely in flight. `components/founders-desk/useMissionPolling.ts`
+is the fix: a small hook whose interval is created once when a derived
+`hasInFlightMission` boolean turns true and torn down only when it turns
+false, reading `selectedMissionId`/`missionDetail` through refs so a
+fresh `onTick` closure every render never affects the interval's own
+lifecycle. `FoundersDeskApp.tsx`'s polling effect is now just a call to
+this hook. `tests/missionPolling.test.ts` (new `jsdom`/
+`@testing-library/react` devDependencies, scoped to this one test file via
+a `// @vitest-environment jsdom` directive — every other test still runs
+under the suite's default `node` environment) proves the exact regression:
+the interval keeps ticking across many renders even when the caller passes
+a brand-new `onTick` closure every time, stops the moment `active` goes
+false, and never starts when `active` is false from the start. Verified
+live end-to-end, repeatedly, against the real UI flow (real Assign-work
+click → real approve → real Inngest job → a mock Anthropic endpoint held
+open to give research a realistic duration): Scout now reliably walks to
+the Research Room while genuinely `researching` and walks back to the Hub
+once the mission settles, across multiple consecutive real runs.
+
 ## Architecture
 
 - **Next.js (App Router) + TypeScript + Tailwind.** Route handlers under
@@ -740,7 +774,12 @@ loads — some modules read `DATABASE_URL` at import time) and disables
 file parallelism (the whole suite shares one connection pool; parallel
 test files would race on truncating shared tables). `tests/setup.ts`
 truncates and reseeds between tests (`resetDbForTests`) and deletes any
-`ANTHROPIC_API_KEY` from the test environment.
+`ANTHROPIC_API_KEY` from the test environment. `tests/missionPolling.test.ts`
+(Milestone 4.4) is the one exception to the plain-`node` environment above
+— it opts into `jsdom` per-file via a `// @vitest-environment jsdom`
+directive (Vitest supports overriding the suite default per file) so it
+can render a real React hook with `@testing-library/react`; every other
+test file is unaffected and still runs under `node`.
 
 Coverage includes: mission creation and validation, Scout's structured
 response and the facts/inferences separation, weak-evidence and
