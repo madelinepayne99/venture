@@ -419,28 +419,40 @@ describe("mission workflow", () => {
     expect(scoutModule.runScoutResearch).not.toHaveBeenCalled();
   });
 
-  it("refuses a repeated approval attempt once a mission has already moved on", async () => {
+  it("regression: a second observed approval attempt on an already-queued mission is an idempotent no-op, not a queued-to-queued crash", async () => {
+    // Reproduces a real production failure: a founder's (or a retried
+    // request's) second approval call landed after the mission was
+    // already "queued", and `assertTransition("queued", "queued")` threw
+    // `Cannot move a mission from "queued" to "queued".` instead of
+    // recognizing the mission was already approved and dispatched.
     const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
     const inngestModule = await import("@/lib/inngest/client");
 
     const created = await createAndSubmitMission({
       founderId,
       projectId: null,
-      title: "Approve me once",
-      brief: "A mission that should refuse a second approval attempt.",
+      title: "Find an original children's activity-pack opportunity",
+      brief: "A mission approved twice — the second call must not error.",
     });
     const first = await approveMission(created.id, founderId);
     expect(first.state).toBe("queued");
 
-    await expect(approveMission(created.id, founderId)).rejects.toThrow();
+    // The exact reported case: the mission is already "queued" by the time
+    // this second, later call reads it — not a tight race.
+    const second = await approveMission(created.id, founderId);
+    expect(second.state).toBe("queued");
+    expect(second.id).toBe(first.id);
+
+    // Dispatched — and charged, once real research runs — exactly once.
     expect(inngestModule.inngest.send).toHaveBeenCalledTimes(1);
+
+    const approvals = await listActivity(created.id);
+    const approvalEvents = approvals.filter((a) => a.action === "mission_approved");
+    expect(approvalEvents).toHaveLength(1);
   });
 
   it("prevents a genuinely concurrent double-approval from dispatching the research job twice", async () => {
     const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
-    const { MissionConcurrencyError, IllegalMissionTransitionError } = await import(
-      "@/lib/domain/missionStates"
-    );
     const inngestModule = await import("@/lib/inngest/client");
 
     const created = await createAndSubmitMission({
@@ -455,15 +467,19 @@ describe("mission workflow", () => {
       approveMission(created.id, founderId),
     ]);
 
-    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    // Both are idempotent successes now — neither request should ever see
+    // an error just because it lost a race it had no way to avoid. The
+    // property that actually matters (Scout dispatched, and later charged,
+    // exactly once) is asserted below, not which request "won".
     const rejected = results.filter((r) => r.status === "rejected");
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
+    expect(rejected).toHaveLength(0);
+    for (const result of results) {
+      expect(result.status).toBe("fulfilled");
+      if (result.status === "fulfilled") {
+        expect((result.value as { state: string }).state).toBe("queued");
+      }
+    }
 
-    const reason = (rejected[0] as PromiseRejectedResult).reason;
-    expect(
-      reason instanceof MissionConcurrencyError || reason instanceof IllegalMissionTransitionError,
-    ).toBe(true);
     expect(inngestModule.inngest.send).toHaveBeenCalledTimes(1);
   });
 

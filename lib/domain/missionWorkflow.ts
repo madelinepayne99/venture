@@ -83,11 +83,24 @@ export async function createAndSubmitMission(
 /**
  * The founders' approval gate. Nothing consequential runs before this.
  *
- * The transition to "queued" is a single atomic conditional update — if two
- * requests both try to approve the same mission (a double-click, two tabs,
- * a retried request), only the first one to reach the database wins; the
- * second sees ok:false and throws instead of ever dispatching Scout a
- * second time.
+ * Idempotent by design: a mission can only ever be dispatched once, but a
+ * second *observed* approval/dispatch attempt — a double-click, two tabs, a
+ * retried request, a duplicate webhook — must not error, must not touch the
+ * ledger or dispatch Scout again, and must not depend on exact timing to
+ * behave correctly. Two paths both resolve to the same outcome:
+ *  - The read at the top already shows "queued": someone else's approval
+ *    already completed before this call even started. Return the mission
+ *    as-is — no transition attempted, nothing re-recorded, nothing re-sent.
+ *  - The read still shows the pre-approval state, but the atomic transition
+ *    below loses a genuine race (another request's write landed first). If
+ *    the mission's real state is now "queued", that's the same successful
+ *    outcome this call was trying to reach — return it. Only a state that
+ *    isn't "queued" (e.g. cancelled out from under us) is a genuine
+ *    conflict, which still throws MissionConcurrencyError.
+ * Either way, Scout is dispatched and the ledger is charged at most once
+ * per mission — see the bounded regression test in missionWorkflow.test.ts
+ * covering exactly the "observed already queued" case (the one that
+ * originally surfaced as "Cannot move a mission from queued to queued").
  *
  * This function returns as soon as the mission is queued and the research
  * job has been dispatched — it does NOT wait for Scout to finish. The
@@ -104,9 +117,29 @@ export async function approveMission(
   const mission = await getMission(missionId);
   if (!mission) throw new Error(`Mission ${missionId} not found.`);
 
+  // Idempotent no-op: this mission was already approved and dispatched by
+  // an earlier call (a delayed retry, a duplicate webhook, or a stale
+  // double-click landing after the first request already completed). The
+  // real approval, ledger charge, and dispatch already happened exactly
+  // once; re-running any of that here would be the actual bug, and
+  // `assertTransition` has no legal "queued" -> "queued" move to even
+  // attempt, so it would just throw a confusing IllegalMissionTransitionError
+  // instead of recognizing this as success.
+  if (mission.state === "queued") {
+    return mission;
+  }
+
   assertTransition(mission.state, "queued");
   const transition = await transitionMissionState(missionId, [mission.state], "queued");
   if (!transition.ok) {
+    // The mission moved on between our read and our write. If it's now
+    // "queued", a genuinely concurrent approval won that race and already
+    // did everything this call would have done — same idempotent no-op as
+    // above, not an error. Any other actual state (e.g. cancelled out from
+    // under us) is still a real conflict worth surfacing.
+    if (transition.mission.state === "queued") {
+      return transition.mission;
+    }
     throw new MissionConcurrencyError(missionId, [mission.state], "queued", transition.mission.state);
   }
 
