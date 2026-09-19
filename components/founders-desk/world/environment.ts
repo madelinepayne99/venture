@@ -1,6 +1,6 @@
 import * as T from "three";
 import { ball, box, canvasTexture, cylinder, group, material, type Materials } from "./materials";
-import { books, commandDesk, cup, plant, researchFurniture, sofa } from "./furniture";
+import { books, commandDesk, cup, plant, researchFurniture, sofa, studioFurniture } from "./furniture";
 
 function landscapeTexture() {
   return canvasTexture((c, s) => {
@@ -80,7 +80,7 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   for (const x of [-4.73, -.25]) box(root, .06, 2.4, .06, x, 1.28, -3.94, m.ivory, .009);
   box(root, 5.66, .045, .06, -2.36, .52, -3.94, m.ivory, .008);
   rug(root, m, -2.8, -1, 4.3, 3.85);
-  const desk = commandDesk(root, m); const research = researchFurniture(root, m);
+  const desk = commandDesk(root, m); const research = researchFurniture(root, m); const studio = studioFurniture(root, m);
   // Mission board faces into the founders' room, with no fictional mission cards.
   const board = group(root, -5.255, 1.48, -.4, Math.PI / 2); board.userData.target = "board";
   frame(board, m, 1.6, .92, canvasTexture((c, s) => {
@@ -114,7 +114,9 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   cylinder(lounge, .27, .33, .39, 3.48, .22, 2.67, m.wood);
   cup(lounge, 3.64, .454, 2.58, m); books(lounge, 3.34, .454, 2.71, m, 1, true);
   plant(root, -4.82, -3.15, m, 1.80);
-  plant(root, -.27, -3.60, m, 1.34);
+  // Moved off the Content Studio's own real walkable mark (see layout.ts's
+  // MARKS.studio) so Content Bot's character never visually clips it.
+  plant(root, -1.55, -3.55, m, 1.34);
   plant(root, 4.66, 3.85, m, 1.50);
   plant(root, 4.85, -.49, m, .72);
   // Small coffee console on the low room divider.
@@ -133,5 +135,5 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   for (let i = 0; i < 4; i++) box(root, .83, .055, .42, 1.86, -.20, 4.9 + i * .51, m.marble, .035);
   // Tiny garden stones break the precision at the foundation edge.
   for (let i = 0; i < 45; i++) ball(root, .035 + i % 4 * .009, -5.62 - i % 3 * .11, -.20, -4.25 + i * .2, gravel, [1.2, .5, 1]);
-  return { root, desk, research, board, lounge };
+  return { root, desk, research, studio, board, lounge };
 }

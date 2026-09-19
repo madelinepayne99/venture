@@ -101,6 +101,41 @@ export function commandDesk(parent: T.Object3D, m: Materials) {
   return g;
 }
 
+/**
+ * Content Bot's own workstation — a compact editing desk with a monitor,
+ * a small stack of reference books, and a camera-on-tripod prop reading
+ * as "production," distinct from Scout's research desk. Lit by the same
+ * warm palette as the rest of the room; distinguished by the cool
+ * sapphire accents on the desk trim rather than a separate light color
+ * (see CLAUDE.md's Content Bot milestone — this is a real, functional
+ * workstation placed inside the existing building footprint, not a new
+ * room extension).
+ */
+export function studioFurniture(parent: T.Object3D, m: Materials) {
+  const g = group(parent, 0, 0, -3.0); g.userData.target = "studio";
+  box(g, 1.7, .1, .78, 0, .62, 0, m.wood, .04);
+  box(g, 1.64, .016, .73, 0, .565, 0, m.sapphire, .03);
+  for (const side of [-1, 1]) box(g, .1, .58, .7, side * .78, .29, 0, m.wood, .03);
+  monitor(g, 0, .68, -.2, m, 1);
+  cup(g, .6, .655, .28, m);
+  books(g, -.75, .655, .22, m, 3, true);
+  // Root-relative (not g-relative — g is already offset to the studio
+  // mark), positioned on the south side of the desk facing the monitor.
+  officeChair(parent, 0, -2.5, m, 0);
+  // A small camera-on-tripod prop — the one detail that reads as
+  // "production," not research.
+  const tripod = group(parent, .95, 0, -3.35);
+  for (const side of [-1, 1]) for (const dz of [-1, 1]) {
+    const leg = cylinder(tripod, .012, .012, .48, side * .1, .24, dz * .09, m.dark);
+    leg.rotation.z = side * .18; leg.rotation.x = dz * .18;
+  }
+  const head = group(tripod, 0, .5, 0);
+  box(head, .16, .12, .22, 0, 0, 0, m.dark, .02);
+  cylinder(head, .045, .05, .06, 0, .09, .07, m.brass);
+  ball(head, .03, 0, .09, .12, m.black);
+  return g;
+}
+
 export function plant(parent: T.Object3D, x: number, z: number, m: Materials, height = 1.45, y = 0) {
   const g = group(parent, x, y, z);
   const factor = height / 1.45; g.scale.setScalar(factor);

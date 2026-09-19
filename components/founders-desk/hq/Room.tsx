@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import type { Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
+import type { ContentItem, Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
 import { MissionBoard } from "./MissionBoard";
 
 const OfficeWorld = dynamic(
@@ -46,26 +46,35 @@ export function Room({
   roomLabel,
   missions,
   leadAssignments,
+  contentItems,
   selectedMissionId,
   onSelectMission,
   onAssignWork,
+  onOpenContentItem,
   interactive,
 }: {
   project: Project;
   roomLabel: string;
   missions: Mission[];
   leadAssignments: MissionLeadAssignment[];
+  contentItems: ContentItem[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
+  onOpenContentItem: (contentItemId: string) => void;
   interactive: boolean;
 }) {
   const boardRef = useRef<HTMLDivElement>(null);
   const [loungeNoticeOpen, setLoungeNoticeOpen] = useState(false);
+  const [studioNoticeOpen, setStudioNoticeOpen] = useState(false);
 
   const activeResearch = missions.find((m) => m.state === "researching");
+  // The one real content item currently in flight in this room, if any —
+  // clicking Content Bot or his studio desk opens exactly this, never an
+  // inference from mission state alone.
+  const activeProduction = contentItems.find((c) => c.state === "generating" || c.state === "planning");
 
-  function handleSelect(target: "desk" | "scout" | "board" | "research" | "lounge") {
+  function handleSelect(target: "desk" | "scout" | "board" | "research" | "lounge" | "studio" | "content_bot") {
     if (target === "desk") {
       onAssignWork();
     } else if (target === "scout" || target === "research") {
@@ -73,6 +82,9 @@ export function Room({
       else onAssignWork();
     } else if (target === "board") {
       boardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } else if (target === "studio" || target === "content_bot") {
+      if (activeProduction) onOpenContentItem(activeProduction.id);
+      else setStudioNoticeOpen(true);
     } else {
       setLoungeNoticeOpen(true);
     }
@@ -86,6 +98,7 @@ export function Room({
             workspaceId={project.id}
             missions={missions}
             leadAssignments={leadAssignments}
+            contentItems={contentItems}
             onSelect={handleSelect}
           />
         ) : (
@@ -100,6 +113,21 @@ export function Room({
             <button
               type="button"
               onClick={() => setLoungeNoticeOpen(false)}
+              className="ml-3 text-hq-brass underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+        {studioNoticeOpen && (
+          <div
+            role="status"
+            className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-hq-brass/40 bg-night-panel px-4 py-2 text-xs text-night-text shadow-desk"
+          >
+            Content Bot has nothing in production for this workspace right now.
+            <button
+              type="button"
+              onClick={() => setStudioNoticeOpen(false)}
               className="ml-3 text-hq-brass underline"
             >
               Dismiss

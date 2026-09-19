@@ -4,9 +4,10 @@ import type { Mission, WorkspaceType } from "@/lib/db/types";
 import type { AgentRunOutcome } from "@/lib/agents/types";
 import { getAnthropicClient } from "@/lib/agents/anthropicClient";
 import { calculateUsdCost } from "@/lib/agents/pricing";
+import { extractRawText, parseJsonWithFallbacks } from "@/lib/agents/shared/jsonExtraction";
 import { ScoutReportSchema, type ScoutReport } from "./schema";
 import { buildScoutSystemPrompt, buildScoutUserPrompt, type ScoutFollowupContext } from "./prompt";
-import { findGuaranteeLanguage, hasMeaningfulEvidence } from "./guardrails";
+import { findGuaranteeLanguage, findUncitedProductionEvidenceUrls, hasMeaningfulEvidence } from "./guardrails";
 
 const DEFAULT_WORKSPACE_TYPE: WorkspaceType = "commerce";
 
@@ -69,136 +70,9 @@ interface ScoutDeps {
   followupContext?: ScoutFollowupContext;
 }
 
-function extractRawText(content: Anthropic.Message["content"]): string {
-  const textBlocks = content.filter(
-    (block): block is Anthropic.TextBlock => block.type === "text",
-  );
-  return textBlocks.map((block) => block.text).join("");
-}
-
-/**
- * Extracts the content of a Markdown-style code fence (```json ... ``` or a
- * plain ``` ... ```), if the text has one. The model has no enforced
- * structured-output mode in this SDK version — it's instructed via the
- * prompt to return raw JSON with no fence, but a real response sometimes
- * wraps the object in one anyway (and/or adds a short sentence of prose
- * before/after it).
- */
-function extractFencedJson(text: string): string | null {
-  const match = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/i);
-  return match ? (match[1] ?? "").trim() : null;
-}
-
-/**
- * Scans `text` starting at index `start` (which must point at a `{`) for
- * the matching closing brace, tracking nesting depth and skipping over
- * braces that appear inside a JSON string literal (so a stray "{"/"}"
- * inside a quoted value — or inside surrounding prose that got swept into
- * an earlier failed attempt — can't prematurely end the match). Returns
- * the balanced `{...}` substring, or null if the object never closes.
- */
-function extractBalancedObjectAt(text: string, start: number): string | null {
-  let depth = 0;
-  let inString = false;
-  let escaped = false;
-
-  for (let i = start; i < text.length; i++) {
-    const char = text[i];
-
-    if (inString) {
-      if (escaped) {
-        escaped = false;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === '"') {
-        inString = false;
-      }
-      continue;
-    }
-
-    if (char === '"') {
-      inString = true;
-    } else if (char === "{") {
-      depth += 1;
-    } else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) {
-        return text.slice(start, i + 1);
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * Tries every "{" in `text` in order, extracting the balanced object that
- * starts there and attempting to parse it, and returns the first one that
- * parses successfully. This is what lets a real response survive short
- * explanatory text around the JSON (even text that itself happens to
- * contain a brace, e.g. "Note: I weighed {timing} carefully.") — a naive
- * first-"{"-to-last-"}" slice can't distinguish that from the real object
- * and pulls in everything in between, however far apart they are.
- */
-function findFirstParseableJsonObject(text: string): unknown | null {
-  for (let i = 0; i < text.length; i++) {
-    if (text[i] !== "{") continue;
-    const candidate = extractBalancedObjectAt(text, i);
-    if (!candidate) continue;
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      continue;
-    }
-  }
-  return null;
-}
-
 function parseAndValidateReport(rawText: string, usageSoFar: () => PartialUsage): ScoutReport {
-  const trimmed = rawText.trim();
-  if (!trimmed) {
-    throw new ScoutResearchError("Scout returned no report text.", usageSoFar());
-  }
-
-  let parsedJson: unknown;
-  let parsed = false;
-
-  // 1. The common, expected case: the whole response is nothing but JSON.
-  try {
-    parsedJson = JSON.parse(trimmed);
-    parsed = true;
-  } catch {
-    // fall through
-  }
-
-  // 2. A Markdown code fence around the JSON (with or without a "json"
-  //    language tag) — extract its contents specifically and try that.
-  if (!parsed) {
-    const fenced = extractFencedJson(trimmed);
-    if (fenced) {
-      try {
-        parsedJson = JSON.parse(fenced);
-        parsed = true;
-      } catch {
-        // fall through — the fence contents themselves weren't clean JSON
-        // (e.g. more prose got swept in); the general scan below still
-        // gets a chance to find the real object inside it.
-      }
-    }
-  }
-
-  // 3. General fallback: scan the whole text (fence markers and all) for
-  //    the first balanced {...} object that actually parses. Covers short
-  //    explanatory sentences before/after the JSON, with or without a fence.
-  if (!parsed) {
-    const found = findFirstParseableJsonObject(trimmed);
-    if (found !== null) {
-      parsedJson = found;
-      parsed = true;
-    }
-  }
-
-  if (!parsed) {
+  const parsedJson = parseJsonWithFallbacks(rawText);
+  if (parsedJson === null) {
     throw new ScoutResearchError("Scout's report was not valid JSON.", usageSoFar());
   }
 
@@ -234,6 +108,24 @@ function assertNoGuaranteeLanguage(report: ScoutReport, usageSoFar: () => Partia
     const detail = violations.map((v) => `"${v.matchedText}" in ${v.field}`).join("; ");
     throw new ScoutResearchError(
       `Scout's report contained prohibited certainty language about demand, revenue, or profit and was rejected: ${detail}.`,
+      usageSoFar(),
+    );
+  }
+}
+
+/**
+ * The Scout -> Content Bot hand-off must be as evidence-disciplined as
+ * the report itself: a production_recommendation citing a URL Scout never
+ * actually looked at (an invented or training-knowledge URL, not one of
+ * this run's real sources/verified_facts) fails the mission the same way
+ * invalid JSON or a wrong-workspace report does — never delivered with the
+ * fabricated citation silently attached.
+ */
+function assertValidProductionRecommendation(report: ScoutReport, usageSoFar: () => PartialUsage): void {
+  const uncited = findUncitedProductionEvidenceUrls(report);
+  if (uncited.length > 0) {
+    throw new ScoutResearchError(
+      `Scout's production recommendation cited evidence URLs it never actually sourced in this report: ${uncited.join(", ")}.`,
       usageSoFar(),
     );
   }
@@ -443,6 +335,7 @@ export async function runScoutResearch(
   }
 
   assertNoGuaranteeLanguage(parsedReport, usageSoFar);
+  assertValidProductionRecommendation(parsedReport, usageSoFar);
   const report = applyGuardrails(parsedReport);
 
   const usdCost = calculateUsdCost(SCOUT_MODEL, {

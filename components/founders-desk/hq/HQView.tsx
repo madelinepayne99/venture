@@ -1,4 +1,4 @@
-import type { Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
+import type { ContentItem, Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
 import { REAL_WORKSPACE_TYPES, mostRecentProjectOfType } from "./WorkspaceBar";
 import { Room } from "./Room";
 
@@ -22,17 +22,21 @@ export function HQView({
   activeProjectId,
   missions,
   leadAssignments,
+  contentItems,
   selectedMissionId,
   onSelectMission,
   onAssignWork,
+  onOpenContentItem,
 }: {
   projects: Project[];
   activeProjectId: string | null;
   missions: Mission[];
   leadAssignments: MissionLeadAssignment[];
+  contentItems: ContentItem[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
+  onOpenContentItem: (contentItemId: string) => void;
 }) {
   const rooms = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
     .filter((project): project is Project => project !== null)
@@ -43,6 +47,7 @@ export function HQView({
         project,
         missions: roomMissions,
         leadAssignments: leadAssignments.filter((a) => roomMissionIds.has(a.mission_id)),
+        contentItems: contentItems.filter((c) => roomMissionIds.has(c.mission_id)),
       };
     });
 
@@ -74,9 +79,11 @@ export function HQView({
                 roomLabel={ROOM_LABELS[room.project.workspace_type] ?? "Office"}
                 missions={room.missions}
                 leadAssignments={room.leadAssignments}
+                contentItems={room.contentItems}
                 selectedMissionId={selectedMissionId}
                 onSelectMission={onSelectMission}
                 onAssignWork={onAssignWork}
+                onOpenContentItem={onOpenContentItem}
                 interactive={i === activeIndex}
               />
             </div>

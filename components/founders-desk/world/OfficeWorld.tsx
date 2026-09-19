@@ -8,6 +8,7 @@ import "./world.css";
 type Props = {
   missions: readonly { id: string; state: string }[];
   leadAssignments: readonly { mission_id: string; agent_key: string }[];
+  contentItems: readonly { mission_id: string; state: string }[];
   onSelect: (target: WorldTarget) => void;
   onEngine?: (engine: WorldEngine | null) => void;
   onArrival?: (place: "hub" | "research" | "explore") => void;
@@ -15,7 +16,7 @@ type Props = {
   workspaceId?: string;
 };
 
-/** Drop-in client view. Pass the active workspace's real missions/lead assignments and existing handlers. */
+/** Drop-in client view. Pass the active workspace's real missions/lead assignments/content items and existing handlers. */
 export function OfficeWorld(props: Props) {
   const host = useRef<HTMLDivElement>(null), engine = useRef<WorldEngine | null>(null), latest = useRef(props);
   latest.current = props;
@@ -30,7 +31,7 @@ export function OfficeWorld(props: Props) {
         onError: setError,
       });
       engine.current = view;
-      view.syncMissions(latest.current.missions, latest.current.leadAssignments, true);
+      view.syncWorld(latest.current.missions, latest.current.leadAssignments, latest.current.contentItems, true);
       latest.current.onEngine?.(view);
       return () => { view.dispose(); engine.current = null; latest.current.onEngine?.(null); };
     } catch (cause) {
@@ -39,10 +40,10 @@ export function OfficeWorld(props: Props) {
     }
   }, []);
   useEffect(() => {
-    engine.current?.syncMissions(props.missions, props.leadAssignments);
-  }, [props.missions, props.leadAssignments]);
+    engine.current?.syncWorld(props.missions, props.leadAssignments, props.contentItems);
+  }, [props.missions, props.leadAssignments, props.contentItems]);
   useEffect(() => {
-    engine.current?.syncMissions(latest.current.missions, latest.current.leadAssignments, true);
+    engine.current?.syncWorld(latest.current.missions, latest.current.leadAssignments, latest.current.contentItems, true);
   }, [props.workspaceId]);
   return <div className="vw-host" ref={host}>
     {error && <div className="vw-error" role="status"><strong>The world needs a graphics connection</strong><p>{error}</p><button onClick={() => props.onSelect("desk")}>Open founders’ desk</button></div>}

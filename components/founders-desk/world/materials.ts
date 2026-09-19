@@ -4,6 +4,11 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 export const palette = {
   ivory: "#eee7d5", plaster: "#e9dfc8", emerald: "#195a4d", ink: "#18372f",
   walnut: "#865034", brass: "#bc945c", paper: "#f6f0df", clay: "#b86d4e",
+  // Content Bot's own accent color — cool sapphire/screen-blue, distinct
+  // from Scout's emerald, reused unchanged across his waistcoat/eye
+  // fittings the same way Scout's green already is (see scout.ts's
+  // buildAgentCharacter). Never used for anything else in the scene.
+  sapphire: "#1d4d7a",
 };
 
 export function material(color: string, roughness = 0.7, metalness = 0) {
@@ -84,9 +89,11 @@ export function buildMaterials() {
   const marble = material("#ffffff", .55); marble.map = marbleTexture();
   const green = material(palette.emerald, .84); green.map = fabricTexture();
   const linen = material("#d9c8a6", .93); linen.map = fabricTexture();
-  return { wood, floor, marble, green, linen, wall: material(palette.plaster), ivory: material(palette.ivory, .4),
+  const sapphire = material(palette.sapphire, .84); sapphire.map = fabricTexture();
+  return { wood, floor, marble, green, linen, sapphire, wall: material(palette.plaster), ivory: material(palette.ivory, .4),
     brass: material(palette.brass, .34, .62), dark: material(palette.ink, .5), paper: material(palette.paper),
-    clay: material(palette.clay), black: material("#222d2c", .5), leaf: material("#386a40"), leaf2: material("#5b8452") };
+    clay: material(palette.clay), black: material("#222d2c", .5), leaf: material("#386a40"), leaf2: material("#5b8452"),
+    screenBlue: material("#2f6ea8", .5, .1) };
 }
 export type Materials = ReturnType<typeof buildMaterials>;
 

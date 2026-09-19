@@ -2,6 +2,7 @@ import type { Agent, LedgerEntry, Mission, Project, WorkspaceType } from "@/lib/
 import { StatusBadge } from "./StatusBadge";
 import { MissionForm } from "./MissionForm";
 import { MissionDetail, type MissionDetailData } from "./MissionDetail";
+import { ProductionActions } from "./ProductionActions";
 import { AgentRoster } from "./AgentRoster";
 import { Ledger } from "./Ledger";
 import { WorkspacePanel } from "./WorkspacePanel";
@@ -29,6 +30,8 @@ export function FocusView({
   onSelectMission,
   onApprove,
   onCancel,
+  onOpenApproveForProduction,
+  onOpenContentReview,
 }: {
   agents: Agent[];
   ledgerEntries: LedgerEntry[];
@@ -44,6 +47,8 @@ export function FocusView({
   onSelectMission: (missionId: string) => void;
   onApprove: (missionId: string) => void;
   onCancel: (missionId: string) => void;
+  onOpenApproveForProduction: () => void;
+  onOpenContentReview: (contentItemId: string) => void;
 }) {
   return (
     <div className="grid gap-6 lg:grid-cols-[280px_1fr_420px]">
@@ -105,6 +110,14 @@ export function FocusView({
                       >
                         Cancel
                       </button>
+                    )}
+                    {selectedMissionId === mission.id && missionDetail && (
+                      <ProductionActions
+                        detail={missionDetail}
+                        busy={busyMissionId === mission.id}
+                        onOpenApproveForProduction={onOpenApproveForProduction}
+                        onOpenContentReview={onOpenContentReview}
+                      />
                     )}
                   </div>
                 </li>

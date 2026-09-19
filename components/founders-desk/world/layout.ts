@@ -1,12 +1,26 @@
 /** Physical navigation only. These values never describe mission progress. */
 export type Point = { x: number; z: number };
 export type Rect = { x: number; z: number; w: number; d: number };
-export type WorldTarget = "desk" | "scout" | "board" | "research" | "lounge";
+export type WorldTarget = "desk" | "scout" | "board" | "research" | "lounge" | "studio" | "content_bot";
 
 export const MARKS = {
   hub: { x: -0.65, z: 0.7 },
   research: { x: 2.95, z: -1.29 },
   lounge: { x: 1.75, z: 2.45 },
+  // Content Bot's own idle spot near the founders' desk — offset from
+  // Scout's hub mark so the two characters don't visually stack when both
+  // are idle at once (see CLAUDE.md's shared-world-architecture milestone:
+  // one building, both agents visibly present, never overlapping).
+  contentBotHome: { x: -0.9, z: 0.3 },
+  // The Content Studio nook — placed inside the EXISTING building
+  // footprint (verified walkable and reachable from every other real
+  // destination) rather than a new east-wing room extension. A deliberate
+  // smaller-footprint implementation of the plan's Content Studio room:
+  // real, functional, and visually distinct (see studioFurniture in
+  // furniture.ts), without the ~40% floor-plan growth the original plan
+  // itself flagged as its highest-risk regression to founders' existing
+  // view of Scout.
+  studio: { x: 0, z: -2.1 },
 } satisfies Record<string, Point>;
 
 // Wall gaps and furniture footprints are shared with the rendered composition.
@@ -71,21 +85,73 @@ export function findPath(start: Point, destination: Point): Point[] {
   });
 }
 
-/** The one real agent this scene renders. A future second agent's own scene binds its own key here. */
+/** Scout and Content Bot — the two real agents this scene renders. A future third agent's own scene binds its own key here. */
 export const SCOUT_AGENT_KEY = "scout";
+export const CONTENT_BOT_AGENT_KEY = "content_bot";
+
+export type AgentStation = "hub" | "research" | "studio";
 
 /**
- * Where Scout belongs right now, derived from his own real assignment —
- * never from "is any mission in this room researching." A mission only
- * pulls Scout into the research room while it is both `researching` AND
- * he is genuinely its lead-assigned agent; a mission some other agent
- * leads (once other agents exist) can never move Scout's character.
+ * Each agent's home station and which real state pulls it to its own
+ * working station — this is the whole "which agent goes where" policy in
+ * one place. Adding a third agent later is a new entry here, not a new
+ * function (see CLAUDE.md's shared-world-architecture milestone).
+ */
+export const AGENT_STATIONS: Record<string, { home: AgentStation; workingStation: AgentStation }> = {
+  [SCOUT_AGENT_KEY]: { home: "hub", workingStation: "research" },
+  [CONTENT_BOT_AGENT_KEY]: { home: "hub", workingStation: "studio" },
+};
+
+/**
+ * Where an agent belongs right now, derived ONLY from its own real
+ * assignment — never from "is any mission/content item in this room
+ * doing something." Scout is pulled to Research while a mission is
+ * genuinely `researching` AND he is its real lead; Content Bot is pulled
+ * to the Studio while a content item is genuinely `generating` AND it is
+ * his real lead. This is the exact fix already proven once for Scout
+ * (Milestone 4.3), generalized so a third agent follows the identical
+ * pattern rather than reintroducing the aggregate-state shortcut.
+ */
+export function agentDestination(
+  missions: readonly { id: string; state: string }[],
+  leadAssignments: readonly { mission_id: string; agent_key: string }[],
+  contentItems: readonly { mission_id: string; state: string }[],
+  agentKey: string,
+): AgentStation {
+  const stations = AGENT_STATIONS[agentKey];
+  if (!stations) return "hub";
+  const led = new Set(leadAssignments.filter(a => a.agent_key === agentKey).map(a => a.mission_id));
+
+  if (agentKey === SCOUT_AGENT_KEY) {
+    return missions.some(m => m.state === "researching" && led.has(m.id)) ? stations.workingStation : stations.home;
+  }
+  if (agentKey === CONTENT_BOT_AGENT_KEY) {
+    return contentItems.some(c => c.state === "generating" && led.has(c.mission_id)) ? stations.workingStation : stations.home;
+  }
+  return stations.home;
+}
+
+/** Drives the "working" animation flag only — never position (see engine.ts's animate loop). */
+export function agentBusy(
+  missions: readonly { id: string; state: string }[],
+  leadAssignments: readonly { mission_id: string; agent_key: string }[],
+  contentItems: readonly { mission_id: string; state: string }[],
+  agentKey: string,
+): boolean {
+  const stations = AGENT_STATIONS[agentKey];
+  if (!stations) return false;
+  return agentDestination(missions, leadAssignments, contentItems, agentKey) === stations.workingStation;
+}
+
+/**
+ * @deprecated Use agentDestination(missions, leadAssignments, contentItems, agentKey) instead —
+ * kept only so existing callers/tests written before Content Bot existed
+ * still pass unchanged.
  */
 export function researchDestination(
   missions: readonly { id: string; state: string }[],
   leadAssignments: readonly { mission_id: string; agent_key: string }[],
   agentKey: string = SCOUT_AGENT_KEY,
 ): "hub" | "research" {
-  const led = new Set(leadAssignments.filter(a => a.agent_key === agentKey).map(a => a.mission_id));
-  return missions.some(m => m.state === "researching" && led.has(m.id)) ? "research" : "hub";
+  return agentDestination(missions, leadAssignments, [], agentKey) === "research" ? "research" : "hub";
 }

@@ -14,6 +14,20 @@ const CORE_JSON_SHAPE = `  "interpreted_mission": string,
   "verdict": "reject" | "investigate_further" | "ready_for_founders_review",
   "verdict_rationale": string`;
 
+const PRODUCTION_RECOMMENDATION_SHAPE = `  "production_recommendation": {
+    "content_format": string,
+    "hook_pattern": string,
+    "why_it_works": string,
+    "target_audience": string,
+    "target_platforms": ("youtube" | "youtube_shorts" | "tiktok")[],
+    "saturation": "low" | "moderate" | "high",
+    "repeatability": "one_off" | "series" | "evergreen_format",
+    "monetisation_fit": string,
+    "suggested_original_angle": string,
+    "do_not_imitate": string[],
+    "supporting_evidence_urls": string[]
+  }`;
+
 interface WorkspacePromptConfig {
   /** What kind of business this workspace researches, for the opening context paragraph. */
   businessContext: string;
@@ -124,6 +138,18 @@ Hard rules, no exceptions:
    ${config.compactnessExtra}. If you found more than fits, keep only the
    strongest, most decision-relevant items and say in unresolved_questions
    that more exist. Do not restate the same point in more than one field.
+9. Only when your verdict is exactly "ready_for_founders_review" AND you
+   genuinely believe this opportunity could become one real, original
+   piece of short-form video content, include a "production_recommendation"
+   key identifying the format/hook/why-it-works pattern you found — never
+   a reproduction of any specific existing video, character, or creator
+   you encountered. List any specific named work, character, or creator
+   that inspired this pattern in "do_not_imitate" — it must never be
+   reproduced, only the underlying format/pattern. "supporting_evidence_urls"
+   must only contain URLs you already listed in "sources" or "verified_facts"
+   above — never a new, uncited URL. Omit the "production_recommendation"
+   key entirely (do not include it as null or empty) when it doesn't apply
+   — that is a legitimate, common outcome, not a fallback to avoid.
 
 Use web search to ground your findings in real, current sources whenever \
 the mission concerns market demand, competition, or platform/regulatory rules.
@@ -132,12 +158,14 @@ Respond with a single JSON object and nothing else — no prose, no reasoning, \
 and no markdown code fences before or after it. Do not include any internal \
 or system-style tags (e.g. "<thinking>") in your response — only the JSON \
 object itself. Set "workspace_type" to exactly "${workspaceType}". It must \
-match exactly this shape:
+match exactly this shape (omit "production_recommendation" entirely unless \
+rule 9 above applies):
 
 {
 ${CORE_JSON_SHAPE},
   "workspace_type": "${workspaceType}",
-${config.jsonShapeFields}
+${config.jsonShapeFields},
+${PRODUCTION_RECOMMENDATION_SHAPE}
 }`;
 }
 

@@ -22,6 +22,13 @@
       "when": 1789678346231,
       "tag": "0002_watery_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789767473583,
+      "tag": "0003_dark_colleen_wing",
+      "breakpoints": true
     }
   ]
 }

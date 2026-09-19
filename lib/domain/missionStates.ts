@@ -27,10 +27,28 @@ const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
   // follow-up pass now reaches those states via researching, same as the
   // original pass always did.
   awaiting_evidence: ["researching", "cancelled"],
-  ready_for_founders_review: ["cancelled"],
+  // A founder's separate "approve for production" decision (see
+  // contentWorkflow.ts's approveForProduction) — distinct from the
+  // approval that dispatches Scout to research in the first place.
+  // Reusing this one predecessor state (rather than a second mission
+  // state for "inconclusive after two passes") is what keeps this a
+  // single gate — see CLAUDE.md's Content Bot milestone.
+  ready_for_founders_review: ["in_production", "cancelled"],
   rejected: [],
   failed: ["awaiting_founder_approval"], // founder may resubmit after a technical failure
   cancelled: [],
+  // Coarse and always true while a non-terminal content_items row exists
+  // for this mission — the real production lifecycle lives on that child
+  // entity (lib/domain/contentItemStates.ts), never on missions.state
+  // itself. See CLAUDE.md's Content Bot milestone for why.
+  in_production: ["production_complete", "failed", "cancelled"],
+  // Terminal — reached once the content item hit one of its own terminal
+  // states (published, rejected, failed, cancelled). No edge back to
+  // in_production: one content item per mission in this milestone: a
+  // follow-on production is a new mission, not a reopened one — see
+  // CLAUDE.md's Content Bot milestone for why that's what keeps the
+  // future performance-feedback loop provably bounded.
+  production_complete: [],
 };
 
 export function canTransition(from: MissionState, to: MissionState): boolean {
@@ -73,10 +91,15 @@ export class MissionConcurrencyError extends Error {
   }
 }
 
-export const TERMINAL_STATES: MissionState[] = ["rejected", "cancelled"];
+export const TERMINAL_STATES: MissionState[] = ["rejected", "cancelled", "production_complete"];
 
+// ready_for_founders_review is deliberately NOT terminal — it now has a
+// real outgoing edge (a founder's separate "approve for production"
+// decision, see contentWorkflow.ts). This is a real behavioral change
+// from before Content Bot existed; callers were audited (none exist
+// outside this file as of this change) before flipping it.
 export function isTerminal(state: MissionState): boolean {
-  return TERMINAL_STATES.includes(state) || state === "ready_for_founders_review";
+  return TERMINAL_STATES.includes(state);
 }
 
 /** States from which a founder may cancel a mission outright. */
@@ -94,27 +117,39 @@ export const MISSION_STATE_LABELS: Record<MissionState, string> = {
   rejected: "Rejected",
   failed: "Failed",
   cancelled: "Cancelled",
+  in_production: "In production",
+  production_complete: "Production complete",
 };
 
 /**
- * The HQ office view's mission dock shows a compact, 6-bucket summary
- * rather than all 9 real states — this is the one place that coarser
- * grouping is defined, so both the dock and any test asserting on it stay
- * in sync with the real state machine above. No state is invented or
- * dropped: every one of the 9 real states maps to exactly one bucket.
+ * The HQ office view's mission dock shows a compact bucket summary rather
+ * than every real state — this is the one place that coarser grouping is
+ * defined, so both the dock and any test asserting on it stay in sync
+ * with the real state machine above. No state is invented or dropped:
+ * every one of the real states maps to exactly one bucket.
  *  - "queued" joins "researching" — both mean Scout is dispatched or
  *    actively working; there's no meaningful visual distinction for a
  *    founder glancing at the dock.
  *  - "rejected" joins "ready_for_founders_review" under "completed" —
  *    both mean Scout finished its research and reached a real verdict;
- *    "rejected" is a genuine outcome, not a failure of the process.
+ *    "rejected" is a genuine outcome, not a failure of the process. A
+ *    mission that has since moved into production still reads as
+ *    "completed" here too (see "producing" below) — this bucket
+ *    describes the *research* phase finishing, not the whole mission.
  *  - "cancelled" joins "failed" — neither reached a real research verdict.
+ *  - "in_production" gets its own bucket, "producing" — Content Bot is
+ *    genuinely working, the same way "researching" means Scout is.
+ *  - "production_complete" joins "completed" — the production lifecycle
+ *    settled to one of its own terminal states; from the mission board's
+ *    coarse view that's the same "this mission is done" signal as a
+ *    completed research-only mission.
  */
 export const MISSION_DOCK_BUCKETS = [
   "draft",
   "awaiting_approval",
   "researching",
   "awaiting_evidence",
+  "producing",
   "completed",
   "failed",
 ] as const;
@@ -126,6 +161,7 @@ export const MISSION_DOCK_BUCKET_LABELS: Record<MissionDockBucket, string> = {
   awaiting_approval: "Awaiting approval",
   researching: "Researching",
   awaiting_evidence: "Awaiting evidence",
+  producing: "In production",
   completed: "Completed",
   failed: "Failed",
 };
@@ -140,6 +176,8 @@ const STATE_TO_DOCK_BUCKET: Record<MissionState, MissionDockBucket> = {
   rejected: "completed",
   failed: "failed",
   cancelled: "failed",
+  in_production: "producing",
+  production_complete: "completed",
 };
 
 export function missionDockBucket(state: MissionState): MissionDockBucket {

@@ -2,6 +2,7 @@ import type {
   ActivityEntry,
   AgentAssignment,
   Approval,
+  ContentItem,
   CostEntry,
   Deliverable,
   Evidence,
@@ -23,6 +24,8 @@ export interface MissionDetailData {
   costs: CostEntry[];
   approvals: Approval[];
   activity: ActivityEntry[];
+  /** This mission's real content item(s), if a founder has approved it for production (see CLAUDE.md's Content Bot milestone). Empty for a mission that hasn't reached that gate. */
+  contentItems: ContentItem[];
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

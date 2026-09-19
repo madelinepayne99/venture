@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { isCancellable } from "@/lib/domain/missionStates";
 import { MissionDetail, type MissionDetailData } from "../MissionDetail";
+import { ProductionActions } from "../ProductionActions";
 
 /**
  * The HQ view's right-side slide-out panel. It renders the exact same
@@ -17,12 +18,16 @@ export function MissionSlideOver({
   onApprove,
   onCancel,
   onClose,
+  onOpenApproveForProduction,
+  onOpenContentReview,
 }: {
   detail: MissionDetailData | null;
   busyMissionId: string | null;
   onApprove: (missionId: string) => void;
   onCancel: (missionId: string) => void;
   onClose: () => void;
+  onOpenApproveForProduction: () => void;
+  onOpenContentReview: (contentItemId: string) => void;
 }) {
   const open = detail !== null;
 
@@ -89,6 +94,14 @@ export function MissionSlideOver({
               >
                 Cancel
               </button>
+            )}
+            {detail && (
+              <ProductionActions
+                detail={detail}
+                busy={isBusy}
+                onOpenApproveForProduction={onOpenApproveForProduction}
+                onOpenContentReview={onOpenContentReview}
+              />
             )}
           </div>
         )}

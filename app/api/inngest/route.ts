@@ -2,6 +2,8 @@ import { serve } from "inngest/next";
 import { inngest } from "@/lib/inngest/client";
 import { scoutResearchJob } from "@/lib/jobs/scoutResearchJob";
 import { stuckMissionWatchdog, followupDispatchWatchdog } from "@/lib/jobs/stuckMissionWatchdog";
+import { contentProductionJob } from "@/lib/jobs/contentProductionJob";
+import { contentWatchdog, revisionDispatchWatchdog } from "@/lib/jobs/contentWatchdogs";
 
 // Called by the Inngest dev server locally, or by Inngest Cloud in
 // production (signed with INNGEST_SIGNING_KEY) — never by a founder's
@@ -9,5 +11,12 @@ import { stuckMissionWatchdog, followupDispatchWatchdog } from "@/lib/jobs/stuck
 // middleware.ts) the same way /api/auth is.
 export const { GET, POST, PUT } = serve({
   client: inngest,
-  functions: [scoutResearchJob, stuckMissionWatchdog, followupDispatchWatchdog],
+  functions: [
+    scoutResearchJob,
+    stuckMissionWatchdog,
+    followupDispatchWatchdog,
+    contentProductionJob,
+    contentWatchdog,
+    revisionDispatchWatchdog,
+  ],
 });

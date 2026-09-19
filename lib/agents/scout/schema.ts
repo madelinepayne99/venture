@@ -36,6 +36,38 @@ export const RegulatoryNoteSchema = z.object({
     ),
 });
 
+// A real recommendation to hand an opportunity to Content Bot for
+// production — never inferred by the app from mission state, only ever
+// this explicit block Scout itself decided to include. Optional because
+// "no recommendation" (e.g. a Service Business mission, or a Commerce
+// opportunity Scout doesn't think is producible as short-form content) is
+// a legitimate outcome, not an error. `do_not_imitate` names specific
+// works Scout found that must NOT be reproduced — Content Bot's own
+// guardrails (lib/agents/contentBot/guardrails.ts) hard-reject a plan
+// that violates this list. `supporting_evidence_urls` must be a subset of
+// `sources`/`verified_facts` URLs Scout actually cited — enforced by a
+// guardrail below, not left as prompt guidance alone.
+export const ProductionRecommendationSchema = z.object({
+  content_format: z.string().max(120).describe('e.g. "60s vertical explainer, single-presenter VO".'),
+  hook_pattern: z.string().max(400),
+  why_it_works: z.string().max(1200),
+  target_audience: z.string().max(200),
+  target_platforms: z.array(z.enum(["youtube", "youtube_shorts", "tiktok"])).max(3),
+  saturation: z.enum(["low", "moderate", "high"]),
+  repeatability: z.enum(["one_off", "series", "evergreen_format"]),
+  monetisation_fit: z.string().max(400),
+  suggested_original_angle: z
+    .string()
+    .max(1200)
+    .describe("An ORIGINAL execution Content Bot could produce — never a reproduction of an existing work."),
+  do_not_imitate: z
+    .array(z.string().max(160))
+    .max(10)
+    .default([])
+    .describe("Specific named works/characters/creators Scout found popular that must NOT be reproduced."),
+  supporting_evidence_urls: z.array(z.string().url()).max(12).default([]),
+});
+
 // Fields every workspace type needs, regardless of business shape. Kept
 // deliberately narrow — anything specific to how a Commerce vs. a Service
 // Business opportunity is evaluated lives in the per-workspace schema
@@ -76,6 +108,12 @@ const ScoutReportCoreSchema = z.object({
   recommended_next_action: z.string(),
   verdict: ScoutVerdictSchema,
   verdict_rationale: z.string(),
+  // Only present when the verdict is ready_for_founders_review AND Scout
+  // genuinely thinks this is producible as short-form content — absent is
+  // a legitimate outcome, never forced. See ProductionRecommendationSchema
+  // above for why this is what drives the real Approve-for-Production
+  // hand-off (contentWorkflow.ts) rather than any inference from state.
+  production_recommendation: ProductionRecommendationSchema.optional(),
 });
 
 // Commerce: the original Etsy-downloads / Amazon-KDP digital-product
@@ -133,3 +171,4 @@ export type ServiceBusinessReport = z.infer<typeof ServiceBusinessReportSchema>;
 export type ScoutSource = z.infer<typeof ScoutSourceSchema>;
 export type ScoutFact = z.infer<typeof ScoutFactSchema>;
 export type RegulatoryNote = z.infer<typeof RegulatoryNoteSchema>;
+export type ProductionRecommendation = z.infer<typeof ProductionRecommendationSchema>;

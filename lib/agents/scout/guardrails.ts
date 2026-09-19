@@ -86,3 +86,21 @@ export function hasMeaningfulEvidence(report: ScoutReport): boolean {
     return Boolean(source && source.accessed_date);
   });
 }
+
+/**
+ * Structural check on the Scout -> Content Bot hand-off itself: a
+ * production_recommendation's supporting_evidence_urls must be a genuine
+ * subset of the URLs Scout actually cited in this same report (its
+ * sources or verified_facts) — never a URL invented, or lifted from
+ * training knowledge, specifically to pad the hand-off. Returns the
+ * offending URLs (empty when the recommendation is absent or entirely
+ * grounded) so the caller can build a precise error message.
+ */
+export function findUncitedProductionEvidenceUrls(report: ScoutReport): string[] {
+  if (!report.production_recommendation) return [];
+  const citedUrls = new Set<string>([
+    ...report.sources.map((s) => s.url),
+    ...report.verified_facts.map((f) => f.source_url).filter((url): url is string => Boolean(url)),
+  ]);
+  return report.production_recommendation.supporting_evidence_urls.filter((url) => !citedUrls.has(url));
+}

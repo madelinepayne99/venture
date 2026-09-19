@@ -38,25 +38,82 @@ async function seed(instance: Db) {
   const agentCount = await countRows(instance, schema.agents);
   if (agentCount === 0) {
     const scoutId = randomUUID();
-    await instance.insert(schema.agents).values({
-      id: scoutId,
-      key: "scout",
-      name: "Scout",
-      role_summary:
-        "Opportunity-research specialist. Turns a founder's mission into a structured research job covering demand evidence, competition, risk, and platform suitability.",
-      status: "active",
-    });
-    await instance.insert(schema.agentCapabilities).values({
-      id: randomUUID(),
-      agent_id: scoutId,
-      capability: "opportunity_research",
-      description:
-        "Researches digital-product opportunities (Etsy downloads, Amazon KDP print-on-demand) and returns a structured, evidence-labeled report.",
-    });
+    const contentBotId = randomUUID();
+    await instance.insert(schema.agents).values([
+      {
+        id: scoutId,
+        key: "scout",
+        name: "Scout",
+        role_summary:
+          "Opportunity-research specialist. Turns a founder's mission into a structured research job covering demand evidence, competition, risk, and platform suitability.",
+        status: "active",
+      },
+      {
+        id: contentBotId,
+        key: "content_bot",
+        name: "Content Bot",
+        role_summary:
+          "Production specialist. Turns a founder-approved opportunity into a finished, watchable piece of short-form content — planning, generation, assembly, and safety review — for founder review before anything is published.",
+        status: "active",
+      },
+    ]);
+    await instance.insert(schema.agentCapabilities).values([
+      {
+        id: randomUUID(),
+        agent_id: scoutId,
+        capability: "opportunity_research",
+        description:
+          "Researches digital-product opportunities (Etsy downloads, Amazon KDP print-on-demand) and returns a structured, evidence-labeled report.",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "production_planning",
+        description: "Turns an approved opportunity brief into a structured content plan (script, shot list, metadata).",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "script_writing",
+        description: "Writes narration and visual direction for each beat of a produced piece.",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "voiceover",
+        description: "Generates real spoken narration audio via a configured voice provider.",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "visual_generation",
+        description: "Generates real still images (and, in a later milestone, generated video) via a configured provider.",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "assembly",
+        description: "Composes generated assets into a finished, watchable video via a hosted assembly provider.",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "captions_and_metadata",
+        description: "Derives real captions from voice-alignment data and writes title/description/tags.",
+      },
+      {
+        id: randomUUID(),
+        agent_id: contentBotId,
+        capability: "platform_publishing",
+        description: "Publishes an approved, founder-gated piece to a connected platform (not yet built — see CLAUDE.md's Content Bot milestone).",
+      },
+    ]);
 
+    // "creator" is deliberately not seeded — Content Bot fills that role
+    // (see CLAUDE.md's Content Bot milestone for why the roster doesn't
+    // carry two overlapping "makes things" agents).
     const planned: Array<[string, string, string]> = [
       ["inventor", "Inventor", "Product ideas and strategy."],
-      ["creator", "Creator", "Product assets and production."],
       ["inspector", "Inspector", "Quality, compliance, and adversarial review."],
       ["merchant", "Merchant", "Listings, pricing, and marketplace performance."],
       [
@@ -137,9 +194,10 @@ export async function resetDbForTests(): Promise<void> {
   const instance = await getDb();
   await instance.execute(sql`
     TRUNCATE TABLE
-      activity_history, ledger_entries, costs, approvals, deliverables,
-      evidence, agent_assignments, mission_stages, missions, projects,
-      agent_capabilities, agents, founders,
+      activity_history, ledger_entries, costs, approvals,
+      content_assets, content_versions, content_items,
+      deliverables, evidence, agent_assignments, mission_stages, missions,
+      projects, agent_capabilities, agents, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);

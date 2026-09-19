@@ -8,6 +8,7 @@ import {
   listCosts,
   listApprovals,
   listActivity,
+  listContentItemsForMissions,
 } from "@/lib/db/repositories";
 import type { ScoutReport } from "@/lib/agents/scout/schema";
 
@@ -15,7 +16,7 @@ export async function getMissionDetail(missionId: string) {
   const mission = await getMission(missionId);
   if (!mission) return null;
 
-  const [stages, assignments, evidence, deliverables, costs, approvals, activity] = await Promise.all([
+  const [stages, assignments, evidence, deliverables, costs, approvals, activity, contentItems] = await Promise.all([
     listStages(missionId),
     listAssignments(missionId),
     listEvidence(missionId),
@@ -23,6 +24,7 @@ export async function getMissionDetail(missionId: string) {
     listCosts(missionId),
     listApprovals(missionId),
     listActivity(missionId),
+    listContentItemsForMissions([missionId]),
   ]);
 
   const scoutReport = deliverables.find((d) => d.kind === "scout_research_report")?.content as
@@ -47,5 +49,6 @@ export async function getMissionDetail(missionId: string) {
     costs,
     approvals,
     activity,
+    contentItems,
   };
 }

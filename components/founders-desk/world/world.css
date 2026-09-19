@@ -4,6 +4,9 @@
 .vw-room-tag:hover,.vw-room-tag:focus-visible{background:#fffbed;box-shadow:0 2px 10px #17362c35;outline:2px solid #bb965e;outline-offset:2px}
 .vw-scout-tag{background:#244e41ed;color:#fff9de;border-color:#587561;letter-spacing:.02em;text-transform:none;font-size:11px;box-shadow:0 2px 8px #173d2a30;padding:6px 10px}
 .vw-scout-tag:hover,.vw-scout-tag:focus-visible{background:#1e4237}
+/* Content Bot's own floating tag — same shape as Scout's, sapphire instead of emerald. */
+.vw-content-bot-tag{background:#1d4d7aed;border-color:#4d7ba8}
+.vw-content-bot-tag:hover,.vw-content-bot-tag:focus-visible{background:#173e63}
 .vw-error{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;background:#eeeadd;color:#204636;padding:3rem;font:14px/1.6 system-ui,sans-serif}
 .vw-error p{max-width:460px}.vw-error button{background:#244e41;color:white;border:0;padding:12px 20px;border-radius:9px;cursor:pointer}
 @media(max-width:700px){.vw-room-tag{font-size:8px;padding:4px 6px}.vw-scout-tag{font-size:10px}.vw-host{min-height:280px}}

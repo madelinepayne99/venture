@@ -10,7 +10,7 @@ import path from "node:path";
 // research.
 
 describe("no fabricated progress", () => {
-  it("the mission state vocabulary is exactly the nine honest states — no numeric progress state", () => {
+  it("the mission state vocabulary is exactly the eleven honest states — no numeric progress state", () => {
     const states = [...MISSION_STATES].sort();
     const expected = [
       "awaiting_evidence",
@@ -18,13 +18,15 @@ describe("no fabricated progress", () => {
       "cancelled",
       "draft",
       "failed",
+      "in_production",
+      "production_complete",
       "queued",
       "ready_for_founders_review",
       "rejected",
       "researching",
     ].sort();
     expect(states).toEqual(expected);
-    expect(Object.keys(MISSION_STATE_LABELS).length).toBe(9);
+    expect(Object.keys(MISSION_STATE_LABELS).length).toBe(11);
   });
 
   it("no source file renders a hardcoded completion percentage for missions", () => {

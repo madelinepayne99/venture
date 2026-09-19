@@ -26,6 +26,8 @@ export const MISSION_STATES = [
   "rejected",
   "failed",
   "cancelled",
+  "in_production",
+  "production_complete",
 ] as const;
 
 export type MissionState = (typeof MISSION_STATES)[number];
@@ -60,3 +62,24 @@ export type Approval = InferSelectModel<typeof schema.approvals>;
 export type CostEntry = InferSelectModel<typeof schema.costs>;
 export type LedgerEntry = InferSelectModel<typeof schema.ledgerEntries>;
 export type ActivityEntry = InferSelectModel<typeof schema.activityHistory>;
+
+// --- Content Bot production (Milestone C1) ---------------------------------
+
+export type ContentItemState = (typeof schema.contentItemStateValues)[number];
+export type ContentItem = Omit<InferSelectModel<typeof schema.contentItems>, "state"> & {
+  state: ContentItemState;
+};
+
+export type ContentVersionStatus = (typeof schema.contentVersionStatusValues)[number];
+export type ContentVersion<TPlan = unknown> = Omit<
+  InferSelectModel<typeof schema.contentVersions>,
+  "status" | "plan"
+> & {
+  status: ContentVersionStatus;
+  plan: TPlan | null;
+};
+
+export type ContentAssetKind = (typeof schema.contentAssetKindValues)[number];
+export type ContentAsset = Omit<InferSelectModel<typeof schema.contentAssets>, "kind"> & {
+  kind: ContentAssetKind;
+};

@@ -11,6 +11,7 @@ const BUCKET_ACCENTS: Record<MissionDockBucket, string> = {
   awaiting_approval: "#C89B3C",
   researching: "#1E7A4C",
   awaiting_evidence: "#9C7A2E",
+  producing: "#2E5C8A",
   completed: "#1E7A4C",
   failed: "#B3462C",
 };

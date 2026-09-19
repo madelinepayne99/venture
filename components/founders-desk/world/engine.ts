@@ -2,8 +2,19 @@ import * as T from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { buildMaterials, material } from "./materials";
 import { buildEnvironment } from "./environment";
-import { buildScout } from "./scout";
-import { findPath, MARKS, researchDestination, type Point, type WorldTarget } from "./layout";
+import { buildScout, buildContentBot } from "./scout";
+import {
+  findPath,
+  MARKS,
+  agentDestination,
+  agentBusy,
+  SCOUT_AGENT_KEY,
+  CONTENT_BOT_AGENT_KEY,
+  type AgentStation,
+  type Point,
+  type WorldTarget,
+} from "./layout";
+import { nextIdlePoint } from "./idle";
 import { SoftwareRenderer } from "./softwareRenderer";
 
 export type WorldOptions = {
@@ -15,11 +26,41 @@ export type WorldOptions = {
 };
 export type WorldEngine = ReturnType<typeof createOfficeWorld>;
 
+type Character = { root: T.Group; animate: (time: number, moving: boolean, working: boolean, reduced: boolean) => void };
+
+/**
+ * Per-agent runtime state — the whole point of this shape. Nothing here is
+ * ever derived from "is anything happening anywhere"; every rig's route,
+ * working flag, and idle behavior comes only from that agent's own real
+ * assignment data (see layout.ts's agentDestination/agentBusy), so Scout
+ * researching one mission and Content Bot producing another are visibly,
+ * independently true at the same time (CLAUDE.md's shared-world-
+ * architecture milestone).
+ */
+interface Rig {
+  key: string;
+  worldTarget: WorldTarget;
+  char: Character;
+  ring: T.Mesh;
+  tag: HTMLButtonElement;
+  tagOffset: T.Vector3;
+  home: Point;
+  workingRotation: number;
+  homeRotation: number;
+  route: Point[];
+  routeKind: "sync" | "explore" | "idle";
+  arrival: AgentStation;
+  lastDestination: AgentStation | undefined;
+  working: boolean;
+  idleHoldUntilMs: number;
+  idleSeedTick: number;
+  idleLabel: string;
+  workingLabel: string;
+}
+
 /** Scene-only adapter: no API, storage, domain mutations, costs, or invented mission state. */
 export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
-  let disposed = false, frame = 0, lastTime = 0, elapsed = 0, reduced = false, exploring = false, working = false;
-  let route: Point[] = [], arrival: "hub" | "research" | "explore" = "hub";
-  let lastDestination: "hub" | "research" | undefined, moved = false;
+  let disposed = false, frame = 0, lastTime = 0, elapsed = 0, reduced = false, exploring = false, anyMoving = false;
   let pointerStart: { x: number; y: number } | null = null;
   const scene = new T.Scene(), m = buildMaterials();
   const camera = new T.OrthographicCamera(-8, 8, 6, -6, .1, 90);
@@ -51,12 +92,7 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   const fill = new T.DirectionalLight("#d3e6eb", .5); fill.position.set(8, 6, -4); scene.add(fill);
   const ground = new T.Mesh(new T.PlaneGeometry(200, 200), material("#d7decd", 1));
   ground.rotation.x = -Math.PI / 2; ground.position.y = -.37; ground.receiveShadow = true; scene.add(ground);
-  const environment = buildEnvironment(scene, m), scout = buildScout(m);
-  scout.root.userData.target = "scout"; scout.root.position.set(MARKS.hub.x, .04, MARKS.hub.z); scout.root.rotation.y = .45; scene.add(scout.root);
-  const scoutRing = new T.Mesh(new T.RingGeometry(.35, .382, 48), new T.MeshBasicMaterial({ color: "#d7ac5b", side: T.DoubleSide, transparent: true, opacity: .9 }));
-  scoutRing.rotation.x = -Math.PI / 2; scoutRing.position.y = .045; scoutRing.visible = false; scene.add(scoutRing);
-  const destinationRing = new T.Mesh(new T.RingGeometry(.18, .2, 32), new T.MeshBasicMaterial({ color: "#416a4d", side: T.DoubleSide, transparent: true, opacity: .7 }));
-  destinationRing.rotation.x = -Math.PI / 2; destinationRing.visible = false; scene.add(destinationRing);
+  const environment = buildEnvironment(scene, m);
 
   const labels: { button: HTMLButtonElement; point: T.Vector3 }[] = [];
   const tag = (label: string, id: WorldTarget, point: T.Vector3) => {
@@ -69,8 +105,44 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   tag("Founders’ hub", "desk", new T.Vector3(-2.7, .03, 1.14));
   tag("Research room", "research", new T.Vector3(3.72, 2.6, -3.8));
   tag("The lounge", "lounge", new T.Vector3(3.7, .03, 3.79));
-  const scoutTag = tag("Scout · Ready", "scout", new T.Vector3()); scoutTag.classList.add("vw-scout-tag");
-  const scoutLabel = labels[labels.length - 1]!;
+  tag("Content Studio", "studio", new T.Vector3(0, .03, -3.4));
+
+  function createRig(
+    key: string,
+    worldTarget: WorldTarget,
+    char: Character,
+    home: Point,
+    homeRotation: number,
+    workingRotation: number,
+    ringColor: string,
+    idleLabel: string,
+    workingLabel: string,
+  ): Rig {
+    char.root.userData.target = worldTarget;
+    char.root.position.set(home.x, .04, home.z); char.root.rotation.y = homeRotation;
+    scene.add(char.root);
+    const ring = new T.Mesh(new T.RingGeometry(.35, .382, 48), new T.MeshBasicMaterial({ color: ringColor, side: T.DoubleSide, transparent: true, opacity: .9 }));
+    ring.rotation.x = -Math.PI / 2; ring.position.y = .045; ring.visible = false; scene.add(ring);
+    const button = tag(`${idleLabel} · Ready`, worldTarget, new T.Vector3());
+    button.classList.add("vw-scout-tag");
+    if (key === CONTENT_BOT_AGENT_KEY) button.classList.add("vw-content-bot-tag");
+    return {
+      key, worldTarget, char, ring, tag: button, tagOffset: new T.Vector3(0, 1.41, 0),
+      home, homeRotation, workingRotation,
+      route: [], routeKind: "sync", arrival: "hub", lastDestination: undefined, working: false,
+      idleHoldUntilMs: 0, idleSeedTick: 0,
+      idleLabel, workingLabel,
+    };
+  }
+
+  const rigs: Rig[] = [
+    createRig(SCOUT_AGENT_KEY, "scout", buildScout(m), MARKS.hub, .45, Math.PI, "#d7ac5b", "Scout", "Researching"),
+    createRig(CONTENT_BOT_AGENT_KEY, "content_bot", buildContentBot(m), MARKS.contentBotHome, .2, Math.PI * .75, "#5a9bd6", "Content Bot", "Producing"),
+  ];
+
+  const destinationRing = new T.Mesh(new T.RingGeometry(.18, .2, 32), new T.MeshBasicMaterial({ color: "#416a4d", side: T.DoubleSide, transparent: true, opacity: .7 }));
+  destinationRing.rotation.x = -Math.PI / 2; destinationRing.visible = false; scene.add(destinationRing);
+
   const raycaster = new T.Raycaster(), mouse = new T.Vector2(), floorPlane = new T.Plane(new T.Vector3(0, 1, 0), -.04);
   const vector = new T.Vector3();
   let hover: WorldTarget | null = null;
@@ -78,7 +150,8 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     const rect = canvas.getBoundingClientRect();
     mouse.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
     raycaster.setFromCamera(mouse, camera);
-    for (const hit of raycaster.intersectObjects([environment.root, scout.root], true)) {
+    const pickable = [environment.root, ...rigs.map(r => r.char.root)];
+    for (const hit of raycaster.intersectObjects(pickable, true)) {
       let object: T.Object3D | null = hit.object;
       while (object) { if (object.userData.target) return object.userData.target as WorldTarget; object = object.parent; }
       // Do not pick through walls/furniture to a hidden target.
@@ -86,17 +159,22 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     }
     return null;
   }
-  function setMoving(value: boolean) { if (moved !== value) { moved = value; options.onMovement?.(value); } }
-  function moveTo(point: Point, place: typeof arrival = "explore") {
-    const path = findPath(scout.root.position, point);
+  function stationPoint(station: AgentStation, rig: Rig): Point {
+    if (station === "hub") return rig.home;
+    return MARKS[station];
+  }
+  function moveRigTo(rig: Rig, point: Point, place: AgentStation, kind: "sync" | "explore" | "idle") {
+    const path = findPath(rig.char.root.position, point);
     if (!path.length) return false;
-    arrival = place;
+    rig.arrival = place; rig.routeKind = kind;
     if (reduced) {
-      route = []; scout.root.position.set(point.x, .04, point.z); scout.root.rotation.y = place === "research" ? Math.PI : .45;
-      setMoving(false); options.onArrival?.(place); return true;
+      rig.route = []; rig.char.root.position.set(point.x, .04, point.z);
+      rig.char.root.rotation.y = place === "hub" ? rig.homeRotation : rig.workingRotation;
+      if (kind !== "idle") options.onArrival?.(place === "hub" ? "hub" : place === "research" ? "research" : "explore");
+      return true;
     }
-    route = path; setMoving(true);
-    destinationRing.position.set(point.x, .044, point.z); destinationRing.visible = place === "explore";
+    rig.route = path;
+    if (kind === "explore") { destinationRing.position.set(point.x, .044, point.z); destinationRing.visible = true; }
     return true;
   }
   const pointerDown = (event: PointerEvent) => { pointerStart = { x: event.clientX, y: event.clientY }; };
@@ -107,7 +185,7 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     if (!pointerStart || Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 6) { pointerStart = null; return; }
     pointerStart = null; const selected = pick(event);
     if (selected) options.onSelect(selected);
-    else if (exploring && raycaster.ray.intersectPlane(floorPlane, vector)) moveTo({ x: vector.x, z: vector.z });
+    else if (exploring && raycaster.ray.intersectPlane(floorPlane, vector)) moveRigTo(rigs[0]!, { x: vector.x, z: vector.z }, "hub", "explore");
   };
   canvas.addEventListener("pointerdown", pointerDown); canvas.addEventListener("pointermove", pointerMove); canvas.addEventListener("pointerup", pointerUp);
   const contextLost = (event: Event) => { event.preventDefault(); options.onError?.("The 3D view paused. Reload the preview to reconnect your graphics device."); };
@@ -129,46 +207,83 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   const media = window.matchMedia("(prefers-reduced-motion: reduce)");
   function motionChange() {
     reduced = media.matches;
-    if (reduced && route.length) {
-      const end = route[route.length - 1]!; scout.root.position.set(end.x, .04, end.z); route = [];
-      setMoving(false); destinationRing.visible = false; options.onArrival?.(arrival);
+    if (reduced) {
+      for (const rig of rigs) {
+        if (!rig.route.length) continue;
+        const end = rig.route[rig.route.length - 1]!;
+        rig.char.root.position.set(end.x, .04, end.z); rig.route = [];
+        options.onArrival?.(rig.arrival === "hub" ? "hub" : rig.arrival === "research" ? "research" : "explore");
+      }
+      destinationRing.visible = false;
+      anyMoving = false; options.onMovement?.(false);
     }
     controls.enableDamping = !reduced;
   }
   motionChange(); media.addEventListener("change", motionChange);
+
   function animate(time: number) {
     if (disposed) return;
     const delta = lastTime ? Math.min((time - lastTime) / 1000, .05) : 0; lastTime = time;
     if (!document.hidden) elapsed += delta;
-    if (route.length && !document.hidden) {
-      const next = route[0]!, dx = next.x - scout.root.position.x, dz = next.z - scout.root.position.z, distance = Math.hypot(dx, dz);
-      const step = 1.35 * delta;
-      if (distance <= step) {
-        scout.root.position.x = next.x; scout.root.position.z = next.z; route.shift();
-        if (!route.length) {
-          setMoving(false); destinationRing.visible = false;
-          scout.root.rotation.y = arrival === "research" ? Math.PI : .45;
-          options.onArrival?.(arrival);
+
+    for (const rig of rigs) {
+      if (rig.route.length && !document.hidden) {
+        const next = rig.route[0]!, dx = next.x - rig.char.root.position.x, dz = next.z - rig.char.root.position.z, distance = Math.hypot(dx, dz);
+        const step = 1.35 * delta;
+        if (distance <= step) {
+          rig.char.root.position.x = next.x; rig.char.root.position.z = next.z; rig.route.shift();
+          if (!rig.route.length) {
+            if (rig.routeKind === "explore") destinationRing.visible = false;
+            rig.char.root.rotation.y = rig.arrival === "hub" ? rig.homeRotation : rig.workingRotation;
+            if (rig.routeKind !== "idle") {
+              options.onArrival?.(rig.arrival === "hub" ? "hub" : rig.arrival === "research" ? "research" : "explore");
+            }
+          }
+        } else {
+          rig.char.root.position.x += dx / distance * step; rig.char.root.position.z += dz / distance * step;
+          const yaw = Math.atan2(dx, dz), diff = Math.atan2(Math.sin(yaw - rig.char.root.rotation.y), Math.cos(yaw - rig.char.root.rotation.y));
+          rig.char.root.rotation.y += diff * Math.min(1, delta * 14);
         }
-      } else {
-        scout.root.position.x += dx / distance * step; scout.root.position.z += dz / distance * step;
-        const yaw = Math.atan2(dx, dz), diff = Math.atan2(Math.sin(yaw - scout.root.rotation.y), Math.cos(yaw - scout.root.rotation.y));
-        scout.root.rotation.y += diff * Math.min(1, delta * 14);
+      }
+      rig.char.animate(elapsed, rig.route.length > 0, rig.working && rig.route.length === 0, reduced);
+      rig.ring.visible = hover === rig.worldTarget || exploring;
+      rig.ring.position.x = rig.char.root.position.x; rig.ring.position.z = rig.char.root.position.z;
+    }
+
+    // Idle wandering — purely cosmetic ("someone is here"), never an
+    // activity signal. Only ever considered for a rig with no real route
+    // and no real work, and disabled entirely under reduced motion.
+    if (!reduced && !document.hidden) {
+      for (const rig of rigs) {
+        if (rig.route.length || rig.working) continue;
+        if (elapsed < rig.idleHoldUntilMs) continue;
+        const point = nextIdlePoint(rig.home, rig.idleSeedTick);
+        rig.idleSeedTick += 1;
+        rig.idleHoldUntilMs = elapsed + 6 + (rig.idleSeedTick % 3) * 2;
+        moveRigTo(rig, point, "hub", "idle");
       }
     }
-    scout.animate(elapsed, route.length > 0, working && route.length === 0, reduced);
-    scoutRing.visible = hover === "scout" || exploring;
-    scoutRing.position.x = scout.root.position.x; scoutRing.position.z = scout.root.position.z;
+
     controls.update();
     // Keep panning bounded without changing the viewing direction.
     const cx = T.MathUtils.clamp(controls.target.x, -4, 4), cz = T.MathUtils.clamp(controls.target.z, -3, 3);
     camera.position.x += cx - controls.target.x; camera.position.z += cz - controls.target.z;
     controls.target.x = cx; controls.target.z = cz;
-    scoutLabel.point.copy(scout.root.position).add(new T.Vector3(0, 1.41, 0));
-    const scoutStatus = route.length ? "Scout · Walking" : working ? "Scout · Researching" : "Scout · Ready";
-    if (scoutTag.textContent !== scoutStatus) {
-      scoutTag.textContent = scoutStatus;
-      scoutTag.setAttribute("aria-label", `Open ${scoutStatus}`);
+
+    // "Moving" reflects any real (non-idle) route — onMovement is a
+    // scene-level hook, not per-agent, so it's true whenever at least one
+    // rig is genuinely walking.
+    const nowMoving = rigs.some(r => r.route.length > 0);
+    if (nowMoving !== anyMoving) { anyMoving = nowMoving; options.onMovement?.(anyMoving); }
+
+    for (const rig of rigs) {
+      const labelEntry = labels.find(l => l.button === rig.tag)!;
+      labelEntry.point.copy(rig.char.root.position).add(rig.tagOffset);
+      const status = rig.route.length ? `${rig.idleLabel} · Walking` : rig.working ? `${rig.idleLabel} · ${rig.workingLabel}` : `${rig.idleLabel} · Ready`;
+      if (rig.tag.textContent !== status) {
+        rig.tag.textContent = status;
+        rig.tag.setAttribute("aria-label", `Open ${status}`);
+      }
     }
     for (const { button, point } of labels) {
       const pos = point.clone().project(camera), px = (pos.x + 1) / 2 * host.clientWidth, py = (-pos.y + 1) / 2 * host.clientHeight;
@@ -180,26 +295,55 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   }
   frame = requestAnimationFrame(animate);
   host.dataset.worldReady = "true"; options.onReady?.();
+
+  function findRig(key: string): Rig | undefined { return rigs.find(r => r.key === key); }
+
   return {
-    moveTo,
+    moveTo(point: Point, place: "hub" | "research" | "explore" = "explore") {
+      return moveRigTo(rigs[0]!, point, place === "explore" ? "hub" : place, "explore");
+    },
     setExploring(value: boolean) { exploring = value; },
-    syncMissions(
+    /**
+     * Replaces syncMissions: takes the full, unsliced real missions,
+     * lead assignments, and content items every tick — each rig filters
+     * by its OWN agent key internally (via agentDestination/agentBusy),
+     * never pre-sliced by a caller. This is deliberate: pre-slicing per
+     * agent in a React component is exactly where the "any mission
+     * researching -> move Scout" bug class would return.
+     */
+    syncWorld(
       missions: readonly { id: string; state: string }[],
       leadAssignments: readonly { mission_id: string; agent_key: string }[],
+      contentItems: readonly { mission_id: string; state: string }[],
       snap = false,
     ) {
-      const next = researchDestination(missions, leadAssignments); working = next === "research";
-      if (lastDestination === undefined || snap) {
-        route = []; setMoving(false); const p = MARKS[next]; scout.root.position.set(p.x, .04, p.z); scout.root.rotation.y = next === "research" ? Math.PI : .45;
-      } else if (next !== lastDestination) moveTo(MARKS[next], next);
-      lastDestination = next;
+      for (const rig of rigs) {
+        const next = agentDestination(missions, leadAssignments, contentItems, rig.key);
+        rig.working = agentBusy(missions, leadAssignments, contentItems, rig.key);
+        const point = stationPoint(next, rig);
+        if (rig.lastDestination === undefined || snap) {
+          rig.route = [];
+          rig.char.root.position.set(point.x, .04, point.z);
+          rig.char.root.rotation.y = next === "hub" ? rig.homeRotation : rig.workingRotation;
+        } else if (next !== rig.lastDestination) {
+          moveRigTo(rig, point, next, "sync");
+        }
+        rig.lastDestination = next;
+      }
     },
-    focus(where: "all" | "desk" | "research" | "scout" | "lounge") {
+    focus(where: "all" | "desk" | "research" | "scout" | "lounge" | "studio" | "content_bot") {
       let p: T.Vector3;
       if (where === "all") { p = target; camera.zoom = 1; }
-      else {
-        p = where === "desk" ? new T.Vector3(-2.8, .5, -1) : where === "research" ? new T.Vector3(3, .5, -1.8) : where === "lounge" ? new T.Vector3(3, .35, 2) : scout.root.position.clone().add(new T.Vector3(0, .55, 0));
-        camera.zoom = where === "scout" ? 2.7 : 1.65;
+      else if (where === "scout" || where === "content_bot") {
+        const rig = findRig(where === "scout" ? SCOUT_AGENT_KEY : CONTENT_BOT_AGENT_KEY)!;
+        p = rig.char.root.position.clone().add(new T.Vector3(0, .55, 0));
+        camera.zoom = 2.7;
+      } else {
+        p = where === "desk" ? new T.Vector3(-2.8, .5, -1)
+          : where === "research" ? new T.Vector3(3, .5, -1.8)
+          : where === "lounge" ? new T.Vector3(3, .35, 2)
+          : new T.Vector3(0, .5, -2.1); // studio
+        camera.zoom = 1.65;
       }
       controls.target.copy(p); camera.position.copy(p).add(offset); camera.updateProjectionMatrix(); controls.update();
     },

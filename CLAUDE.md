@@ -621,6 +621,252 @@ starts, specifically so nothing built in the meantime makes it harder:
   gate is designed as its own real transition when that milestone starts,
   not smuggled in early.
 
+**Milestone 5: Content Bot V1 (C1) — the real, complete production loop
+through Ready-to-Publish.** Content Bot is now Venture HQ's second real
+agent: a founder can take a Scout-researched opportunity all the way
+through a founder-approved production hand-off, a real five-stage
+pipeline calling real fal.ai/ElevenLabs/Shotstack providers, a genuinely
+watchable finished video, and a full Approve/Reject/Send-Back-With-Notes
+review cycle — never touching Etsy, Amazon, TikTok, YouTube, or any real
+publishing surface. This is the single largest change this codebase has
+had since Milestone 2; the summary below groups it by subsystem rather
+than walking every file.
+
+- **Schema** (`drizzle/0003_*.sql`): three new tables —
+  `content_items` (one per mission's production attempt; a partial unique
+  index enforces at most one non-terminal item per mission at the database
+  level, not just convention), `content_versions` (one row per real
+  production attempt, self-referencing `parent_version_id` for revisions,
+  forward-referencing `revision_approval_id` into `approvals`), and
+  `content_assets` (one row per real generated file — audio, stills,
+  thumbnail, captions, video — each with a measured byte size and SHA-256
+  checksum, never a provider's claim). `mission_stages` and `approvals`
+  both gained nullable `content_item_id`/`content_version_id` columns so
+  Content Bot's own pipeline stages and founder decisions live in the same
+  real tables Scout already uses, scoped rather than duplicated.
+  `costs.input_tokens`/`output_tokens` became nullable and gained
+  `content_item_id`/`content_version_id`/`provider`/`unit`/`quantity` —
+  the first real move away from "every cost is a token count," since a
+  media-provider call is priced per image/character/second, not per
+  token, and writing `0` tokens for a video render would have fabricated
+  a number in the one table whose entire philosophy is "never fabricate."
+  `agent_assignments` gained a real `UNIQUE (mission_id, agent_id, role)`
+  constraint, making the Scout → Content Bot hand-off idempotent under
+  retry at the database level.
+- **Two state machines, not one bloated one** (`lib/domain/
+  missionStates.ts`, new `lib/domain/contentItemStates.ts`) — exactly the
+  design CLAUDE.md's Milestone 4.6 committed to. Missions gained exactly
+  two new states, `in_production` and `production_complete`
+  (`ready_for_founders_review` now legally moves to `in_production`, and
+  `isTerminal()` no longer treats `ready_for_founders_review` as
+  terminal — audited: it had zero callers, so this was a safe flip). The
+  real production lifecycle — `planning → generating → {awaiting_review |
+  blocked | failed} → {ready_to_publish | revision_requested | rejected}
+  → publishing → {published | publish_failed}`, plus `cancelled` reachable
+  from every non-terminal state except `publishing` (bytes moving toward
+  a platform can't honestly be "cancelled") — lives entirely in the new
+  child entity, `content_items`, with its own atomic
+  `transitionContentItemState` (a byte-for-byte clone of
+  `transitionMissionState`'s conditional-UPDATE pattern).
+- **The real Scout → Content Bot hand-off** (`lib/agents/scout/schema.ts`,
+  `prompt.ts`, `lib/domain/contentHandoff.ts`, `contentWorkflow.ts`).
+  Scout's report gained an *optional* `production_recommendation` block —
+  format, hook pattern, why it works, target platforms, saturation,
+  repeatability, a suggested *original* angle, and a real `do_not_imitate`
+  list of named works Scout found that must never be reproduced — emitted
+  only when the verdict is `ready_for_founders_review` and the
+  opportunity is genuinely producible. A new guardrail hard-rejects a
+  report whose recommendation cites evidence URLs Scout didn't actually
+  source. The "Approve for Production" gate is a real, separate founder
+  decision (`approveForProduction`, `POST /api/missions/[id]/
+  approve-production`) — never inferred from mission state — that freezes
+  a `ProductionBrief` jsonb snapshot (`buildProductionBrief`) from the
+  real mission, project, Scout deliverable, and exactly the evidence rows
+  the founder ticked, at the moment of approval. Ordering mirrors
+  `approveMission` exactly: the atomic `ready_for_founders_review →
+  in_production` mission transition happens first (a lost race costs
+  nothing), the content item and lead assignment are created next, and
+  the `content/production_requested` Inngest event is sent last, wrapped
+  so a send failure can never leave a half-created item — a self-healing
+  watchdog (`revisionDispatchWatchdog`, and the equivalent for the
+  original dispatch) retries it.
+- **Content Bot the agent** (`lib/agents/contentBot/`) follows the
+  narrower "step functions, not one `run()`" contract CLAUDE.md's Content
+  Bot planning committed to — `planContentVersion` and
+  `reviewContentSafety` are single-shot Claude calls with the same
+  raw→fenced→balanced-brace JSON-extraction ladder Scout uses (now
+  factored out into a shared `lib/agents/shared/jsonExtraction.ts` both
+  agents import, with Scout's own file refactored to use it —
+  byte-for-byte behavior-preserving, proven by the full existing suite
+  staying green). `ContentPlanSchema` caps every array exactly like
+  Scout's report (script ≤30 beats, tags ≤15, claims ≤20). Three safety
+  layers, mirroring Scout's own guardrail philosophy: the prompt itself;
+  code-level `guardrails.ts` (`assertNoNamedIP` — recursively scans every
+  string in the plan, not a maintained field list; `assertAudienceAppropriate`
+  for kids/teen; `assertClaimsAreEvidenced` — every claim must cite a real
+  `is_verified_fact` row from the frozen brief; `assertAssetsMatchPlan` —
+  no zero-byte assets, duration within tolerance, real thumbnail
+  dimensions); and a real model safety judge (`reviewContentSafety`) for
+  the tone/audience-mismatch and real-world-tragedy-exploitation judgment
+  calls a regex can't make. A guardrail rejection and a safety-judge
+  `"block"` verdict both route to the item state `blocked`, deliberately
+  distinct from `failed` — a founder can tell "we refused to make this"
+  from "the tool broke."
+- **Real provider integrations** (`lib/media/`) — `MediaProvider<TReq>`
+  (`estimateUsd`/`generate`/`lookup`) is one shape for every capability,
+  env-key-selected via `lib/media/registry.ts` exactly like
+  `anthropicClient.ts`'s singleton pattern; a missing provider throws
+  `NoProviderConfiguredError` rather than ever falling back to a stub.
+  `FalImageProvider` calls fal.ai's real synchronous image endpoint;
+  `ElevenLabsVoiceProvider` calls ElevenLabs' real
+  `/v1/text-to-speech/{voice_id}/with-timestamps` endpoint and derives
+  real word-level captions from its own alignment data — no separate
+  transcription provider needed; `ShotstackEditProvider` submits a real
+  JSON timeline to Shotstack's render API and polls for completion.
+  `VoiceProvider`/`VoiceMediaResult` is a deliberate, documented
+  extension to the otherwise-uniform `MediaProvider<TReq>` shape (voice
+  generation returns timing data no other capability needs) — a real
+  necessary correction, not a workaround. `lib/media/pricing.ts` prices
+  every real unit (images/characters/seconds), throwing on an unpriced
+  provider/model exactly like `lib/agents/pricing.ts` already does for
+  tokens. Real generated video (`VideoProvider`) is deliberately left
+  unimplemented — `getVideoProvider()` always throws
+  `NoProviderConfiguredError` — since real generated motion is
+  Milestone C1.5's job, not C1's; `ContentPlanSchema` has no
+  `production_path` field yet for the same reason.
+- **Real storage** (`lib/storage/`) — `StorageProvider`
+  (`put`/`open`/`head`/`signedReadUrl`, deliberately no `delete` — the
+  insert-only philosophy extends to bytes) is env-selected via
+  `lib/storage/registry.ts`; `LocalDiskStorageProvider` is the only real
+  implementation, explicitly dev/test-only (a real deployment's
+  serverless filesystem can't be relied on to persist it — a real object
+  store behind the same interface is future, deployment-time work, not
+  needed to implement or live-test C1). A real bug was caught and fixed
+  during this milestone: `open()`'s ranged branch originally returned the
+  *whole file's* byte size as `Content-Length` for a `206` response
+  instead of the requested slice's length — silently correct-looking
+  until a real range request (exactly what in-app video scrubbing sends)
+  would have received a mismatched header. Fixed before it ever shipped
+  to the streaming route.
+- **The five-stage resumable pipeline** (`runContentProductionPipeline` in
+  `contentWorkflow.ts`, dispatched by `lib/jobs/contentProductionJob.ts` —
+  two triggers, one function, the same `scoutResearchJob.ts` shape,
+  `concurrency:{limit:1,key:contentItemId}`, `retries:1` for true crash
+  recovery only): production_planning → safety_review → asset_generation
+  → assembly → finalisation, branching on the item's real current state
+  (`planning`/`revision_requested`/`generating`-resume) exactly like
+  `runScoutPipeline` branches on a mission's state. Real crash recovery
+  works by checking `content_assets` before ever calling `generate()`
+  again — proven directly in tests by pre-seeding a version's assets and
+  confirming a resumed run makes zero image/voice calls and exactly one
+  real assembly call. Real cost enforcement is genuinely new for this
+  codebase (Scout's `costs` table stays purely observational — correct
+  for a two-pass-capped, token-priced agent, wrong for an unbounded
+  founder-driven revision loop with per-second pricing):
+  `lib/domain/contentProduction.ts`'s `MAX_VERSIONS_PER_ITEM` (5),
+  `MAX_GENERATION_ATTEMPTS_PER_VERSION` (2), `MAX_ASSET_CALLS_PER_VERSION`
+  (20), and `MAX_ITEM_SPEND_USD` ($8.00) are enforced in independent
+  layers exactly like `MAX_RESEARCH_PASSES` — a real, pre-flight
+  `assertItemBudgetRemaining` call before every media-provider call
+  (never before Content Bot's own two Claude calls, which are already
+  bounded by `MAX_TOKENS` and the attempt cap — a deliberate,
+  documented asymmetry, not an oversight). A founder cancelling
+  mid-generation (either the content item directly, via the new
+  `cancelContentItem`, or the whole mission via `cancelMission`, which now
+  cascades to cancel any still-active content item too — a real gap
+  found and fixed during this milestone, since Content Bot's pipeline
+  only ever checks `content_items.state`, never `missions.state`) is
+  detected the instant the pipeline's next real provider call is about to
+  happen, discarding remaining work while preserving every dollar already
+  spent — proven in tests by triggering a real cancellation from inside a
+  fixture provider's own call.
+- **The founder review API and UI** — `GET /api/content-items/[id]`,
+  `POST /api/content-items/[id]/decision` (one route for Approve/Reject/
+  Send-Back-With-Notes, sharing one precondition: the posted
+  `contentVersionId` must still be the item's real latest), and
+  `POST /api/content-items/[id]/cancel`. `GET /api/content/assets/
+  [assetId]/stream` is the only way any generated file is ever served —
+  range-aware (`206`/`Content-Range`), behind the same founder-session
+  boundary as everything else, never a public URL.
+  `components/founders-desk/hq/ContentReviewSlideOver.tsx` (plus
+  `ContentVideoPlayer`, `ContentVersionHistory`, `ContentAssetList`,
+  `ContentCostSummary`, `ContentDecisionBar`) and
+  `ProductionApprovalDialog.tsx` are real, functioning UI wired into
+  **both** HQ View and Focus View through one shared
+  `ProductionActions.tsx` component — the same "two views of one
+  dataset" principle Milestone 4 established, not a HQ-only feature.
+  `GET /api/missions` and mission detail now also return each mission's
+  real `contentItems`, and `useMissionPolling`'s polling window covers
+  Content Bot's own transient states (`planning`/`generating`/
+  `revision_requested`) the same way it already covered Scout's
+  `awaiting_evidence`.
+- **World/3D**: `layout.ts`'s `researchDestination` is now
+  `agentDestination`/`agentBusy`, generalized over an `AGENT_STATIONS` map
+  (`researchDestination` survives as a deprecated wrapper so every
+  existing test keeps passing unchanged). Content Bot is the exact same
+  procedural rig as Scout, in his own sapphire accent
+  (`buildAgentCharacter(m, accent)` in `scout.ts`, `buildScout`/
+  `buildContentBot` are now one-line callers). `engine.ts` was rewritten
+  from a single hardcoded Scout rig into a small `Rig[]` array — Scout's
+  and Content Bot's route/working/idle state are fully independent closures,
+  never a shared "is anything happening" flag, so one agent's real work can
+  never move the other's character (the exact discipline Milestone 4.6
+  committed to, now proven with a genuine second agent rather than just
+  argued for). Both agents idle-wander when not genuinely working, via a
+  new pure, deterministic `world/idle.ts` (no `Math.random()` anywhere —
+  a fixed, pre-verified-walkable offset table keyed by a real integer
+  tick) that's immediately overridden the instant real work arrives.
+  The Content Studio is a real, distinctly-furnished desk
+  (`studioFurniture` in `furniture.ts`) placed at a verified-walkable,
+  verified-reachable point **inside the existing building footprint** —
+  a deliberate, smaller-footprint departure from the original plan's
+  "new east-wing room" concept, made to manage the real risk of a large,
+  hard-to-visually-verify geometry change (this sandbox has no way to
+  complete a real GitHub OAuth sign-in and take an authenticated browser
+  screenshot — see "Local verification vs. a real deployment" below);
+  the plan's fuller room-extension design remains a legitimate follow-up,
+  not abandoned, just not this milestone's risk to take.
+- **Deliberately not built in C1** (per the approved plan, not an
+  oversight): real generated video/motion (`VideoProvider` — Milestone
+  C1.5), any publishing surface or `PLATFORM_TOKEN_KEY`/OAuth app
+  (Milestone C2), analytics or the Scout feedback loop (Milestone C3), and
+  a second platform (Milestone C4). `ready_to_publish` is the real, final
+  resting state this milestone ever reaches — the Publish action does not
+  exist yet, by design.
+- **Test coverage**: 73 new tests across 9 new files (`contentItemStates`,
+  `mediaPricing`, `contentGuardrails`, `idleWander`, `officeWorld`
+  extension, `contentHandoff`, `contentProductionPipeline`,
+  `contentDecisions`, `contentStorage`) plus the existing 157, all real
+  Postgres where the code under test touches the database, all media/
+  storage/Claude calls injected via fixtures — never a real network call
+  (`vi.mock` for `@/lib/agents/contentBot` and `@/lib/inngest/client`,
+  injectable `deps.media`/`deps.storage` for the pipeline itself). The
+  integration tests found and fixed two real bugs before they could ship:
+  the range-response `Content-Length` bug above, and a content-version
+  left permanently stuck at `status: "generating"` after a mid-flight
+  cancellation (now correctly closed out as `failed` with a real reason).
+
+**Local verification vs. a real deployment, specifically for C1:** every
+line above has been verified against a real local Postgres database, the
+real `next build` production compiler, and a real (fixture-injected) test
+suite — but **no real provider call has been made**. This sandbox holds
+no `ANTHROPIC_API_KEY`, `FAL_KEY`, `ELEVENLABS_API_KEY`, or
+`SHOTSTACK_API_KEY` — confirmed by inspecting both `.env.local` and the
+process environment directly, not assumed. The exact REST response shapes
+coded against fal.ai's storage-upload endpoint, ElevenLabs'
+`with-timestamps` response, and Shotstack's render/status responses are
+based on their published documentation, not a live-verified round trip;
+per this file's own standing instruction to investigate and correct
+rather than guess silently, any place those differ from what's coded here
+needs a real, credentialed run to surface and fix. A real GitHub sign-in
+round-trip — needed to open an authenticated browser session and visually
+confirm the 3D scene renders Content Bot correctly — was also not
+attempted here for the same reason Milestone 2 never attempted one: it
+requires infrastructure only a founder can create. Real, credentialed E2E
+verification (the actual C1 acceptance bar) remains the founders' own
+next step once the three provider accounts from the original setup
+checklist are genuinely connected in this environment.
+
 ## Architecture
 
 - **Next.js (App Router) + TypeScript + Tailwind.** Route handlers under

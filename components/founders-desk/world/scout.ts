@@ -1,17 +1,26 @@
 import * as T from "three";
 import { ball, box, cylinder, group, rod, type Materials } from "./materials";
 
-/** Original ivory / emerald research companion. The model turns as a whole; no mirroring. */
-export function buildScout(m: Materials) {
+/**
+ * The shared dimensional rig both real agents use — ivory body, brass
+ * fittings, and one accent color swapped per agent (Scout's emerald,
+ * Content Bot's sapphire — see materials.ts). This is what makes "reuse
+ * Scout's exact model, in blue" mechanically true rather than aspirational:
+ * a hand-duplicated second mesh would drift the first time anyone adjusts
+ * a proportion. Each call returns its own rig with its own closure — no
+ * shared runtime state between characters (see CLAUDE.md's
+ * shared-world-architecture milestone).
+ */
+function buildAgentCharacter(m: Materials, accent: T.Material) {
   const root = new T.Group(), body = group(root, 0, 0, 0);
   const hip = group(body, 0, .29, 0);
   ball(hip, .245, 0, .17, 0, m.ivory, [.94, 1, .78]);
-  ball(hip, .247, 0, .23, .008, m.green, [.99, .8, .81]);
-  const chest = box(hip, .36, .30, .06, 0, .23, .169, m.green, .045);
+  ball(hip, .247, 0, .23, .008, accent, [.99, .8, .81]);
+  const chest = box(hip, .36, .30, .06, 0, .23, .169, accent, .045);
   chest.rotation.x = -.06;
   // Angled lapels and three buttons make the waistcoat legible at game scale.
-  const l = box(hip, .10, .19, .017, -.076, .329, .21, m.green, .012); l.rotation.z = .45;
-  const r = box(hip, .10, .19, .017, .076, .329, .21, m.green, .012); r.rotation.z = -.45;
+  const l = box(hip, .10, .19, .017, -.076, .329, .21, accent, .012); l.rotation.z = .45;
+  const r = box(hip, .10, .19, .017, .076, .329, .21, accent, .012); r.rotation.z = -.45;
   for (const y of [.33, .25, .17]) ball(hip, .022, -.04, y, .222, m.brass, [1, 1, .45]);
   cylinder(body, .097, .11, .065, 0, .73, 0, m.brass);
   const head = group(body, 0, .947, 0);
@@ -21,7 +30,7 @@ export function buildScout(m: Materials) {
     const rim = cylinder(head, .143, .143, .045, x, .0, .217, m.brass, 40); rim.rotation.x = Math.PI / 2;
     ball(head, .125, x, 0, .244, m.dark, [1, 1.02, .31]);
     ball(head, .109, x, -.005, .268, m.ivory, [1, 1, .35]);
-    ball(head, .086, x - .007, 0, .30, m.green, [1, 1.04, .39]);
+    ball(head, .086, x - .007, 0, .30, accent, [1, 1.04, .39]);
     ball(head, .048, x - .012, 0, .327, m.dark, [1, 1.06, .28]);
     ball(head, .025, x + .018, .039, .34, m.paper, [1, 1, .38]);
     ball(head, .011, x - .033, -.034, .334, m.paper, [1, 1, .3]);
@@ -44,15 +53,15 @@ export function buildScout(m: Materials) {
     cylinder(leg, .062, .076, .14, 0, -.107, 0, m.ivory);
     ball(leg, .07, 0, -.191, .008, m.brass);
     box(leg, .185, .124, .244, 0, -.242, .05, m.ivory, .055);
-    ball(leg, .101, 0, -.24, .122, m.green, [.92, .59, .75]);
+    ball(leg, .101, 0, -.24, .122, accent, [.92, .59, .75]);
   }
   const bag = group(body, .253, .397, .113, -.14);
-  box(bag, .21, .25, .105, 0, 0, 0, m.green, .055);
-  box(bag, .175, .065, .023, 0, .073, .063, m.green, .017);
+  box(bag, .21, .25, .105, 0, 0, 0, accent, .055);
+  box(bag, .175, .065, .023, 0, .073, .063, accent, .017);
   ball(bag, .022, 0, .06, .08, m.brass, [1, 1, .4]);
   box(bag, .132, .13, .035, -.006, .143, -.005, m.paper, .008);
-  box(bag, .025, .14, .042, .014, .143, -.005, m.green, .005);
-  rod(body, new T.Vector3(-.17, .679, .163), new T.Vector3(.27, .47, .19), .019, m.green);
+  box(bag, .025, .14, .042, .014, .143, -.005, accent, .005);
+  rod(body, new T.Vector3(-.17, .679, .163), new T.Vector3(.27, .47, .19), .019, accent);
   const buckle = new T.Mesh(new T.TorusGeometry(.033, .007, 6, 20), m.brass); buckle.position.set(.02, .587, .209); body.add(buckle);
   root.scale.setScalar(1.04);
   return {
@@ -66,4 +75,14 @@ export function buildScout(m: Materials) {
       head.rotation.z = reduced || moving ? 0 : Math.sin(time * .72) * .018;
     },
   };
+}
+
+/** Original ivory / emerald research companion. The model turns as a whole; no mirroring. */
+export function buildScout(m: Materials) {
+  return buildAgentCharacter(m, m.green);
+}
+
+/** Content Bot — the exact same rig as Scout, in his own sapphire accent (see materials.ts's palette.sapphire). */
+export function buildContentBot(m: Materials) {
+  return buildAgentCharacter(m, m.sapphire);
 }

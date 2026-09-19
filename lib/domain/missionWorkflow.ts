@@ -20,9 +20,12 @@ import {
   recordDeliverable,
   listDeliverables,
   recordCost,
+  listContentItemsForMissions,
+  transitionContentItemState,
 } from "@/lib/db/repositories";
 import { validateMissionInput, type MissionInput } from "@/lib/domain/missionValidation";
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
+import { isContentItemCancellable } from "@/lib/domain/contentItemStates";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import { inngest, MISSION_APPROVED_EVENT, MISSION_FOLLOWUP_NEEDED_EVENT } from "@/lib/inngest/client";
@@ -43,6 +46,22 @@ export class MissionValidationError extends Error {
   constructor(readonly errors: string[]) {
     super(errors.join(" "));
     this.name = "MissionValidationError";
+  }
+}
+
+/**
+ * A content item's "publishing" state deliberately has no "cancelled" edge
+ * (see contentItemStates.ts — once bytes are genuinely moving toward a
+ * platform, "cancelled" would be a lie). This is unreachable in C1 (no
+ * publish route exists yet — see CLAUDE.md's Content Bot milestone, C1
+ * ends at "ready_to_publish"), but the guard is real and forward-looking:
+ * a mission must never be cancellable out from under a content item that's
+ * actively publishing, whatever the mission's own state allows.
+ */
+export class MissionCancellationBlockedError extends Error {
+  constructor(missionId: string) {
+    super(`Mission ${missionId} cannot be cancelled while its content item is actively publishing.`);
+    this.name = "MissionCancellationBlockedError";
   }
 }
 
@@ -197,6 +216,11 @@ export async function cancelMission(missionId: string, founderId: string, note?:
     throw new Error(`Mission ${missionId} cannot be cancelled from state "${mission.state}".`);
   }
 
+  const contentItems = await listContentItemsForMissions([missionId]);
+  if (contentItems.some((item) => item.state === "publishing")) {
+    throw new MissionCancellationBlockedError(missionId);
+  }
+
   const transition = await transitionMissionState(missionId, [mission.state], "cancelled");
   if (!transition.ok) {
     throw new MissionConcurrencyError(missionId, [mission.state], "cancelled", transition.mission.state);
@@ -209,6 +233,29 @@ export async function cancelMission(missionId: string, founderId: string, note?:
     action: "mission_cancelled",
     detail: note,
   });
+
+  // Cascade to any still-active content item — without this, Content Bot's
+  // pipeline (which only ever checks content_items.state, never
+  // missions.state, for its own reality re-checks) would have no way to
+  // learn the founder cancelled and would keep spending on real provider
+  // calls. Best-effort: a content item that's already terminal is left
+  // alone, and one that's genuinely "publishing" can't exist here since the
+  // MissionCancellationBlockedError check above already refused this call.
+  for (const item of contentItems) {
+    if (!isContentItemCancellable(item.state)) continue;
+    const itemTransition = await transitionContentItemState(item.id, [item.state], "cancelled", {
+      failure_reason: "The mission was cancelled while production was still in flight.",
+    });
+    if (itemTransition.ok) {
+      await recordActivity({
+        missionId,
+        actor: `founder:${founderId}`,
+        action: "production_cancelled",
+        detail: "Cancelled along with the mission.",
+      });
+    }
+  }
+
   return transition.mission;
 }
 

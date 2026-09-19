@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { findPath, MARKS, researchDestination, walkable, type Point } from "../components/founders-desk/world/layout";
+import {
+  findPath,
+  MARKS,
+  researchDestination,
+  agentDestination,
+  agentBusy,
+  walkable,
+  SCOUT_AGENT_KEY,
+  CONTENT_BOT_AGENT_KEY,
+  type Point,
+} from "../components/founders-desk/world/layout";
 
 function verifyRoute(start: Point, goal: Point) {
   const route = findPath(start, goal);
@@ -88,5 +98,73 @@ describe("office world navigation", () => {
     // The automatic follow-up dispatch flips the same mission back to
     // "researching" — same mission id, same assignment row, no new insert.
     expect(researchDestination([{ id: "m1", state: "researching" }], leadAssignments)).toBe("research");
+  });
+
+  it("routes Content Bot to the studio only when a content item is genuinely generating AND he is its real lead", () => {
+    expect(agentDestination([], [], [], CONTENT_BOT_AGENT_KEY)).toBe("hub");
+    expect(
+      agentDestination(
+        [],
+        [{ mission_id: "m1", agent_key: "content_bot" }],
+        [{ mission_id: "m1", state: "generating" }],
+        CONTENT_BOT_AGENT_KEY,
+      ),
+    ).toBe("studio");
+    // Genuinely generating, but with no assignment row at all yet.
+    expect(
+      agentDestination([], [], [{ mission_id: "m1", state: "generating" }], CONTENT_BOT_AGENT_KEY),
+    ).toBe("hub");
+    // Generating, but led by a different real agent (Scout) — proves Content
+    // Bot's own character can never be moved by Scout's work.
+    expect(
+      agentDestination(
+        [],
+        [{ mission_id: "m1", agent_key: "scout" }],
+        [{ mission_id: "m1", state: "generating" }],
+        CONTENT_BOT_AGENT_KEY,
+      ),
+    ).toBe("hub");
+    // Settled out of generating — Content Bot heads home.
+    expect(
+      agentDestination(
+        [],
+        [{ mission_id: "m1", agent_key: "content_bot" }],
+        [{ mission_id: "m1", state: "awaiting_review" }],
+        CONTENT_BOT_AGENT_KEY,
+      ),
+    ).toBe("hub");
+  });
+
+  it("keeps Scout's and Content Bot's destinations fully independent — one agent's real work never moves the other's character", () => {
+    const leadAssignments = [
+      { mission_id: "research-mission", agent_key: "scout" },
+      { mission_id: "production-mission", agent_key: "content_bot" },
+    ];
+    const missions = [{ id: "research-mission", state: "researching" }];
+    const contentItems = [{ mission_id: "production-mission", state: "generating" }];
+
+    expect(agentDestination(missions, leadAssignments, contentItems, SCOUT_AGENT_KEY)).toBe("research");
+    expect(agentDestination(missions, leadAssignments, contentItems, CONTENT_BOT_AGENT_KEY)).toBe("studio");
+    expect(agentBusy(missions, leadAssignments, contentItems, SCOUT_AGENT_KEY)).toBe(true);
+    expect(agentBusy(missions, leadAssignments, contentItems, CONTENT_BOT_AGENT_KEY)).toBe(true);
+
+    // Scout's mission settles; Content Bot's own work is entirely unaffected.
+    const settledMissions = [{ id: "research-mission", state: "ready_for_founders_review" }];
+    expect(agentDestination(settledMissions, leadAssignments, contentItems, SCOUT_AGENT_KEY)).toBe("hub");
+    expect(agentBusy(settledMissions, leadAssignments, contentItems, SCOUT_AGENT_KEY)).toBe(false);
+    expect(agentDestination(settledMissions, leadAssignments, contentItems, CONTENT_BOT_AGENT_KEY)).toBe("studio");
+    expect(agentBusy(settledMissions, leadAssignments, contentItems, CONTENT_BOT_AGENT_KEY)).toBe(true);
+  });
+
+  it("an unknown agent key always resolves home — never a hidden default destination", () => {
+    expect(agentDestination([], [], [], "some_future_agent")).toBe("hub");
+    expect(agentBusy([], [], [], "some_future_agent")).toBe(false);
+  });
+
+  it("MARKS.studio and MARKS.contentBotHome are real, walkable points reachable from the hub", () => {
+    expect(walkable(MARKS.studio)).toBe(true);
+    expect(walkable(MARKS.contentBotHome)).toBe(true);
+    verifyRoute(MARKS.hub, MARKS.studio);
+    verifyRoute(MARKS.hub, MARKS.contentBotHome);
   });
 });

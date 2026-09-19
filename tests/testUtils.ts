@@ -1,5 +1,17 @@
 import type Anthropic from "@anthropic-ai/sdk";
-import type { CommerceReport, ServiceBusinessReport } from "@/lib/agents/scout/schema";
+import type { CommerceReport, ServiceBusinessReport, ProductionRecommendation, ScoutReport } from "@/lib/agents/scout/schema";
+import type { ProductionBrief } from "@/lib/domain/contentHandoff";
+import type { AudienceContext } from "@/lib/media/types";
+import type { ContentPlan } from "@/lib/agents/contentBot/schema";
+import type { Evidence, Mission } from "@/lib/db/types";
+import {
+  createProject,
+  createMission,
+  transitionMissionState,
+  recordEvidence,
+  recordDeliverable,
+  getAgentByKey,
+} from "@/lib/db/repositories";
 
 export function makeScoutReport(overrides: Partial<CommerceReport> = {}): CommerceReport {
   return {
@@ -90,6 +102,98 @@ export function makeServiceBusinessReport(
   };
 }
 
+export function makeProductionRecommendation(
+  overrides: Partial<ProductionRecommendation> = {},
+): ProductionRecommendation {
+  return {
+    content_format: "60s vertical explainer, single-presenter VO",
+    hook_pattern: "Open with a surprising real statistic.",
+    why_it_works: "Short, evidence-backed explainers perform well for this audience.",
+    target_audience: "Parents of children aged 3-5.",
+    target_platforms: ["youtube_shorts"],
+    saturation: "moderate",
+    repeatability: "series",
+    monetisation_fit: "Could plausibly drive traffic to the Etsy listing, not certain.",
+    suggested_original_angle: "A first-person 'day in the life' framing, not a reproduction of any specific video.",
+    do_not_imitate: [],
+    supporting_evidence_urls: ["https://example.com/etsy-trends"],
+    ...overrides,
+  };
+}
+
+export function makeAudienceContext(overrides: Partial<AudienceContext> = {}): AudienceContext {
+  return {
+    platform: "youtube_shorts",
+    audience: "general",
+    contentType: "educational",
+    workspaceType: "commerce",
+    ...overrides,
+  };
+}
+
+export function makeProductionBrief(overrides: Partial<ProductionBrief> = {}): ProductionBrief {
+  return {
+    mission: {
+      id: "mission-1",
+      title: "Preschool counting worksheets",
+      brief: "Research demand for printable counting worksheets on Etsy.",
+      interpreted_mission: "Research demand for printable counting worksheets for preschoolers.",
+    },
+    project: { id: "project-1", name: "Digital Products", platform_focus: null, workspace_type: "commerce" },
+    scout: {
+      deliverable_id: "deliverable-1",
+      verdict: "ready_for_founders_review",
+      key_findings: ["Etsy allows digital downloads in several relevant categories."],
+      production_recommendation: makeProductionRecommendation(),
+    },
+    evidence: [
+      {
+        id: "evidence-1",
+        source_url: "https://example.com/etsy-trends",
+        source_title: "Etsy seller trends report",
+        source_date: "2026-01-15",
+        snippet: "Digital downloads are a growing Etsy category.",
+        is_verified_fact: true,
+      },
+    ],
+    founder_notes: null,
+    frozen_at: "2026-09-18T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+export function makeContentPlan(overrides: Partial<ContentPlan> = {}): ContentPlan {
+  return {
+    title: "5 Counting Games Your Preschooler Will Love",
+    description: "A quick, original walkthrough of five counting games using printable worksheets.",
+    tags: ["preschool", "counting", "printables"],
+    duration_seconds: 45,
+    aspect_ratio: "9:16",
+    hook: "Your preschooler is about to love counting.",
+    script: [
+      {
+        index: 0,
+        narration: "Here are five counting games you can print at home today.",
+        visual_direction: "A bright, original illustration of counting worksheets on a table.",
+        start_seconds: 0,
+        end_seconds: 5,
+      },
+      {
+        index: 1,
+        narration: "Etsy sellers already offer digital downloads like this.",
+        visual_direction: "An original illustration of a laptop showing a generic marketplace-style page.",
+        start_seconds: 5,
+        end_seconds: 10,
+      },
+    ],
+    claims: [{ text: "Etsy allows digital downloads in several relevant categories.", evidence_id: "evidence-1" }],
+    thumbnail_brief: { prompt: "A bright original illustration of counting worksheets.", text_overlay: "5 Counting Games" },
+    voice_direction: { pace: "natural" },
+    originality_statement: "This is an original execution — no specific existing video, character, or work is reproduced.",
+    ...overrides,
+  };
+}
+
 export function fakeAnthropicMessage(report: unknown, overrides: Partial<Anthropic.Message> = {}) {
   return {
     id: "msg_test",
@@ -124,6 +228,58 @@ export function fakeAnthropicClient(
  * call never receives `tools`, keeping it unable to trigger new search
  * spend), not just its return value.
  */
+/**
+ * Real DB setup for any test exercising the Approve-for-Production gate or
+ * anything downstream of it: a real project, a real mission already at
+ * "ready_for_founders_review", real evidence, and a real Scout deliverable
+ * carrying a genuine production_recommendation. Mirrors exactly what
+ * runScoutPipeline's real settlement path would have produced — this
+ * helper just skips re-running the (already separately tested) research
+ * pipeline itself.
+ */
+export async function setupMissionReadyForProduction(
+  founderId: string,
+  overrides: { reportOverrides?: Partial<CommerceReport> } = {},
+): Promise<{ mission: Mission; evidence: Evidence[]; report: CommerceReport }> {
+  const project = await createProject({ name: "Digital Products (test)", workspaceType: "commerce" });
+  const mission = await createMission({
+    founderId,
+    projectId: project.id,
+    title: "Preschool counting worksheets",
+    brief: "Research demand for printable counting worksheets on Etsy.",
+  });
+  await transitionMissionState(mission.id, ["draft"], "awaiting_founder_approval");
+  await transitionMissionState(mission.id, ["awaiting_founder_approval"], "queued");
+  await transitionMissionState(mission.id, ["queued"], "researching");
+  const finalTransition = await transitionMissionState(mission.id, ["researching"], "ready_for_founders_review", {
+    interpreted_mission: "Research demand for printable counting worksheets for preschoolers.",
+    final_status: "ready_for_founders_review",
+  });
+
+  const evidenceRow = await recordEvidence({
+    missionId: mission.id,
+    sourceUrl: "https://example.com/etsy-trends",
+    sourceTitle: "Etsy seller trends report",
+    sourceDate: "2026-01-15",
+    snippet: "Etsy allows digital downloads in several relevant categories.",
+    isVerifiedFact: true,
+  });
+
+  const report = makeScoutReport({
+    production_recommendation: makeProductionRecommendation(),
+    ...overrides.reportOverrides,
+  });
+  const scout = await getAgentByKey("scout");
+  await recordDeliverable({
+    missionId: mission.id,
+    agentId: scout!.id,
+    kind: "scout_research_report",
+    content: report as unknown as ScoutReport,
+  });
+
+  return { mission: finalTransition.mission, evidence: [evidenceRow], report };
+}
+
 export function fakeAnthropicClientWithCalls(
   responses: Array<ReturnType<typeof fakeAnthropicMessage>>,
 ): { client: Anthropic; calls: unknown[] } {
