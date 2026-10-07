@@ -1,8 +1,8 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { CommerceReport, ServiceBusinessReport, ProductionRecommendation, ScoutReport } from "@/lib/agents/scout/schema";
-import type { ProductionBrief } from "@/lib/domain/contentHandoff";
-import type { AudienceContext } from "@/lib/media/types";
-import type { ContentPlan } from "@/lib/agents/contentBot/schema";
+import type { ProductionBrief, FounderCommission } from "@/lib/domain/contentHandoff";
+import type { AudienceContext, VideoRequest, MediaResult, AsyncMediaProvider } from "@/lib/media/types";
+import type { ContentPlan, CreativeStrategy, VisualQCReport } from "@/lib/agents/contentBot/schema";
 import type { Evidence, Mission } from "@/lib/db/types";
 import {
   createProject,
@@ -121,6 +121,17 @@ export function makeProductionRecommendation(
   };
 }
 
+export function makeFounderCommission(overrides: Partial<FounderCommission> = {}): FounderCommission {
+  return {
+    commissioned_by_founder_id: "founder-1",
+    commissioned_at: "2026-09-25T00:00:00.000Z",
+    concept: "An original speculative-creature explainer, narrated calmly, one invented creature per video.",
+    creative_direction: "Calm, factual narration over a single AI-generated creature reveal; no jump-scares.",
+    do_not_imitate: [],
+    ...overrides,
+  };
+}
+
 export function makeAudienceContext(overrides: Partial<AudienceContext> = {}): AudienceContext {
   return {
     platform: "youtube_shorts",
@@ -133,6 +144,7 @@ export function makeAudienceContext(overrides: Partial<AudienceContext> = {}): A
 
 export function makeProductionBrief(overrides: Partial<ProductionBrief> = {}): ProductionBrief {
   return {
+    source: "scout_recommended",
     mission: {
       id: "mission-1",
       title: "Preschool counting worksheets",
@@ -146,6 +158,7 @@ export function makeProductionBrief(overrides: Partial<ProductionBrief> = {}): P
       key_findings: ["Etsy allows digital downloads in several relevant categories."],
       production_recommendation: makeProductionRecommendation(),
     },
+    founder_commission: null,
     evidence: [
       {
         id: "evidence-1",
@@ -170,29 +183,94 @@ export function makeContentPlan(overrides: Partial<ContentPlan> = {}): ContentPl
     duration_seconds: 45,
     aspect_ratio: "9:16",
     hook: "Your preschooler is about to love counting.",
+    hook_visual: "A bright, original close-up of colorful counting worksheets spreading across a table.",
     script: [
       {
         index: 0,
-        narration: "Here are five counting games you can print at home today.",
+        beat_role: "hook",
+        // Long enough to roughly fit this plan's 45s duration_seconds at
+        // the guardrail's real measured rate (~2.44 words/sec — see
+        // MEASURED_WORDS_PER_SECOND in guardrails.ts) together with beat
+        // 1 — see assertNarrationFitsDuration's own doc comment for why
+        // this matters: a real live failure showed narration length and
+        // stated duration can otherwise disagree completely.
+        narration:
+          "Here are five counting games you can print and play at home with your preschooler today. Each one uses a simple black and white worksheet that's easy to prepare in just a couple of minutes, so you can get started right away without any special materials or complicated setup.",
         visual_direction: "A bright, original illustration of counting worksheets on a table.",
+        starting_state: "The counting worksheets lie flat and still on the table.",
+        action: "A hand slides a fresh worksheet into view and sets a pencil down beside it.",
+        ending_state: "The worksheet and pencil sit ready on the table.",
+        clip_duration_seconds: 5,
+        subject_prominence: "full" as const,
+        shot_type: "wide",
+        camera_movement: "zoom_in",
+        movement_intensity: "slow",
+        transition_in: "cut",
+        on_screen_text: null,
+        retention_purpose: "Opens with a concrete, visual promise (five real games) to earn the next few seconds.",
         start_seconds: 0,
-        end_seconds: 5,
+        end_seconds: 22,
       },
       {
         index: 1,
-        narration: "Etsy sellers already offer digital downloads like this.",
+        beat_role: "context",
+        narration:
+          "Etsy sellers already offer digital downloads just like this, and plenty of parents are actively searching for exactly this kind of low-cost, high-quality printable activity. It's a great example of a real, growing market that's simple enough for us to enter without any specialized equipment or design experience.",
         visual_direction: "An original illustration of a laptop showing a generic marketplace-style page.",
-        start_seconds: 5,
-        end_seconds: 10,
+        starting_state: "A laptop sits closed on a desk.",
+        action: "The laptop lid opens, revealing a generic marketplace-style page loading on screen.",
+        ending_state: "The marketplace-style page is fully loaded on the open laptop screen.",
+        clip_duration_seconds: 5,
+        subject_prominence: "full" as const,
+        shot_type: "medium",
+        camera_movement: "pan_left",
+        movement_intensity: "normal",
+        transition_in: "fade",
+        on_screen_text: null,
+        retention_purpose: "Grounds the concept in something familiar before moving on.",
+        start_seconds: 22,
+        end_seconds: 45,
       },
     ],
     claims: [{ text: "Etsy allows digital downloads in several relevant categories.", evidence_id: "evidence-1" }],
     thumbnail_brief: { prompt: "A bright original illustration of counting worksheets.", text_overlay: "5 Counting Games" },
     voice_direction: { pace: "natural" },
+    visual_identity: null,
+    disclosure: { text: "AI-generated, fictional content.", placement: "persistent_badge" },
     originality_statement: "This is an original execution — no specific existing video, character, or work is reproduced.",
     ...overrides,
   };
 }
+
+export function makeCreativeStrategy(overrides: Partial<CreativeStrategy> = {}): CreativeStrategy {
+  return {
+    hook_mechanic: "Open on a concrete, visual promise (five real games) rather than an abstract claim.",
+    visual_hook: "A bright close-up of the printable worksheets themselves, filling the frame.",
+    pacing: { target_cut_count: 5, rationale: "Short beats keep momentum for a sub-60s explainer." },
+    escalation_shape: "Promise, ground in a familiar platform, then close with a clear call to look further.",
+    visual_treatment: "Bright, consistent original illustration style throughout — no photorealism needed.",
+    caption_treatment: "Short, phrase-length captions synced to narration.",
+    disclosure_treatment: "A small persistent badge — this is an ordinary informational explainer, not likely to be mistaken for something else.",
+    retention_strategy: "Leads with a concrete visual promise, per evidence that hook strength drives completion in the first seconds.",
+    evidence_ids_referenced: ["evidence-1"],
+    ...overrides,
+  };
+}
+
+// findings holds ONLY genuine problems (see VisualQCReportSchema's own doc
+// comment) — a clean "pass" report has an empty findings array, never a
+// full pass/fail entry per asset.
+export function makeVisualQCReport(overrides: Partial<VisualQCReport> = {}): VisualQCReport {
+  return {
+    overall_verdict: "pass",
+    findings: [],
+    ...overrides,
+  };
+}
+
+/** A minimal, valid 1x1 JPEG, base64-encoded — a real (tiny) image byte sequence for QC-related fixtures that need genuine image bytes without a real provider call. */
+export const TINY_JPEG_BASE64 =
+  "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=";
 
 export function fakeAnthropicMessage(report: unknown, overrides: Partial<Anthropic.Message> = {}) {
   return {
@@ -278,6 +356,84 @@ export async function setupMissionReadyForProduction(
   });
 
   return { mission: finalTransition.mission, evidence: [evidenceRow], report };
+}
+
+function fakeVideoReadable(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
+export type FakeVideoCall = { idempotencyKey: string; durationSeconds: number; referenceImageUrl: string; prompt: string };
+
+/**
+ * A shared fixture AsyncMediaProvider<VideoRequest> for every full-pipeline
+ * test (Content Bot motion-first milestone — runVideoClipGenerationStage
+ * is now a mandatory stage, so every real end-to-end pipeline test needs
+ * one of these in `deps.media.video`, same as the image/voice/edit
+ * fixtures each test file already provides locally). submit()/poll()
+ * resolve immediately — exactly one poll round, never actually pending —
+ * since these tests exercise the pipeline's own logic, not the real
+ * provider's async timing (KlingVideoProvider's own submit/poll contract
+ * is tested directly in tests/klingVideoProvider.test.ts).
+ */
+export function makeFakeVideoProvider(opts: { failWithMessage?: string } = {}): AsyncMediaProvider<VideoRequest> & { calls: FakeVideoCall[] } {
+  const calls: FakeVideoCall[] = [];
+  let n = 0;
+  const provider: AsyncMediaProvider<VideoRequest> & { calls: FakeVideoCall[] } = {
+    key: "fake-video",
+    capability: "video",
+    calls,
+    estimateUsd: (req: VideoRequest) => Math.round(req.durationSeconds * 0.112 * 1000) / 1000,
+    async submit(req: VideoRequest) {
+      n += 1;
+      calls.push({
+        idempotencyKey: req.idempotencyKey,
+        durationSeconds: req.durationSeconds,
+        referenceImageUrl: req.referenceImageUrl,
+        prompt: req.prompt,
+      });
+      return { jobHandle: JSON.stringify({ n, durationSeconds: req.durationSeconds }) };
+    },
+    async poll(jobHandle: string) {
+      if (opts.failWithMessage) {
+        return { status: "failed" as const, detail: opts.failWithMessage };
+      }
+      const { n: handleN, durationSeconds } = JSON.parse(jobHandle) as { n: number; durationSeconds: number };
+      const result: MediaResult = {
+        open: async () => fakeVideoReadable(new Uint8Array([7, 7, 7, handleN])),
+        contentType: "video/mp4",
+        byteSize: null,
+        durationSeconds,
+        width: 1080,
+        height: 1920,
+        providerAssetId: null,
+        usage: {
+          provider: "fake-video",
+          model: "fake-video-model",
+          unit: "seconds",
+          quantity: durationSeconds,
+          usdCost: provider.estimateUsd({ durationSeconds } as VideoRequest),
+        },
+      };
+      return { status: "done" as const, result };
+    },
+    async generate(req: VideoRequest): Promise<MediaResult> {
+      const { jobHandle } = await provider.submit(req);
+      const outcome = await provider.poll(jobHandle);
+      if (outcome.status !== "done" || !outcome.result) {
+        throw new Error(outcome.detail ?? "fake video generation failed");
+      }
+      return outcome.result;
+    },
+    async lookup() {
+      return null;
+    },
+  };
+  return provider;
 }
 
 export function fakeAnthropicClientWithCalls(

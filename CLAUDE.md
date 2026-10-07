@@ -867,6 +867,47 @@ verification (the actual C1 acceptance bar) remains the founders' own
 next step once the three provider accounts from the original setup
 checklist are genuinely connected in this environment.
 
+**Milestone 5.1: Scout reliability and founder-intent hardening (found by
+the first real C1 acceptance runs).** Real runs exposed four Scout problems;
+none touched the state machine's states, the founder gates, thresholds, or
+Scout's independence to reject.
+
+- **Report delivery is a strict client tool, not free-text JSON.** Scout
+  declares `web_search` plus one client tool, `submit_scout_report`
+  (`lib/agents/scout/jsonSchema.ts`), whose `strict` input schema is
+  *generated from the Zod report schema* (per workspace variant, so it can't
+  drift). A call to it is the terminal event; its input still goes through
+  the full Zod schema, workspace check and every guardrail. Plain-text JSON
+  remains a fallback. Root cause of two real failures ("not valid JSON",
+  $0.31 and ~$0.35 lost): a turn ended with `stop_reason: "tool_use"` and no
+  report, which the loop treated as final. The loop now sends **at most one**
+  format nudge per run; a stray client `tool_use` is answered with a matching
+  `tool_result` (the API requires one) plus the nudge. `production_recommendation`
+  is the only optional property in the tool schema — Scout stays free to omit it.
+  The pinned SDK (0.68) has no `strict` typing, so it is cast and forwarded.
+  Verified live: one ~$0.06 probe and a full two-pass run ($0.4877).
+- **Diagnostics without raw output** (`diagnostics.ts`): failures carry a
+  failure kind, per-call stop reasons, block-type counts, sanitized client
+  tool names, token counts and Zod issue *paths* only — written to the
+  activity log / server log, never raw model text.
+- **Narrow pass-2 fallback** (`runScoutPipeline`): if pass 2 fails technically
+  and a schema-valid pass-1 report exists, the mission settles to
+  `ready_for_founders_review` on pass 1 alone (real verdict preserved, no
+  fabricated pass-2 data, failure recorded in the failed stage +
+  `followup_research_failed` activity, degraded banner in `MissionDetail`).
+  Pass 1 failure still fails normally.
+- **Founder intent is authoritative in Commerce.** Etsy/KDP had been framed
+  as the Commerce mission itself (system prompt, an unconditional user-prompt
+  sentence, and required report fields), so video missions were made to prove
+  Etsy/KDP demand. Now Etsy/KDP/YouTube/TikTok are *example channels*, the
+  brief alone decides the business model/platform/deliverable, and
+  `platform_suitability.etsy_downloads` / `amazon_kdp_print_on_demand` are
+  nullable (null = not applicable; other platforms go in `other_notes`; the UI
+  hides non-applicable rows). Old reports stay valid (nullable only widens the
+  shape — this supersedes Milestone 3's "byte-for-byte" note for those two
+  fields). Pass 2 carries a scope note so it can't broaden the mission.
+  Service Business prompts are unchanged. No keyword router by design.
+
 ## Architecture
 
 - **Next.js (App Router) + TypeScript + Tailwind.** Route handlers under

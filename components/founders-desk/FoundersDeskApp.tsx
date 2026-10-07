@@ -19,6 +19,8 @@ import { HQView } from "./hq/HQView";
 import { MissionSlideOver } from "./hq/MissionSlideOver";
 import { AssignWorkModal } from "./hq/AssignWorkModal";
 import { ProductionApprovalDialog, type ProductionApprovalInput } from "./hq/ProductionApprovalDialog";
+import { CommissionPilotDialog, type CommissionPilotInput } from "./hq/CommissionPilotDialog";
+import { ProduceAgainDialog, type ProduceAgainInput } from "./hq/ProduceAgainDialog";
 import { ContentReviewSlideOver, type ContentItemDetailData } from "./hq/ContentReviewSlideOver";
 import { useMissionPolling } from "./useMissionPolling";
 
@@ -94,6 +96,16 @@ export function FoundersDeskApp({
   const [assignWorkOpen, setAssignWorkOpen] = useState(false);
   const [approveForProductionOpen, setApproveForProductionOpen] = useState(false);
   const [approveForProductionError, setApproveForProductionError] = useState<string | null>(null);
+  const [commissionPilotOpen, setCommissionPilotOpen] = useState(false);
+  const [commissionPilotError, setCommissionPilotError] = useState<string | null>(null);
+  const [produceAgainOpen, setProduceAgainOpen] = useState(false);
+  const [produceAgainError, setProduceAgainError] = useState<string | null>(null);
+  // Held across a retry of the SAME "Produce Again" attempt (see
+  // contentWorkflow.ts's produceAgainFromMission) — generated once when the
+  // dialog opens, cleared when it closes, so a genuine double-submit of one
+  // attempt reuses the same key while a later, separate attempt always gets
+  // a fresh one.
+  const [produceAgainIdempotencyKey, setProduceAgainIdempotencyKey] = useState<string | null>(null);
   const [selectedContentItemId, setSelectedContentItemId] = useState<string | null>(null);
   const [contentItemDetail, setContentItemDetail] = useState<ContentItemDetailData | null>(null);
   const [busyContentItemId, setBusyContentItemId] = useState<string | null>(null);
@@ -209,7 +221,20 @@ export function FoundersDeskApp({
     hasInFlightMission,
     () => {
       (async () => {
-        const { missions: freshMissions, contentItems: freshContentItems } = await refreshMissions();
+        let freshMissions: Mission[];
+        let freshContentItems: ContentItem[];
+        try {
+          ({ missions: freshMissions, contentItems: freshContentItems } = await refreshMissions());
+        } catch (pollError) {
+          // A transient failure (a slow/unreachable database connection,
+          // a dropped network request) must never surface as an unhandled
+          // promise rejection — this tick simply skips its update; the
+          // next tick (setInterval keeps running regardless) tries again.
+          // Never silently retried in a tight loop, never left stuck: the
+          // existing polling interval is the only retry mechanism here.
+          console.error("Mission poll failed — will retry on the next tick.", pollError);
+          return;
+        }
 
         const currentSelectedId = selectedMissionIdRef.current;
         if (currentSelectedId) {
@@ -349,6 +374,70 @@ export function FoundersDeskApp({
     }
   }
 
+  async function handleCommissionPilot(input: CommissionPilotInput) {
+    if (!selectedMissionId) return;
+    setCommissionPilotError(null);
+    setBusyMissionId(selectedMissionId);
+    try {
+      const res = await fetch(`/api/missions/${selectedMissionId}/commission-pilot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setCommissionPilotError(data.error ?? "Could not commission a pilot for this mission.");
+        return;
+      }
+      setCommissionPilotOpen(false);
+      await refreshMissions();
+      await loadDetail(selectedMissionId);
+      await loadContentItemDetail(data.contentItem.id);
+    } finally {
+      setBusyMissionId(null);
+    }
+  }
+
+  /**
+   * "Produce Again" (see contentWorkflow.ts's produceAgainFromMission) —
+   * opening the dialog never starts anything; only this submit handler,
+   * fired by the founder's explicit confirmation inside the dialog, does.
+   * `idempotencyKey` is generated once when the dialog opens (see
+   * handleOpenProduceAgain below) and reused across a retry of this same
+   * attempt so a double-submit can never create two productions.
+   */
+  async function handleProduceAgain(input: ProduceAgainInput) {
+    if (!selectedMissionId || !produceAgainIdempotencyKey) return;
+    setProduceAgainError(null);
+    setBusyMissionId(selectedMissionId);
+    try {
+      const res = await fetch(`/api/missions/${selectedMissionId}/produce-again`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...input, idempotencyKey: produceAgainIdempotencyKey }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setProduceAgainError(data.error ?? "Could not start a new production for this mission.");
+        return;
+      }
+      setProduceAgainOpen(false);
+      setProduceAgainIdempotencyKey(null);
+      await refreshMissions();
+      await loadDetail(selectedMissionId);
+      await loadContentItemDetail(data.contentItem.id);
+    } finally {
+      setBusyMissionId(null);
+    }
+  }
+
+  /** A fresh idempotency key per dialog open — see handleProduceAgain's own doc comment. */
+  function handleOpenProduceAgain() {
+    setProduceAgainError(null);
+    setProduceAgainIdempotencyKey(crypto.randomUUID());
+    setProduceAgainOpen(true);
+  }
+
   async function handleContentDecision(
     contentItemId: string,
     decision: "approve" | "reject" | "revise",
@@ -388,6 +477,34 @@ export function FoundersDeskApp({
       const data = await res.json();
       if (!res.ok) {
         setError(data.error ?? "Could not cancel production.");
+        return;
+      }
+      await refreshMissions();
+      await loadContentItemDetail(contentItemId);
+      if (selectedMissionId) await loadDetail(selectedMissionId);
+    } finally {
+      setBusyContentItemId(null);
+    }
+  }
+
+  // Retry Production — the narrow, founder-triggered resubmit for a "failed"
+  // item whose failure_category is a genuinely recoverable technical/provider
+  // problem (see retryProductionAfterTechnicalFailure). Deliberately its own
+  // handler/route rather than reusing handleContentDecision's "revise" path:
+  // this is not a creative revision, and must stay distinguishable from one
+  // in Venture HQ's own audit trail, not just visually.
+  async function handleRetryProduction(contentItemId: string) {
+    setError(null);
+    setBusyContentItemId(contentItemId);
+    try {
+      const res = await fetch(`/api/content-items/${contentItemId}/retry-production`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Could not retry production.");
         return;
       }
       await refreshMissions();
@@ -483,6 +600,8 @@ export function FoundersDeskApp({
             onCancel={handleCancel}
             onClose={closeMissionPanel}
             onOpenApproveForProduction={() => setApproveForProductionOpen(true)}
+            onOpenCommissionPilot={() => setCommissionPilotOpen(true)}
+            onOpenProduceAgain={handleOpenProduceAgain}
             onOpenContentReview={loadContentItemDetail}
           />
           <AssignWorkModal
@@ -510,6 +629,8 @@ export function FoundersDeskApp({
           onApprove={handleApprove}
           onCancel={handleCancel}
           onOpenApproveForProduction={() => setApproveForProductionOpen(true)}
+          onOpenCommissionPilot={() => setCommissionPilotOpen(true)}
+          onOpenProduceAgain={handleOpenProduceAgain}
           onOpenContentReview={loadContentItemDetail}
         />
       )}
@@ -530,6 +651,56 @@ export function FoundersDeskApp({
         />
       )}
 
+      {missionDetail && (
+        <CommissionPilotDialog
+          open={commissionPilotOpen}
+          mission={missionDetail.mission}
+          report={missionDetail.followupReport ?? missionDetail.scoutReport}
+          evidence={missionDetail.evidence}
+          busy={busyMissionId === missionDetail.mission.id}
+          error={commissionPilotError}
+          onSubmit={handleCommissionPilot}
+          onClose={() => {
+            setCommissionPilotOpen(false);
+            setCommissionPilotError(null);
+          }}
+        />
+      )}
+
+      {missionDetail && (
+        <ProduceAgainDialog
+          open={produceAgainOpen}
+          mission={missionDetail.mission}
+          report={missionDetail.followupReport ?? missionDetail.scoutReport}
+          evidence={missionDetail.evidence}
+          // A convenience pre-fill only — from the most recent (by list
+          // order, which listContentItemsForMissions now returns
+          // chronologically) founder-commissioned production on this
+          // mission, if any. Nothing is submitted until the founder
+          // explicitly presses "Produce Again" in the dialog itself.
+          initialValues={(() => {
+            const missionContentItems = contentItems.filter((c) => c.mission_id === missionDetail.mission.id);
+            const latest = missionContentItems[missionContentItems.length - 1];
+            const brief = latest?.brief as
+              | { source: string; founder_commission?: { concept: string; creative_direction: string; do_not_imitate: string[] } | null }
+              | undefined;
+            if (!brief || brief.source !== "founder_commissioned" || !brief.founder_commission) return undefined;
+            return {
+              concept: brief.founder_commission.concept,
+              creativeDirection: brief.founder_commission.creative_direction,
+            };
+          })()}
+          busy={busyMissionId === missionDetail.mission.id}
+          error={produceAgainError}
+          onSubmit={handleProduceAgain}
+          onClose={() => {
+            setProduceAgainOpen(false);
+            setProduceAgainError(null);
+            setProduceAgainIdempotencyKey(null);
+          }}
+        />
+      )}
+
       <ContentReviewSlideOver
         detail={contentItemDetail}
         busy={busyContentItemId === contentItemDetail?.item.id}
@@ -537,6 +708,7 @@ export function FoundersDeskApp({
           if (!contentItemDetail) return;
           handleContentDecision(contentItemDetail.item.id, decision, contentVersionId, note);
         }}
+        onRetry={handleRetryProduction}
         onCancel={handleCancelContentItem}
         onClose={closeContentItemPanel}
       />

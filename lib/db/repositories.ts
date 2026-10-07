@@ -475,6 +475,9 @@ export async function recordApproval(entry: {
     | "approved"
     | "cancelled"
     | "approve_for_production"
+    | "commission_pilot_anyway"
+    | "retry_production"
+    | "produce_again"
     | "approve_content"
     | "reject_content"
     | "request_revision"
@@ -654,6 +657,14 @@ export async function listActivity(missionId?: string, limit = 100): Promise<Act
 // --- Content items (Milestone C1) -------------------------------------------
 
 export async function createContentItem(input: {
+  /**
+   * Caller-supplied id, defaulting to a fresh random one — used by
+   * produceAgainFromMission (contentWorkflow.ts) so a client-generated
+   * idempotency key can double as the new content item's own primary key:
+   * a genuine double-submit of the same "Produce Again" request collides
+   * on this real primary key instead of silently creating two productions.
+   */
+  id?: string;
   missionId: string;
   agentId: string;
   sourceDeliverableId: string | null;
@@ -665,7 +676,7 @@ export async function createContentItem(input: {
   const [row] = await db
     .insert(schema.contentItems)
     .values({
-      id: randomUUID(),
+      id: input.id ?? randomUUID(),
       mission_id: input.missionId,
       agent_id: input.agentId,
       source_deliverable_id: input.sourceDeliverableId,
@@ -692,7 +703,11 @@ export async function listContentItemsForMissions(missionIds: string[]): Promise
   const rows = await db
     .select()
     .from(schema.contentItems)
-    .where(inArray(schema.contentItems.mission_id, missionIds));
+    .where(inArray(schema.contentItems.mission_id, missionIds))
+    // Stable chronological order — now that one mission can genuinely own
+    // multiple independent productions, this is what lets the UI number
+    // them "Production 1", "Production 2", ... consistently.
+    .orderBy(schema.contentItems.created_at);
   return rows as ContentItem[];
 }
 
@@ -725,6 +740,7 @@ export async function transitionContentItemState(
       | "platform_post_url"
       | "published_at"
       | "failure_reason"
+      | "failure_category"
       | "version_count"
       | "generation_attempt_count"
       | "next_analytics_pull_at"
@@ -746,6 +762,7 @@ export async function transitionContentItemState(
     "platform_post_url",
     "published_at",
     "failure_reason",
+    "failure_category",
     "version_count",
     "generation_attempt_count",
     "next_analytics_pull_at",
@@ -910,13 +927,33 @@ export async function getLatestVersion(contentItemId: string): Promise<ContentVe
 
 export async function updateContentVersion(
   id: string,
-  fields: Partial<Pick<ContentVersion, "status" | "plan" | "safety_verdict" | "failure_reason" | "completed_at">>,
+  fields: Partial<
+    Pick<
+      ContentVersion,
+      | "status"
+      | "plan"
+      | "safety_verdict"
+      | "creative_strategy"
+      | "qc_report"
+      | "qc_regeneration_count"
+      | "reference_qc_verdict"
+      | "reference_regeneration_count"
+      | "failure_reason"
+      | "completed_at"
+    >
+  >,
 ): Promise<ContentVersion> {
   const db = await getDb();
   const updateValues: Record<string, unknown> = {};
   if (fields.status !== undefined) updateValues.status = fields.status;
   if (fields.plan !== undefined) updateValues.plan = fields.plan;
   if (fields.safety_verdict !== undefined) updateValues.safety_verdict = fields.safety_verdict;
+  if (fields.creative_strategy !== undefined) updateValues.creative_strategy = fields.creative_strategy;
+  if (fields.qc_report !== undefined) updateValues.qc_report = fields.qc_report;
+  if (fields.qc_regeneration_count !== undefined) updateValues.qc_regeneration_count = fields.qc_regeneration_count;
+  if (fields.reference_qc_verdict !== undefined) updateValues.reference_qc_verdict = fields.reference_qc_verdict;
+  if (fields.reference_regeneration_count !== undefined)
+    updateValues.reference_regeneration_count = fields.reference_regeneration_count;
   if (fields.failure_reason !== undefined) updateValues.failure_reason = fields.failure_reason;
   if (fields.completed_at !== undefined) updateValues.completed_at = fields.completed_at;
   const [row] = await db
@@ -988,6 +1025,39 @@ export async function recordContentAsset(entry: {
       provider_asset_id: entry.providerAssetId ?? null,
     })
     .returning();
+  return row as ContentAsset;
+}
+
+/**
+ * The one deliberate exception to content_assets' insert-only philosophy —
+ * used ONLY by the Visual QC stage's bounded regeneration (see
+ * contentWorkflow.ts's runVisualQCStage). A regenerated still replaces a
+ * specific FLAGGED asset at the exact same (storage_provider, storage_key)
+ * — a real unique constraint (`content_assets_provider_key_unique`) means
+ * a second real INSERT at that same key would fail outright, and this is
+ * happening entirely within one still-in-progress version before it has
+ * ever been shown to a founder as finished, unlike the version-level
+ * insert-only history this app otherwise never breaks. Every real cost
+ * from the regeneration is still recorded via the ordinary, unaffected
+ * insert-only `costs` table — this only ever replaces the asset row's own
+ * metadata, never the cost/audit trail.
+ */
+export async function updateContentAsset(
+  id: string,
+  fields: Partial<
+    Pick<ContentAsset, "content_type" | "byte_size" | "checksum_sha256" | "generator_provider" | "generator_model" | "provider_asset_id">
+  >,
+): Promise<ContentAsset> {
+  const db = await getDb();
+  const updateValues: Record<string, unknown> = {};
+  if (fields.content_type !== undefined) updateValues.content_type = fields.content_type;
+  if (fields.byte_size !== undefined) updateValues.byte_size = fields.byte_size;
+  if (fields.checksum_sha256 !== undefined) updateValues.checksum_sha256 = fields.checksum_sha256;
+  if (fields.generator_provider !== undefined) updateValues.generator_provider = fields.generator_provider;
+  if (fields.generator_model !== undefined) updateValues.generator_model = fields.generator_model;
+  if (fields.provider_asset_id !== undefined) updateValues.provider_asset_id = fields.provider_asset_id;
+  const [row] = await db.update(schema.contentAssets).set(updateValues).where(eq(schema.contentAssets.id, id)).returning();
+  if (!row) throw new Error(`Content asset ${id} not found.`);
   return row as ContentAsset;
 }
 

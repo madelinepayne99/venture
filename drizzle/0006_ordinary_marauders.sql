@@ -1,0 +1,1 @@
+DROP INDEX "content_items_one_active_per_mission";

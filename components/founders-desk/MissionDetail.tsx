@@ -57,16 +57,28 @@ function ScoutReportBody({ report }: { report: ScoutReport }) {
           <Section title="Opportunity gaps">{report.opportunity_gaps}</Section>
           <Section title="Originality considerations">{report.originality_considerations}</Section>
 
-          <Section title="Platform suitability">
-            <p>
-              <span className="font-medium">Etsy downloads:</span>{" "}
-              {report.platform_suitability.etsy_downloads}
-            </p>
-            <p className="mt-1">
-              <span className="font-medium">Amazon KDP (print-on-demand):</span>{" "}
-              {report.platform_suitability.amazon_kdp_print_on_demand}
-            </p>
-          </Section>
+          {(report.platform_suitability.etsy_downloads ||
+            report.platform_suitability.amazon_kdp_print_on_demand ||
+            report.platform_suitability.other_notes) && (
+            <Section title="Platform suitability">
+              {report.platform_suitability.etsy_downloads && (
+                <p>
+                  <span className="font-medium">Etsy downloads:</span> {report.platform_suitability.etsy_downloads}
+                </p>
+              )}
+              {report.platform_suitability.amazon_kdp_print_on_demand && (
+                <p className="mt-1">
+                  <span className="font-medium">Amazon KDP (print-on-demand):</span>{" "}
+                  {report.platform_suitability.amazon_kdp_print_on_demand}
+                </p>
+              )}
+              {report.platform_suitability.other_notes && (
+                <p className="mt-1">
+                  <span className="font-medium">Platforms &amp; notes:</span> {report.platform_suitability.other_notes}
+                </p>
+              )}
+            </Section>
+          )}
 
           <Section title="Estimated production difficulty">
             <span className="font-semibold capitalize">{report.estimated_production_difficulty.level}</span>{" "}
@@ -195,7 +207,49 @@ function ScoutReportBody({ report }: { report: ScoutReport }) {
  * distinction; this banner is what makes it visible rather than requiring
  * a founder to read the whole report to notice.
  */
-function FounderReviewBanner({ mission, latestVerdict }: { mission: Mission; latestVerdict: ScoutReport["verdict"] | undefined }) {
+/**
+ * Rendered whenever the mission's activity log carries the real
+ * production_recommendation_inconsistent flag (see missionWorkflow.ts —
+ * Scout's own prose recommended production while the structured
+ * production_recommendation object was absent). Preserved research, no
+ * fabricated recommendation, no exposed Approve action either way — this
+ * banner exists purely so a founder can tell "Scout had nothing to
+ * recommend" apart from "Scout's summary and its decision disagreed",
+ * rather than silently wondering why no button appeared. Stacks alongside
+ * whichever review banner above already applies — the two are independent
+ * signals about the same report.
+ */
+function ProductionInconsistencyBanner({ activity }: { activity: MissionDetailData["activity"] }) {
+  const flagged = activity.find((a) => a.action === "production_recommendation_inconsistent");
+  if (!flagged) return null;
+
+  return (
+    <div className="rounded-md border border-amber-400/50 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+      <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">Production unavailable</p>
+      <p className="mt-0.5">
+        <span className="font-semibold">
+          Scout&apos;s summary suggested producing this, but it did not provide the required structured
+          recommendation.
+        </span>{" "}
+        Content Bot cannot be assigned without one — nothing was inferred or fabricated on Scout&apos;s behalf. The
+        research below is unaffected; read it and decide whether this is worth a fresh, focused mission.
+      </p>
+      {flagged.detail && <p className="mt-1 text-xs text-hq-slate">{flagged.detail}</p>}
+    </div>
+  );
+}
+
+function FounderReviewBanner({
+  mission,
+  latestVerdict,
+  stages,
+  activity,
+}: {
+  mission: Mission;
+  latestVerdict: ScoutReport["verdict"] | undefined;
+  stages: MissionDetailData["stages"];
+  activity: MissionDetailData["activity"];
+}) {
   if (mission.state === "rejected") {
     return (
       <div className="rounded-md border border-status-danger/30 bg-red-50 px-3 py-2 text-sm text-status-danger">
@@ -206,28 +260,62 @@ function FounderReviewBanner({ mission, latestVerdict }: { mission: Mission; lat
 
   if (mission.state !== "ready_for_founders_review") return null;
 
+  const inconsistencyBanner = <ProductionInconsistencyBanner activity={activity} />;
+
+  // A follow-up pass that was attempted and technically failed (see
+  // runScoutPipeline's narrow pass-2 fallback): the review is on pass 1 only.
+  // Derived from the real failed stage row — nothing new is stored for this.
+  const failedFollowup = stages.find((s) => s.stage_name === "scout_followup_research" && s.status === "failed");
+  if (failedFollowup) {
+    return (
+      <div className="space-y-2">
+        <div className="rounded-md border border-status-danger/40 bg-red-50 px-3 py-2 text-sm text-red-900">
+          <p className="text-xs font-semibold uppercase tracking-wide text-status-danger">Founder review — degraded</p>
+          <p className="mt-0.5">
+            <span className="font-semibold">
+              Follow-up research failed — this review is based on Scout&apos;s first research pass. Some evidence gaps
+              remain.
+            </span>{" "}
+            Scout&apos;s unresolved questions from the first pass were not investigated. This is not a recommendation
+            either way — read the evidence below and decide.
+          </p>
+          {failedFollowup.detail && (
+            <p className="mt-1 text-xs text-hq-slate">Why the follow-up failed: {failedFollowup.detail}</p>
+          )}
+        </div>
+        {inconsistencyBanner}
+      </div>
+    );
+  }
+
   const inconclusive = mission.final_status === "investigate_further" || latestVerdict === "investigate_further";
 
   if (inconclusive) {
     return (
-      <div className="rounded-md border border-amber-400/50 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-        <p className="font-semibold uppercase tracking-wide text-xs text-amber-700">Founder review</p>
-        <p className="mt-0.5">
-          <span className="font-semibold">
-            Evidence inconclusive after {mission.research_pass_count} investigation
-            {mission.research_pass_count === 1 ? "" : "s"}.
-          </span>{" "}
-          Scout could not establish enough evidence to recommend this opportunity, and automatic research has
-          stopped. This is not a recommendation either way — read the evidence below and decide.
-        </p>
+      <div className="space-y-2">
+        <div className="rounded-md border border-amber-400/50 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <p className="font-semibold uppercase tracking-wide text-xs text-amber-700">Founder review</p>
+          <p className="mt-0.5">
+            <span className="font-semibold">
+              Evidence inconclusive after {mission.research_pass_count} investigation
+              {mission.research_pass_count === 1 ? "" : "s"}.
+            </span>{" "}
+            Scout could not establish enough evidence to recommend this opportunity, and automatic research has
+            stopped. This is not a recommendation either way — read the evidence below and decide.
+          </p>
+        </div>
+        {inconsistencyBanner}
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-hq-ink">
-      <span className="font-semibold text-status-success">Scout recommends founder review.</span> Enough
-      evidence was found to bring this to Ellis and Maddie for a decision.
+    <div className="space-y-2">
+      <div className="rounded-md border border-status-success/30 bg-status-success/10 px-3 py-2 text-sm text-hq-ink">
+        <span className="font-semibold text-status-success">Scout recommends founder review.</span> Enough
+        evidence was found to bring this to Ellis and Maddie for a decision.
+      </div>
+      {inconsistencyBanner}
     </div>
   );
 }
@@ -260,7 +348,7 @@ export function MissionDetail({ detail }: { detail: MissionDetailData | null }) 
           </p>
         )}
         <div className="mt-2">
-          <FounderReviewBanner mission={mission} latestVerdict={latestReport?.verdict} />
+          <FounderReviewBanner mission={mission} latestVerdict={latestReport?.verdict} stages={stages} activity={activity} />
         </div>
       </div>
 

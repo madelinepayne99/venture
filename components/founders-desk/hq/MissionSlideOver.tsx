@@ -19,6 +19,8 @@ export function MissionSlideOver({
   onCancel,
   onClose,
   onOpenApproveForProduction,
+  onOpenCommissionPilot,
+  onOpenProduceAgain,
   onOpenContentReview,
 }: {
   detail: MissionDetailData | null;
@@ -27,6 +29,8 @@ export function MissionSlideOver({
   onCancel: (missionId: string) => void;
   onClose: () => void;
   onOpenApproveForProduction: () => void;
+  onOpenCommissionPilot: () => void;
+  onOpenProduceAgain: () => void;
   onOpenContentReview: (contentItemId: string) => void;
 }) {
   const open = detail !== null;
@@ -100,6 +104,8 @@ export function MissionSlideOver({
                 detail={detail}
                 busy={isBusy}
                 onOpenApproveForProduction={onOpenApproveForProduction}
+                onOpenCommissionPilot={onOpenCommissionPilot}
+                onOpenProduceAgain={onOpenProduceAgain}
                 onOpenContentReview={onOpenContentReview}
               />
             )}

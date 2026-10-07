@@ -1,5 +1,6 @@
 import "server-only";
 import type { VoiceProvider, VoiceRequest, VoiceMediaResult, VoiceWordTiming } from "../types";
+import { MediaProviderError } from "../types";
 import { calculateMediaUsdCost } from "../pricing";
 
 interface ElevenLabsAlignment {
@@ -12,6 +13,50 @@ interface ElevenLabsTimestampedResponse {
   audio_base64: string;
   alignment: ElevenLabsAlignment | null;
 }
+
+// ElevenLabs' real `voice_settings` contract has two independent knobs
+// relevant here — confirmed against ElevenLabs' own API reference before
+// this was written:
+//   - `stability`: voice consistency/expressiveness ("Lower values
+//     introduce broader emotional range... higher values can result in a
+//     monotonous voice"). Does NOT affect speaking rate.
+//   - `speed`: the actual playback-rate control ("Adjusts the speed of
+//     the voice. A value of 1.0 is the default speed, while values less
+//     than 1.0 slow down the speech, and values greater than 1.0 speed it
+//     up."). Default 1.0.
+// A real, live bug (see this codebase's Production 3 investigation) came
+// from conflating the two: `pace` was previously mapped only to
+// `stability`, which never changed real speaking rate at all — every
+// narration was spoken at ElevenLabs' implicit default rate (≈2.44
+// words/sec, measured from a real production) regardless of the stated
+// pace. PACE_TO_SPEED below is what actually varies rate now; the
+// STABILITY_BY_PACE mapping just below it is unchanged from before and
+// kept fully separate — two different real dials, never conflated again.
+//
+// These specific slow/brisk speed values (0.85 / 1.15) are NOT yet
+// calibrated against a real measured word-rate — there is no live data
+// yet for anything other than natural's implicit ≈2.44 wps (see
+// guardrails.ts's MEASURED_WORDS_PER_SECOND, which currently uses that
+// one real number for all three tiers for exactly this reason). They are
+// a conservative ±15% adjustment from ElevenLabs' own documented default
+// (1.0), chosen only so slow is genuinely slower and brisk is genuinely
+// faster than natural in the real request — not a claim that ±15% speed
+// produces any particular words-per-second. A real calibration run (one
+// short ElevenLabs call per pace, same short fixed sentence, measuring
+// the real returned duration) is the exact next step to replace this
+// comment's "not yet calibrated" with real numbers; see this codebase's
+// own diagnostic report for the proposed test and its expected cost.
+const PACE_TO_SPEED: Record<VoiceRequest["pace"], number> = {
+  slow: 0.85,
+  natural: 1.0,
+  brisk: 1.15,
+};
+
+const STABILITY_BY_PACE: Record<VoiceRequest["pace"], number> = {
+  slow: 0.65,
+  natural: 0.5,
+  brisk: 0.35,
+};
 
 /** Groups ElevenLabs' character-level alignment into word-level timings — the real, structured input captions are built from (no separate ASR call needed). */
 function buildWordTimings(alignment: ElevenLabsAlignment | null): VoiceWordTiming[] {
@@ -83,7 +128,8 @@ export class ElevenLabsVoiceProvider implements VoiceProvider {
       headers: { "xi-api-key": this.apiKey() },
     });
     if (!res.ok) {
-      throw new Error(`Could not list ElevenLabs voices (${res.status}): ${await res.text()}`);
+      const rawBody = await res.text();
+      throw new MediaProviderError("elevenlabs", res.status, rawBody, `Could not list ElevenLabs voices (${res.status}): ${rawBody}`);
     }
     const data = (await res.json()) as { voices: Array<{ voice_id: string }> };
     const first = data.voices?.[0];
@@ -100,7 +146,8 @@ export class ElevenLabsVoiceProvider implements VoiceProvider {
 
   async generate(req: VoiceRequest): Promise<VoiceMediaResult> {
     const voiceId = await this.resolveVoiceId();
-    const stability = req.pace === "slow" ? 0.65 : req.pace === "brisk" ? 0.35 : 0.5;
+    const stability = STABILITY_BY_PACE[req.pace];
+    const speed = PACE_TO_SPEED[req.pace];
 
     const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/with-timestamps`, {
       method: "POST",
@@ -111,11 +158,12 @@ export class ElevenLabsVoiceProvider implements VoiceProvider {
       body: JSON.stringify({
         text: req.text,
         model_id: this.modelId(),
-        voice_settings: { stability, similarity_boost: 0.75 },
+        voice_settings: { stability, similarity_boost: 0.75, speed },
       }),
     });
     if (!res.ok) {
-      throw new Error(`ElevenLabs voice generation failed (${res.status}): ${await res.text()}`);
+      const rawBody = await res.text();
+      throw new MediaProviderError("elevenlabs", res.status, rawBody, `ElevenLabs voice generation failed (${res.status}): ${rawBody}`);
     }
     const data = (await res.json()) as ElevenLabsTimestampedResponse;
     const audioBytes = Buffer.from(data.audio_base64, "base64");

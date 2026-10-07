@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
+import { findGuaranteeLanguage, findProductionRecommendationInconsistency } from "@/lib/agents/scout/guardrails";
 import type { Mission } from "@/lib/db/types";
 import {
   fakeAnthropicClient,
@@ -7,6 +8,7 @@ import {
   fakeAnthropicMessage,
   makeScoutReport,
   makeServiceBusinessReport,
+  makeProductionRecommendation,
 } from "./testUtils";
 
 function makeMission(overrides: Partial<Mission> = {}): Mission {
@@ -308,6 +310,70 @@ describe("runScoutResearch — truncation and bounded recovery", () => {
     expect(calls).toHaveLength(2);
     // Both calls' real usage is still recorded even though the run failed.
     expect((caught as ScoutResearchError).usage.inputTokens).toBe(2000);
+  });
+});
+
+describe("runScoutResearch — turn ended without a report (live pass-2 failure class)", () => {
+  // Live regression: a real follow-up pass ended its turn after searching
+  // having written prose (874 output tokens for the whole pass, no report),
+  // and the mission failed as "not valid JSON", discarding the research.
+  function proseOnlyResponse() {
+    return fakeAnthropicMessage(null, {
+      content: [
+        { type: "text", text: "I've now completed my searches and have a clear picture of the gaps.", citations: null },
+      ],
+    });
+  }
+
+  it("sends exactly one same-conversation format nudge and accepts the report it yields, with combined usage", async () => {
+    const { client, calls } = fakeAnthropicClientWithCalls([
+      proseOnlyResponse(),
+      fakeAnthropicMessage(makeScoutReport()),
+    ]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    expect(calls).toHaveLength(2);
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+    expect(outcome.usage.inputTokens).toBe(2000);
+    expect(outcome.usage.outputTokens).toBe(1000);
+
+    const second = calls[1] as { messages: Array<{ role: string; content: unknown }>; tools?: unknown };
+    const last = second.messages.at(-1);
+    expect(last?.role).toBe("user");
+    expect(JSON.stringify(last?.content)).toMatch(/did not deliver the report/i);
+    expect(JSON.stringify(last?.content)).toMatch(/submit_scout_report/);
+    // The model's own prior turn (with its research) stays in context.
+    expect(second.messages.at(-2)?.role).toBe("assistant");
+    // Same request shape as the main loop — tools still declared.
+    expect(second.tools).toBeTruthy();
+  });
+
+  it("is bounded: a second non-report still fails loudly after exactly one nudge, recording both calls' spend", async () => {
+    const { client, calls } = fakeAnthropicClientWithCalls([proseOnlyResponse(), proseOnlyResponse(), proseOnlyResponse()]);
+
+    let caught: unknown;
+    try {
+      await runScoutResearch(makeMission(), { client });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(calls).toHaveLength(2);
+    expect(caught).toBeInstanceOf(ScoutResearchError);
+    expect((caught as ScoutResearchError).message).toMatch(/not valid JSON/i);
+    expect((caught as ScoutResearchError).usage.inputTokens).toBe(2000);
+  });
+
+  it("does not nudge when the first response already parses (no extra spend on the happy path)", async () => {
+    const { client, calls } = fakeAnthropicClientWithCalls([fakeAnthropicMessage(makeScoutReport())]);
+    await runScoutResearch(makeMission(), { client });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("still applies schema validation to the nudged report (the nudge does not loosen validation)", async () => {
+    const client = fakeAnthropicClient([proseOnlyResponse(), fakeAnthropicMessage({ interpreted_mission: "only this" })]);
+    await expect(runScoutResearch(makeMission(), { client })).rejects.toThrow(/structural validation/i);
   });
 });
 
@@ -705,5 +771,237 @@ describe("runScoutResearch — targeted follow-up pass (two-pass evidence loop)"
     const outcome = await runScoutResearch(makeMission({ research_pass_count: 2 }), { client, followupContext });
 
     expect(outcome.report.verdict).toBe("investigate_further");
+  });
+});
+
+describe("findGuaranteeLanguage — negation-aware (a real live false-positive rejection, fixed)", () => {
+  // The live bug: a real $0.30 research call was rejected because
+  // verdict_rationale contained "guaranteed" inside what was almost
+  // certainly Scout's own honest hedge (rule 1 of its system prompt
+  // requires exactly this) — the old scan couldn't tell a hedge from a
+  // promise. These are direct unit tests against the validator itself
+  // (not a full runScoutResearch round-trip) so every case is fast and
+  // explicit about which field/sentence is being judged.
+
+  function reportWith(field: Record<string, unknown>) {
+    return makeScoutReport(field as Partial<ReturnType<typeof makeScoutReport>>);
+  }
+
+  describe("must still reject genuine certainty claims", () => {
+    const genuineClaims = [
+      "demand is guaranteed",
+      "this is guaranteed to go viral",
+      "this will definitely sell",
+      "this is a risk-free opportunity",
+      "profit is assured",
+    ];
+
+    it.each(genuineClaims)('rejects: "%s"', (claim) => {
+      const report = reportWith({ verdict_rationale: `Based on the research, ${claim}.` });
+      expect(findGuaranteeLanguage(report)).not.toHaveLength(0);
+    });
+  });
+
+  describe("must now allow explicit hedges (the false-positive class this fixes)", () => {
+    const hedges = [
+      "success cannot be guaranteed",
+      "there is no guarantee this will translate into views",
+      "this is not risk-free",
+      "no assured revenue exists",
+    ];
+
+    it.each(hedges)('allows: "%s"', (hedge) => {
+      const report = reportWith({ verdict_rationale: `Based on the research, ${hedge}.` });
+      expect(findGuaranteeLanguage(report)).toHaveLength(0);
+    });
+
+    it("the exact live failure class is no longer rejected: a hedge inside verdict_rationale", async () => {
+      const report = makeScoutReport({
+        verdict: "investigate_further",
+        verdict_rationale:
+          "The trend is real, but given the limited data, sustained virality cannot be guaranteed and further monitoring is recommended.",
+      });
+      const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+      const outcome = await runScoutResearch(makeMission(), { client });
+      expect(outcome.report.verdict).toBe("investigate_further");
+    });
+  });
+
+  describe("adversarial: negation and a genuine certainty claim in the same sentence", () => {
+    it("does NOT let a distant, unrelated negation shield a later, separate real claim", () => {
+      const report = reportWith({
+        verdict_rationale: "There is no reliable data yet, but demand is guaranteed.",
+      });
+      const violations = findGuaranteeLanguage(report);
+      expect(violations.some((v) => v.matchedText.toLowerCase().includes("guarantee"))).toBe(true);
+    });
+
+    it('does NOT let "no doubt" (negation-shaped but not a real hedge) shield a genuine claim', () => {
+      const report = reportWith({
+        verdict_rationale: "No doubt, demand is guaranteed to grow next quarter.",
+      });
+      expect(findGuaranteeLanguage(report)).not.toHaveLength(0);
+    });
+
+    it('does NOT let an unrelated "not" earlier in a long sentence shield a later real claim about a DIFFERENT subject', () => {
+      const report = reportWith({
+        competition_observations:
+          "Competitors have not published performance data, and separately, this format is guaranteed to outperform every alternative.",
+      });
+      expect(findGuaranteeLanguage(report)).not.toHaveLength(0);
+    });
+
+    it("DOES correctly allow a real hedge even when an earlier sentence in the same field made a claim about something else", () => {
+      const report = reportWith({
+        verdict_rationale:
+          "The underlying format is popular and well-documented. Whether OUR specific execution succeeds cannot be guaranteed.",
+      });
+      // Two sentences: the first contains no banned language at all; the
+      // second is a genuine hedge — the whole field must pass.
+      expect(findGuaranteeLanguage(report)).toHaveLength(0);
+    });
+  });
+
+  describe("the negation window boundary — proven with tests, not asserted as a fixed number", () => {
+    it("allows a hedge whose negation sits within the local window (distance 1-2 words)", () => {
+      const report = reportWith({ verdict_rationale: "Success here cannot be guaranteed given the evidence." });
+      expect(findGuaranteeLanguage(report)).toHaveLength(0);
+    });
+
+    it("still rejects when a negation-shaped word sits just outside the local window, with unrelated content between it and the claim", () => {
+      // "no" is present in the sentence but four content words away from
+      // "guaranteed", separated by unrelated material — this must NOT be
+      // treated as a hedge of the claim that follows.
+      const report = reportWith({
+        verdict_rationale: "There is no question that competitors are weak, and growth here is guaranteed.",
+      });
+      expect(findGuaranteeLanguage(report)).not.toHaveLength(0);
+    });
+
+    it("a verbose hedge whose negation word is far from the banned term is STILL rejected — documents a real, accepted limitation rather than hiding it", () => {
+      // "cannot ... be guaranteed" with several words in between is a
+      // legitimate hedge a model might write, but it falls outside the
+      // deliberately narrow local window. This is the accepted tradeoff
+      // (favoring never letting a real claim slip through over catching
+      // every possible hedge phrasing) — documented here, not silently
+      // broken.
+      const report = reportWith({
+        verdict_rationale: "This cannot, in the founders' own good conscience, be guaranteed to succeed.",
+      });
+      expect(findGuaranteeLanguage(report)).not.toHaveLength(0);
+    });
+  });
+
+  it("complete-field coverage is preserved: a hedge is allowed in a previously-unscanned field too", () => {
+    const report = reportWith({
+      competition_observations: "Repeating a competitor's past success here cannot be guaranteed.",
+    });
+    expect(findGuaranteeLanguage(report)).toHaveLength(0);
+  });
+
+  it("complete-field coverage still catches a genuine claim in a previously-unscanned field", () => {
+    const report = reportWith({
+      unresolved_questions: ["Whether this specific execution is guaranteed to outperform the original trend."],
+    });
+    expect(findGuaranteeLanguage(report)).not.toHaveLength(0);
+  });
+
+  it("the widened assured-pattern catches the reversed word order too", () => {
+    expect(findGuaranteeLanguage(reportWith({ verdict_rationale: "Profit is assured here." }))).not.toHaveLength(0);
+    expect(findGuaranteeLanguage(reportWith({ verdict_rationale: "Assured profit is expected here." }))).not.toHaveLength(0);
+  });
+});
+
+describe("findProductionRecommendationInconsistency — preserves valid research, never fabricates or rejects", () => {
+  function reportWith(field: Record<string, unknown>) {
+    return makeScoutReport(field as Partial<ReturnType<typeof makeScoutReport>>);
+  }
+
+  it("flags the exact real sentences from the live 'Find Our Next Viral Short' mission", () => {
+    const report = reportWith({
+      verdict: "ready_for_founders_review",
+      verdict_rationale:
+        "There is converging, multi-source evidence that this format is well-evidenced and original enough to recommend a pilot, with clear caveats flagged for the founders.",
+      recommended_next_action:
+        "Produce one pilot ~30-second video using the recommended concept, post it to both TikTok and YouTube Shorts, and measure completion rate/shares over 1-2 weeks before committing to a series.",
+    });
+    const violations = findProductionRecommendationInconsistency(report);
+    expect(violations.map((v) => v.field).sort()).toEqual(["recommended_next_action", "verdict_rationale"]);
+  });
+
+  it("is a no-op whenever production_recommendation is present, whatever the prose says", () => {
+    const withRecommendation = makeScoutReport({
+      recommended_next_action: "Produce one pilot video immediately.",
+      production_recommendation: makeProductionRecommendation(),
+    });
+    expect(findProductionRecommendationInconsistency(withRecommendation)).toHaveLength(0);
+  });
+
+  describe("genuinely hedged recommendations are allowed", () => {
+    const hedges = [
+      "If the founders choose to invest further, producing a pilot video could be reasonable.",
+      "Before deciding whether to produce a video, further validation of demand is needed.",
+      "Should the team decide to proceed, a pilot may be worthwhile once saturation is confirmed.",
+      "Only after further validation should the founders consider producing this pilot video.",
+    ];
+
+    it.each(hedges)('allows: "%s"', (hedge) => {
+      const report = reportWith({ recommended_next_action: hedge });
+      expect(findProductionRecommendationInconsistency(report)).toHaveLength(0);
+    });
+  });
+
+  describe("genuinely analytical (non-directive) next actions never trip this check", () => {
+    const analytical = [
+      "Run a targeted competitor search on Etsy and Amazon before any further decision.",
+      "Investigate whether this micro-topic has independent view-count data.",
+    ];
+
+    it.each(analytical)('allows: "%s"', (text) => {
+      const report = reportWith({ recommended_next_action: text, verdict: "investigate_further" });
+      expect(findProductionRecommendationInconsistency(report)).toHaveLength(0);
+    });
+  });
+
+  it("does not false-positive on unrelated words sharing a root (production/productive)", () => {
+    const report = reportWith({
+      verdict_rationale: "Production difficulty is low, and this is otherwise a productive avenue to explore.",
+    });
+    expect(findProductionRecommendationInconsistency(report)).toHaveLength(0);
+  });
+
+  it("does not false-positive on a Service-Business-style next action unrelated to video", () => {
+    const report = reportWith({
+      recommended_next_action: "Produce a one-page service menu for the front desk to test client reaction.",
+    });
+    expect(findProductionRecommendationInconsistency(report)).toHaveLength(0);
+  });
+
+  it("a trailing, later conditional in the same sentence does NOT retroactively excuse an earlier unconditional directive", () => {
+    // The exact real shape: "Produce X... before committing to a series." The
+    // later "before committing" governs a DIFFERENT, future decision (an
+    // ongoing series), not the pilot production itself — proven by keeping
+    // this flagged rather than excused.
+    const report = reportWith({
+      recommended_next_action:
+        "Produce one pilot short-form video now, then decide before committing to a full series.",
+    });
+    expect(findProductionRecommendationInconsistency(report)).not.toHaveLength(0);
+  });
+
+  it("integration: runScoutResearch delivers the report as-is (never rejects, never fabricates a recommendation)", async () => {
+    const report = makeScoutReport({
+      verdict: "ready_for_founders_review",
+      recommended_next_action: "Produce one pilot ~30-second video and post it to TikTok and YouTube Shorts.",
+    });
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const outcome = await runScoutResearch(makeMission(), { client });
+
+    // Delivered, not thrown — the whole point of this fix.
+    expect(outcome.report.verdict).toBe("ready_for_founders_review");
+    expect(outcome.report.recommended_next_action).toContain("Produce one pilot");
+    // Never fabricated on Scout's behalf.
+    expect(outcome.report.production_recommendation).toBeUndefined();
   });
 });

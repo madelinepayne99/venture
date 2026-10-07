@@ -123,9 +123,14 @@ export const CommerceReportSchema = ScoutReportCoreSchema.extend({
   workspace_type: z.literal("commerce"),
   opportunity_gaps: z.string(),
   originality_considerations: z.string(),
+  // etsy_downloads / amazon_kdp_print_on_demand are null when the founder's
+  // brief doesn't involve that channel (e.g. a video-only mission) — Scout
+  // must not be forced to evaluate a marketplace the founder never asked
+  // about. Existing reports (always strings) remain valid: nullable only
+  // widens the accepted shape. other_notes carries any other platform.
   platform_suitability: z.object({
-    etsy_downloads: z.string(),
-    amazon_kdp_print_on_demand: z.string(),
+    etsy_downloads: z.string().nullable(),
+    amazon_kdp_print_on_demand: z.string().nullable(),
     other_notes: z.string().nullable(),
   }),
   estimated_production_difficulty: z.object({

@@ -56,6 +56,40 @@ describe("Content Bot guardrails", () => {
       const plan = makeContentPlan();
       expect(() => assertNoNamedIP(plan, brief)).not.toThrow();
     });
+
+    it("for a founder-commissioned brief, reads do_not_imitate from founder_commission, never from production_recommendation", () => {
+      const brief = makeProductionBrief({
+        source: "founder_commissioned",
+        scout: { deliverable_id: "d1", verdict: "ready_for_founders_review", key_findings: [], production_recommendation: null },
+        founder_commission: {
+          commissioned_by_founder_id: "founder-1",
+          commissioned_at: "2026-09-25T00:00:00.000Z",
+          concept: "An original creature explainer.",
+          creative_direction: "Calm narration.",
+          do_not_imitate: ["Bluey"],
+        },
+      });
+      const plan = makeContentPlan({ description: "A segment inspired by Bluey's counting episode." });
+      expect(() => assertNoNamedIP(plan, brief)).toThrow(ContentGuardrailError);
+
+      const cleanPlan = makeContentPlan();
+      expect(() => assertNoNamedIP(cleanPlan, brief)).not.toThrow();
+    });
+
+    it("does not crash on a founder-commissioned brief with an empty do_not_imitate list", () => {
+      const brief = makeProductionBrief({
+        source: "founder_commissioned",
+        scout: { deliverable_id: "d1", verdict: "ready_for_founders_review", key_findings: [], production_recommendation: null },
+        founder_commission: {
+          commissioned_by_founder_id: "founder-1",
+          commissioned_at: "2026-09-25T00:00:00.000Z",
+          concept: "Concept.",
+          creative_direction: "Direction.",
+          do_not_imitate: [],
+        },
+      });
+      expect(() => assertNoNamedIP(makeContentPlan(), brief)).not.toThrow();
+    });
   });
 
   describe("assertAudienceAppropriate", () => {

@@ -39,33 +39,59 @@ interface WorkspacePromptConfig {
   jsonShapeFields: string;
   /** Appended to the user prompt's final instruction line. */
   userPromptFraming: string;
+  /** Appended to a follow-up pass's prompt: keeps pass 2 inside the founder's original scope. Empty when not needed. */
+  followupScopeNote: string;
 }
 
 const WORKSPACE_PROMPTS: Record<WorkspaceType, WorkspacePromptConfig> = {
   commerce: {
+    // Workspace context, NOT a mission. The founder's brief alone decides which
+    // business model, platform and deliverable Scout evaluates — Etsy/KDP
+    // used to be framed here (and again in the user prompt, and as required
+    // report fields) as if every Commerce mission were a product-listing
+    // mission, which made Scout ask video missions to prove Etsy/KDP demand.
     businessContext:
       "This workspace's focus is researching, creating, launching, and promoting digital " +
-      "products — initially children's activity products suitable for Etsy downloads and " +
-      "Amazon KDP print-on-demand publishing — without the founders ever packing or posting " +
-      "a physical product.",
+      "products and content businesses without the founders ever packing or posting a " +
+      "physical product. Channels this workspace can support include, for example, Etsy " +
+      "digital downloads, Amazon KDP print-on-demand publishing, and short-form or long-form " +
+      "video content on platforms such as YouTube and TikTok. These are examples of what it " +
+      "can support, NOT objectives: the founder's brief alone decides which business model, " +
+      "platform, deliverable, and objective you evaluate.",
     extraHardRule:
       "Flag copyright, trademark, or licensing concerns — including anything resembling an " +
       "existing branded character, franchise, or trademarked term — as items requiring a " +
-      "further legal check, never as cleared.",
+      "further legal check, never as cleared.\n" +
+      "   Founder intent is authoritative: evaluate exactly the business model, platform, " +
+      "deliverable, and objective the founder's brief specifies, and never add a marketplace, " +
+      "product type, or monetisation requirement the brief does not state (for example, do " +
+      "not make a video mission prove Etsy or KDP demand). You may mention an optional " +
+      "companion product or channel in recommended_next_action as an idea, but never as a " +
+      "condition of your verdict. Your independence is unchanged: if the founder's actual " +
+      "proposal is weak, say so and reject it or investigate further. In " +
+      "platform_suitability, set etsy_downloads and amazon_kdp_print_on_demand to null when " +
+      "the brief does not involve that channel, and describe the platform(s) it does involve " +
+      "in other_notes.",
     compactnessExtra: "copyright_trademark_concerns (6), likely_costs.breakdown (8)",
     jsonShapeFields: `  "opportunity_gaps": string,
   "originality_considerations": string,
   "platform_suitability": {
-    "etsy_downloads": string,
-    "amazon_kdp_print_on_demand": string,
+    "etsy_downloads": string | null,
+    "amazon_kdp_print_on_demand": string | null,
     "other_notes": string | null
   },
   "estimated_production_difficulty": { "level": "low" | "medium" | "high", "rationale": string },
   "likely_costs": { "estimate": string, "breakdown": string[] },
   "copyright_trademark_concerns": string[]`,
     userPromptFraming:
-      "Research this as a potential digital-product opportunity (Etsy downloads and/or " +
-      "Amazon KDP print-on-demand).",
+      "Research the opportunity exactly as the founder's brief describes it — the business " +
+      "model, platform, deliverable, and objective it specifies, and nothing broader. Do not " +
+      "add a marketplace, product type, or monetisation requirement the brief does not state.",
+    followupScopeNote:
+      "Stay within the founder's original scope as stated in the brief above. Your prior " +
+      "unresolved questions are in scope only to the extent they serve that brief — do not " +
+      "widen the mission to a marketplace, product, or monetisation model the brief does not " +
+      "request, even if an earlier question did.",
   },
   service_business: {
     businessContext:
@@ -92,6 +118,7 @@ const WORKSPACE_PROMPTS: Record<WorkspaceType, WorkspacePromptConfig> = {
       "Research this as a potential opportunity for a client-facing local service business. " +
       "Do not research or suggest anything involving Etsy, Amazon KDP, or physical/digital " +
       "product listings — those do not apply here.",
+    followupScopeNote: "",
   },
 };
 
@@ -154,12 +181,15 @@ Hard rules, no exceptions:
 Use web search to ground your findings in real, current sources whenever \
 the mission concerns market demand, competition, or platform/regulatory rules.
 
-Respond with a single JSON object and nothing else — no prose, no reasoning, \
-and no markdown code fences before or after it. Do not include any internal \
-or system-style tags (e.g. "<thinking>") in your response — only the JSON \
-object itself. Set "workspace_type" to exactly "${workspaceType}". It must \
-match exactly this shape (omit "production_recommendation" entirely unless \
-rule 9 above applies):
+When your research is finished, deliver the report by calling the \
+submit_scout_report tool exactly once, with the complete report as its \
+input — do not write the report out as text, and call no other client \
+tool. (Only if you cannot call the tool, respond with the same report as a \
+single JSON object and nothing else — no prose, no reasoning, no markdown \
+code fences.) Do not include any internal or system-style tags (e.g. \
+"<thinking>") in your response. Set "workspace_type" to exactly \
+"${workspaceType}". The report must match exactly this shape (omit \
+"production_recommendation" entirely unless rule 9 above applies):
 
 {
 ${CORE_JSON_SHAPE},
@@ -232,10 +262,11 @@ ${factsList}
 Sources you already consulted (avoid re-finding these; search for what's still missing):
 ${sourcesList}
 
-Do NOT repeat the original broad research or restate what you already found. Direct your web \
+${config.followupScopeNote ? `${config.followupScopeNote}\n\n` : ""}Do NOT repeat the original broad research or restate what you already found. Direct your web \
 searches and reasoning specifically at closing the gaps listed above. Produce a new, complete \
-structured report (the full JSON shape below, not a diff) reflecting what you learned on this \
-pass, informed by everything above.
+structured report (the full JSON shape given in your instructions, not a diff) reflecting \
+what you learned on this pass, informed by everything above. You must deliver it by calling \
+submit_scout_report — never as a prose summary of your findings.
 
 This is genuinely the last automated research pass on this mission — after this, a founder \
 decides how to proceed regardless of your verdict. If real uncertainty still remains even after \

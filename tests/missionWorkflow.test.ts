@@ -14,7 +14,7 @@ import {
   createMission,
   transitionMissionState,
 } from "@/lib/db/repositories";
-import { makeScoutReport, makeServiceBusinessReport } from "./testUtils";
+import { makeScoutReport, makeServiceBusinessReport, makeProductionRecommendation } from "./testUtils";
 
 vi.mock("@/lib/agents/scout", () => {
   return {
@@ -330,6 +330,78 @@ describe("mission workflow", () => {
     expect(settled.state).toBe("ready_for_founders_review");
     expect(await listAssignments(mission.id)).toHaveLength(1);
     expect(await listStages(mission.id)).toHaveLength(1);
+  });
+
+  it("a normal first-time queued mission still gets exactly one Scout assignment", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "First run", brief: "A normal first-time mission." });
+    await approveMission(created.id, founderId);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(await listAssignments(created.id)).toHaveLength(1);
+  });
+
+  it("re-approving a resubmitted mission that already has a Scout/lead assignment does not duplicate it or crash — the real bug a retried Acceptance 5 would have hit", async () => {
+    const { runScoutPipeline, createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const { getAgentByKey, assignAgent } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+
+    // Pass 1 fails technically (no valid pass-1 report to fall back on),
+    // leaving the mission "failed" with a real Scout/lead assignment row
+    // already on record — exactly Acceptance 5's real, live state.
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(
+      new scoutModule.ScoutResearchError("400 invalid_request_error", {
+        model: "claude-sonnet-5",
+        inputTokens: 100,
+        outputTokens: 0,
+      }),
+    );
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Resubmitted after failure", brief: "A mission whose first attempt failed technically." });
+    await approveMission(created.id, founderId);
+    const firstAttempt = await runScoutPipeline(created.id);
+    expect(firstAttempt.state).toBe("failed");
+    const scout = (await getAgentByKey("scout"))!;
+    expect(await listAssignments(created.id)).toHaveLength(1); // the real, already-existing assignment
+
+    // The sanctioned resubmit path: failed -> awaiting_founder_approval is
+    // explicitly allowed (missionStates.ts), clearing only the technical
+    // failure/attempt fields — never deleting the assignment or stage history.
+    const resubmitted = await transitionMissionState(created.id, ["failed"], "awaiting_founder_approval", {
+      failure_reason: null,
+      research_pass_count: 0,
+    });
+    expect(resubmitted.ok).toBe(true);
+
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+    await approveMission(created.id, founderId);
+
+    // Before the fix, this unconditional second assignAgent() call would
+    // throw a real Postgres unique-violation on
+    // agent_assignments_mission_agent_role_unique (mission_id, agent_id,
+    // role) — a hard crash, not a silent duplicate. It must not throw, and
+    // the retry must genuinely continue through Scout rather than silently
+    // stopping.
+    const resettled = await runScoutPipeline(created.id);
+
+    expect(resettled.state).toBe("ready_for_founders_review"); // the retry genuinely ran Scout, not a no-op
+    const assignments = await listAssignments(created.id);
+    expect(assignments).toHaveLength(1); // still exactly one — never duplicated
+    expect(assignments[0]?.agent_id).toBe(scout.id);
+    expect(await listStages(created.id)).toHaveLength(2); // the original failed stage, preserved, plus the new retry's stage
   });
 
   it("skips cleanly and spends nothing when the research job runs for a mission that already moved on", async () => {
@@ -1014,5 +1086,653 @@ describe("two-pass evidence loop (awaiting_evidence -> automatic follow-up)", ()
     const stages = await listStages(created.id);
     // Must resume into the one existing follow-up stage, never duplicate it.
     expect(stages.filter((s) => s.stage_name === "scout_followup_research")).toHaveLength(1);
+  });
+});
+
+describe("failed follow-up pass falls back to founder review on pass 1 (narrow degraded fallback)", () => {
+  let founderId: string;
+
+  beforeEach(async () => {
+    await resetDbForTests();
+    process.env.REQUIRE_FOUNDER_APPROVAL = "true";
+    founderId = (await listFounders())[0]!.id;
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockReset();
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(inngestModule.inngest.send).mockClear();
+  });
+
+  const pass1Usage = { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.0058 };
+
+  async function createAndApprove(title: string) {
+    const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title,
+      brief: "A mission whose first pass is inconclusive.",
+    });
+    await approveMission(created.id, founderId);
+    return created;
+  }
+
+  async function failingScoutError(message: string) {
+    const scoutModule = await import("@/lib/agents/scout");
+    return new scoutModule.ScoutResearchError(message, {
+      model: "claude-sonnet-5",
+      inputTokens: 172_372,
+      outputTokens: 874,
+    });
+  }
+
+  it("valid pass 1 + failed pass 2 -> ready_for_founders_review, pass 1 preserved exactly, follow-up failure visible", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const pass1Report = makeScoutReport({
+      verdict: "investigate_further",
+      unresolved_questions: ["Is there genuine search volume for this term?"],
+    });
+    const pass1Evidence = [
+      { sourceUrl: "https://example.com/a", sourceTitle: "A", sourceDate: "2026-01-01", snippet: "s", isVerifiedFact: true },
+    ];
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: pass1Report,
+      usage: pass1Usage,
+      evidence: pass1Evidence,
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(await failingScoutError("Scout's report was not valid JSON."));
+
+    const created = await createAndApprove("Pass 2 fails technically");
+    await runScoutPipeline(created.id); // pass 1 -> awaiting_evidence
+    const beforeDeliverables = await listDeliverables(created.id);
+    const beforeEvidence = await listEvidence(created.id);
+
+    const settled = await runScoutPipeline(created.id); // pass 2 -> technical failure
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(settled.final_status).toBe("investigate_further"); // pass 1's real verdict, never upgraded
+    expect(settled.failure_reason).toBeNull(); // not a failed mission
+    expect(settled.research_pass_count).toBe(2);
+
+    // Pass 1's deliverable and evidence are byte-for-byte unchanged.
+    const afterDeliverables = await listDeliverables(created.id);
+    expect(afterDeliverables).toEqual(beforeDeliverables);
+    expect(afterDeliverables[0]?.content).toEqual(pass1Report);
+    expect(await listEvidence(created.id)).toEqual(beforeEvidence);
+
+    // The degraded state is visible from real records: a failed follow-up stage + activity.
+    const stages = await listStages(created.id);
+    const followupStage = stages.find((s) => s.stage_name === "scout_followup_research");
+    expect(followupStage?.status).toBe("failed");
+    expect(followupStage?.detail).toBe("Scout's report was not valid JSON.");
+    const activity = await listActivity(created.id);
+    const failedActivity = activity.find((a) => a.action === "followup_research_failed");
+    expect(failedActivity?.detail).toMatch(/not valid JSON/);
+    expect(failedActivity?.detail).toMatch(/first-pass report alone/);
+    expect(activity.some((a) => a.action === "research_failed")).toBe(false);
+  });
+
+  it("does not fabricate a pass 2 deliverable or any pass 2 evidence", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: pass1Usage,
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(await failingScoutError("Scout's report was not valid JSON."));
+
+    const created = await createAndApprove("No fabricated pass 2");
+    await runScoutPipeline(created.id);
+    await runScoutPipeline(created.id);
+
+    const deliverables = await listDeliverables(created.id);
+    expect(deliverables.map((d) => d.kind)).toEqual(["scout_research_report"]);
+    expect(deliverables.some((d) => d.kind === "scout_followup_report")).toBe(false);
+    expect(await listEvidence(created.id)).toHaveLength(0);
+  });
+
+  it("still records the failed pass's real cost, on top of pass 1's, and does not re-dispatch a third pass", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: pass1Usage,
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(await failingScoutError("Scout's report was not valid JSON."));
+
+    const created = await createAndApprove("Cost still recorded");
+    await runScoutPipeline(created.id);
+    await runScoutPipeline(created.id);
+
+    const costs = await listCosts(created.id);
+    expect(costs).toHaveLength(2);
+    expect(costs.some((c) => c.input_tokens === 172_372 && c.output_tokens === 874)).toBe(true);
+    expect(costs.every((c) => c.usd_cost !== null && c.usd_cost > 0)).toBe(true);
+
+    const followupSends = vi
+      .mocked(inngestModule.inngest.send)
+      .mock.calls.filter(([evt]) => (evt as { name?: string }).name === "mission/followup_needed");
+    expect(followupSends).toHaveLength(1);
+  });
+
+  it("a pass 1 failure still fails the mission normally (fallback never applies)", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(await failingScoutError("Scout's report was not valid JSON."));
+
+    const created = await createAndApprove("Pass 1 fails");
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toBe("Scout's report was not valid JSON.");
+    const activity = await listActivity(created.id);
+    expect(activity.some((a) => a.action === "research_failed")).toBe(true);
+    expect(activity.some((a) => a.action === "followup_research_failed")).toBe(false);
+  });
+
+  it("a failed pass 2 with no valid pass 1 report to fall back on still fails (fallback requires a schema-valid stored pass 1)", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: pass1Usage,
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(await failingScoutError("Scout's report was not valid JSON."));
+
+    const created = await createAndApprove("Corrupt pass 1");
+    await runScoutPipeline(created.id);
+    // Corrupt the stored pass 1 deliverable so it no longer satisfies the schema.
+    const { getDb } = await import("@/lib/db/client");
+    const { sql } = await import("drizzle-orm");
+    const db = await getDb();
+    await db.execute(sql`UPDATE deliverables SET content = '{"verdict":"investigate_further"}'::jsonb WHERE mission_id = ${created.id}`);
+
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("failed");
+  });
+
+  it("a successful pass 2 behaves exactly as before (no degraded fallback involved)", async () => {
+    const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "investigate_further" }),
+      usage: pass1Usage,
+      evidence: [],
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 700, outputTokens: 300, usdCost: 0.0045 },
+      evidence: [],
+    });
+
+    const created = await createAndApprove("Pass 2 succeeds");
+    await runScoutPipeline(created.id);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(settled.final_status).toBe("ready_for_founders_review");
+    const stages = await listStages(created.id);
+    expect(stages.every((s) => s.status === "completed")).toBe(true);
+    const deliverables = await listDeliverables(created.id);
+    expect(deliverables.map((d) => d.kind).sort()).toEqual(["scout_followup_report", "scout_research_report"]);
+    expect((await listActivity(created.id)).some((a) => a.action === "followup_research_failed")).toBe(false);
+  });
+});
+
+describe("Scout failure diagnostics reach the activity log without touching founder-facing text", () => {
+  it("appends safe run diagnostics to the research_failed activity, leaving failure_reason clean", async () => {
+    await resetDbForTests();
+    process.env.REQUIRE_FOUNDER_APPROVAL = "true";
+    const founderId = (await listFounders())[0]!.id;
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const error = new scoutModule.ScoutResearchError("Scout's report was not valid JSON.", {
+      model: "claude-sonnet-5",
+      inputTokens: 153_688,
+      outputTokens: 681,
+    });
+    (error as unknown as { diagnostics: unknown }).diagnostics = {
+      calls: [{ stopReason: "tool_use", blocks: { tool_use: 1 }, clientToolNames: ["x"], inputTokens: 1, outputTokens: 1 }],
+      nudged: true,
+      recovered: false,
+      usedSubmitTool: false,
+      failureKind: "no_report",
+    };
+    vi.mocked(scoutModule.runScoutResearch).mockReset();
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(error);
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Diagnostics", brief: "A mission whose research fails technically." });
+    await approveMission(created.id, founderId);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toBe("Scout's report was not valid JSON.");
+    const failed = (await listActivity(created.id)).find((a) => a.action === "research_failed");
+    expect(failed?.detail).toMatch(/^Scout's report was not valid JSON\. \[scout diagnostics: \{/);
+    expect(failed?.detail).toMatch(/"failureKind":"no_report"/);
+    const stage = (await listStages(created.id)).find((x) => x.stage_name === "scout_research");
+    expect(stage?.detail).toBe("Scout's report was not valid JSON.");
+  });
+});
+
+describe("mission/approved event id — scoped to the specific approval, not just the mission", () => {
+  let founderId: string;
+
+  beforeEach(async () => {
+    await resetDbForTests();
+    process.env.REQUIRE_FOUNDER_APPROVAL = "true";
+    founderId = (await listFounders())[0]!.id;
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockReset();
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(inngestModule.inngest.send).mockClear();
+  });
+
+  function approvedSends(calls: unknown[]) {
+    return calls
+      .map(([evt]: any) => evt)
+      .filter((evt: any) => evt.name === "mission/approved");
+  }
+
+  it("a normal first approval dispatches exactly once, with an id scoped to the transition's real updated_at", async () => {
+    const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const inngestModule = await import("@/lib/inngest/client");
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Normal approval", brief: "A normal single-approval mission." });
+    const approved = await approveMission(created.id, founderId);
+
+    const sends = approvedSends(vi.mocked(inngestModule.inngest.send).mock.calls);
+    expect(sends).toHaveLength(1);
+    expect(sends[0]).toMatchObject({
+      id: `mission-approved-${created.id}-${approved.updated_at}`,
+      name: "mission/approved",
+      data: { missionId: created.id },
+    });
+  });
+
+  it("a duplicate/retried call for the SAME approval sends no second event at all — the strongest form of dedup, and what a retried id would reproduce anyway", async () => {
+    const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const inngestModule = await import("@/lib/inngest/client");
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Retried approval", brief: "An approval whose HTTP request gets retried." });
+    await approveMission(created.id, founderId);
+    // Simulates the client retrying the same approve request after a
+    // timeout — the mission is already "queued", so this must be a pure
+    // no-op: no second recordApproval, no second event.
+    const second = await approveMission(created.id, founderId);
+
+    expect(second.state).toBe("queued");
+    expect(approvedSends(vi.mocked(inngestModule.inngest.send).mock.calls)).toHaveLength(1);
+  });
+
+  it("THE FIX: a failed mission, legitimately resubmitted and re-approved, gets a DIFFERENT event id and genuinely dispatches Scout again — the real Acceptance 5 bug", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { getAgentByKey } = await import("@/lib/db/repositories");
+    const inngestModule = await import("@/lib/inngest/client");
+    const scoutModule = await import("@/lib/agents/scout");
+
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(
+      new scoutModule.ScoutResearchError("400 invalid_request_error", { model: "claude-sonnet-5", inputTokens: 100, outputTokens: 0 }),
+    );
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Resubmit and re-approve", brief: "A mission that fails, is resubmitted, and re-approved." });
+    const firstApproval = await approveMission(created.id, founderId);
+    const firstRun = await runScoutPipeline(created.id);
+    expect(firstRun.state).toBe("failed");
+
+    // The sanctioned resubmit path.
+    const resubmitted = await transitionMissionState(created.id, ["failed"], "awaiting_founder_approval", {
+      failure_reason: null,
+      research_pass_count: 0,
+    });
+    expect(resubmitted.ok).toBe(true);
+
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+    const secondApproval = await approveMission(created.id, founderId);
+
+    const sends = approvedSends(vi.mocked(inngestModule.inngest.send).mock.calls);
+    expect(sends).toHaveLength(2);
+    expect(sends[0]!.id).not.toBe(sends[1]!.id); // THE bug, fixed: distinct ids for distinct approvals
+    expect(sends[0]!.id).toBe(`mission-approved-${created.id}-${firstApproval.updated_at}`);
+    expect(sends[1]!.id).toBe(`mission-approved-${created.id}-${secondApproval.updated_at}`);
+
+    // And the second approval genuinely dispatches Scout again — this is
+    // what a real Inngest instance would deliver, since the id no longer
+    // collides with the first send's.
+    const secondRun = await runScoutPipeline(created.id);
+    expect(secondRun.state).toBe("ready_for_founders_review");
+    expect(scoutModule.runScoutResearch).toHaveBeenCalledTimes(2);
+
+    // The existing assignment-idempotency fix still holds: exactly one
+    // Scout/lead assignment, never duplicated across the retry.
+    const scout = (await getAgentByKey("scout"))!;
+    const assignments = await listAssignments(created.id);
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0]?.agent_id).toBe(scout.id);
+  });
+});
+
+describe("recoverStuckQueuedMission — narrow recovery for a genuine dispatch failure", () => {
+  let founderId: string;
+
+  beforeEach(async () => {
+    await resetDbForTests();
+    process.env.REQUIRE_FOUNDER_APPROVAL = "true";
+    founderId = (await listFounders())[0]!.id;
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockReset();
+    const inngestModule = await import("@/lib/inngest/client");
+    vi.mocked(inngestModule.inngest.send).mockClear();
+  });
+
+  async function createStuckQueuedMission(title: string) {
+    const { createAndSubmitMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const created = await createAndSubmitMission({ founderId, projectId: null, title, brief: "A mission whose dispatch event never reached the research job." });
+    // Approved, genuinely queued — but runScoutPipeline is never invoked,
+    // simulating exactly the real bug: the event was dropped/lost.
+    return approveMission(created.id, founderId);
+  }
+
+  it("1. recovers a genuinely stuck queued mission back to awaiting_founder_approval", async () => {
+    const { recoverStuckQueuedMission } = await import("@/lib/domain/missionWorkflow");
+    const stuck = await createStuckQueuedMission("Stuck 1");
+
+    const recovered = await recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 3 * 60 * 1000) });
+
+    expect(recovered.state).toBe("awaiting_founder_approval");
+    expect(recovered.research_pass_count).toBe(0);
+  });
+
+  it("2. records a clear recovery activity explaining why the mission moved backwards", async () => {
+    const { recoverStuckQueuedMission } = await import("@/lib/domain/missionWorkflow");
+    const stuck = await createStuckQueuedMission("Stuck 2");
+
+    await recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 3 * 60 * 1000) });
+
+    const activity = await listActivity(stuck.id);
+    const recovery = activity.find((a) => a.action === "queued_dispatch_recovered");
+    expect(recovery).toBeTruthy();
+    expect(recovery?.actor).toBe("system");
+    expect(recovery?.detail).toMatch(/stuck "queued"/i);
+    expect(recovery?.detail).toMatch(/preserved, not deleted/i);
+  });
+
+  it("3. preserves all historical assignment/stage/activity — nothing is deleted or fabricated", async () => {
+    const { recoverStuckQueuedMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockRejectedValueOnce(
+      new scoutModule.ScoutResearchError("400 invalid_request_error", { model: "claude-sonnet-5", inputTokens: 100, outputTokens: 0 }),
+    );
+    const created = await createStuckQueuedMission("Stuck 3 — failed then resubmitted then stuck again");
+    await runScoutPipeline(created.id); // fails technically, real history created
+    await transitionMissionState(created.id, ["failed"], "awaiting_founder_approval", { failure_reason: null, research_pass_count: 0 });
+    const { approveMission } = await import("@/lib/domain/missionWorkflow");
+    const reApproved = await approveMission(created.id, founderId); // queued again, but stuck this time
+
+    const beforeActivity = await listActivity(created.id);
+    const beforeAssignments = await listAssignments(created.id);
+    const beforeStages = await listStages(created.id);
+    expect(beforeAssignments).toHaveLength(1); // the original, real assignment
+    expect(beforeStages).toHaveLength(1); // the original, real failed stage
+
+    await recoverStuckQueuedMission(reApproved.id, { now: new Date(Date.parse(reApproved.updated_at) + 3 * 60 * 1000) });
+
+    const afterActivity = await listActivity(created.id);
+    // Compare by id rather than array position: listActivity orders by
+    // created_at with no tiebreaker, so rows inserted within the same
+    // millisecond (as several of these synchronous test steps are) have no
+    // guaranteed stable relative order across two separate queries — a
+    // pre-existing property of listActivity, not something this test
+    // should assert on. What actually matters (nothing rewritten or
+    // deleted) is fully proven by id-keyed equality instead.
+    const beforeById = new Map(beforeActivity.map((a) => [a.id, a]));
+    for (const row of beforeById.values()) {
+      expect(afterActivity.find((a) => a.id === row.id)).toEqual(row);
+    }
+    expect(afterActivity).toHaveLength(beforeActivity.length + 1);
+    const added = afterActivity.find((a) => !beforeById.has(a.id));
+    expect(added?.action).toBe("queued_dispatch_recovered");
+    expect(await listAssignments(created.id)).toEqual(beforeAssignments);
+    expect(await listStages(created.id)).toEqual(beforeStages);
+    expect(afterActivity.some((a) => a.action === "research_failed")).toBe(true); // the real failure is still on record
+  });
+
+  it("4. a subsequent founder approval after recovery generates a fresh, distinct event id", async () => {
+    const { recoverStuckQueuedMission, approveMission } = await import("@/lib/domain/missionWorkflow");
+    const inngestModule = await import("@/lib/inngest/client");
+    const stuck = await createStuckQueuedMission("Stuck 4");
+    const firstSend = vi.mocked(inngestModule.inngest.send).mock.calls.find(([e]: any) => e.name === "mission/approved")![0] as any;
+
+    await recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 3 * 60 * 1000) });
+    const reApproved = await approveMission(stuck.id, founderId);
+
+    const sends = vi.mocked(inngestModule.inngest.send).mock.calls.map(([e]: any) => e).filter((e: any) => e.name === "mission/approved");
+    expect(sends).toHaveLength(2);
+    expect(sends[1]!.id).not.toBe(firstSend.id);
+    expect(sends[1]!.id).toBe(`mission-approved-${stuck.id}-${reApproved.updated_at}`);
+  });
+
+  it("5. the Scout pipeline can start normally after a recovered-and-re-approved mission", async () => {
+    const { recoverStuckQueuedMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+    const stuck = await createStuckQueuedMission("Stuck 5");
+
+    await recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 3 * 60 * 1000) });
+    await approveMission(stuck.id, founderId);
+    const settled = await runScoutPipeline(stuck.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(scoutModule.runScoutResearch).toHaveBeenCalledTimes(1);
+  });
+
+  it("6. no duplicate Scout assignment after recovery, re-approval and a real pipeline run", async () => {
+    const { recoverStuckQueuedMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const { getAgentByKey } = await import("@/lib/db/repositories");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+    const stuck = await createStuckQueuedMission("Stuck 6");
+    // A first dispatch DID reach the job before it got "stuck" in a later
+    // sense would be unusual, but the realistic case (matching Acceptance
+    // 5) is: an earlier failed attempt already created the assignment.
+    const scout = (await getAgentByKey("scout"))!;
+
+    await recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 3 * 60 * 1000) });
+    await approveMission(stuck.id, founderId);
+    await runScoutPipeline(stuck.id);
+
+    const assignments = await listAssignments(stuck.id);
+    expect(assignments.filter((a) => a.agent_id === scout.id)).toHaveLength(1);
+  });
+
+  it("7. normal healthy first-run behavior is unaffected: a fresh approval that dispatches promptly is untouched", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport(),
+      usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 200, usdCost: 0.003 },
+      evidence: [],
+    });
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Healthy run", brief: "A completely normal mission." });
+    const approved = await approveMission(created.id, founderId);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect((await listActivity(created.id)).some((a) => a.action === "queued_dispatch_recovered")).toBe(false);
+    expect(approved.state).toBe("queued");
+  });
+
+  it("8a. refuses a mission that has NOT been stuck long enough — protects a legitimately pending dispatch", async () => {
+    const { recoverStuckQueuedMission, MissionNotStuckError } = await import("@/lib/domain/missionWorkflow");
+    const stuck = await createStuckQueuedMission("Not stuck yet");
+
+    await expect(
+      recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 5 * 1000) }),
+    ).rejects.toBeInstanceOf(MissionNotStuckError);
+
+    const mission = await getMission(stuck.id);
+    expect(mission?.state).toBe("queued"); // untouched
+  });
+
+  it("8b. refuses to recover a mission whose dispatch genuinely worked in the meantime (researching)", async () => {
+    const { recoverStuckQueuedMission } = await import("@/lib/domain/missionWorkflow");
+    const { MissionConcurrencyError: MCE } = await import("@/lib/domain/missionStates");
+    const stuck = await createStuckQueuedMission("Actually working");
+    await transitionMissionState(stuck.id, ["queued"], "researching", { research_pass_count: 1 });
+
+    // The function reads the mission fresh, so it already sees "researching"
+    // and refuses structurally (IllegalMissionTransitionError) before the
+    // atomic write is even attempted — a stronger, earlier guarantee than
+    // the write-time MissionConcurrencyError race check, which only
+    // matters for a read-then-write gap this single-threaded test can't
+    // construct against the public API. Either way: never yanked backwards.
+    let caught: unknown;
+    try {
+      await recoverStuckQueuedMission(stuck.id, { now: new Date(Date.parse(stuck.updated_at) + 3 * 60 * 1000) });
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as Error).name).toBe("IllegalMissionTransitionError");
+    void MCE;
+  });
+
+  it("8c. still refuses recovery from any state other than queued (structural rejection)", async () => {
+    const { recoverStuckQueuedMission } = await import("@/lib/domain/missionWorkflow");
+    const { createAndSubmitMission } = await import("@/lib/domain/missionWorkflow");
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Never queued", brief: "A mission still in draft/awaiting approval." });
+
+    // assertTransition itself must reject queued->awaiting_founder_approval
+    // being attempted from a state that was never "queued" in the first
+    // place — draft has no such edge in ALLOWED_TRANSITIONS at all except
+    // via "queued", so this exercises assertTransition's own structural
+    // check (IllegalMissionTransitionError), not just the staleness gate.
+    let caught: unknown;
+    try {
+      await recoverStuckQueuedMission(created.id, { now: new Date(Date.now() + 10 * 60 * 1000) });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe("IllegalMissionTransitionError");
+  });
+});
+
+describe("production_recommendation inconsistency — preserved research, no fabrication, no rejection", () => {
+  let founderId: string;
+
+  beforeEach(async () => {
+    await resetDbForTests();
+    process.env.REQUIRE_FOUNDER_APPROVAL = "true";
+    founderId = (await listFounders())[0]!.id;
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockReset();
+  });
+
+  it("a report whose prose recommends production without production_recommendation is DELIVERED, not rejected — the real paid research is preserved", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    const report = makeScoutReport({
+      verdict: "ready_for_founders_review",
+      recommended_next_action: "Produce one pilot ~30-second video and post it to TikTok and YouTube Shorts.",
+    });
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report,
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.02 },
+      evidence: [{ sourceUrl: "https://example.com/a", sourceTitle: "A", sourceDate: "2026-01-01", snippet: "s", isVerifiedFact: true }],
+    });
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Viral short", brief: "Find one strong short-form video opportunity." });
+    await approveMission(created.id, founderId);
+    const settled = await runScoutPipeline(created.id);
+
+    expect(settled.state).toBe("ready_for_founders_review");
+    expect(settled.failure_reason).toBeNull();
+    const deliverables = await listDeliverables(created.id);
+    expect(deliverables).toHaveLength(1);
+    expect(deliverables[0]?.content).toEqual(report); // byte-for-byte, nothing added/removed
+    expect(await listEvidence(created.id)).toHaveLength(1); // real evidence preserved too
+  });
+
+  it("records the real production_recommendation_inconsistent activity flag, never fabricating the missing object", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({
+        verdict: "ready_for_founders_review",
+        verdict_rationale: "The evidence is strong enough to recommend a pilot.",
+      }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.02 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Viral short 2", brief: "Find one strong short-form video opportunity." });
+    await approveMission(created.id, founderId);
+    const settled = await runScoutPipeline(created.id);
+
+    const flagged = (await listActivity(created.id)).find((a) => a.action === "production_recommendation_inconsistent");
+    expect(flagged).toBeTruthy();
+    expect(flagged?.detail).toMatch(/recommend a pilot/i);
+    expect(flagged?.detail).toMatch(/research itself is unaffected and preserved/i);
+
+    // Never fabricated downstream.
+    const deliverable = (await listDeliverables(created.id))[0];
+    expect((deliverable?.content as { production_recommendation?: unknown }).production_recommendation).toBeUndefined();
+
+    // The mission stayed exactly ready_for_founders_review — no new state, no
+    // silent conversion into (or away from) production.
+    expect(settled.state).toBe("ready_for_founders_review");
+  });
+
+  it("no flag at all when the report genuinely has nothing inconsistent (normal path unaffected)", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({ verdict: "ready_for_founders_review" }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.02 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Clean run", brief: "A normal mission." });
+    await approveMission(created.id, founderId);
+    await runScoutPipeline(created.id);
+
+    expect((await listActivity(created.id)).some((a) => a.action === "production_recommendation_inconsistent")).toBe(false);
+  });
+
+  it("a report WITH a valid production_recommendation is never flagged, even if its prose also uses directive language", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
+    const scoutModule = await import("@/lib/agents/scout");
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValueOnce({
+      report: makeScoutReport({
+        verdict: "ready_for_founders_review",
+        recommended_next_action: "Produce one pilot video immediately.",
+        production_recommendation: makeProductionRecommendation(),
+      }),
+      usage: { model: "claude-sonnet-5", inputTokens: 900, outputTokens: 400, usdCost: 0.02 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({ founderId, projectId: null, title: "Real recommendation", brief: "A mission with a genuine recommendation." });
+    await approveMission(created.id, founderId);
+    await runScoutPipeline(created.id);
+
+    expect((await listActivity(created.id)).some((a) => a.action === "production_recommendation_inconsistent")).toBe(false);
   });
 });

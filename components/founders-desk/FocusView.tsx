@@ -31,6 +31,8 @@ export function FocusView({
   onApprove,
   onCancel,
   onOpenApproveForProduction,
+  onOpenCommissionPilot,
+  onOpenProduceAgain,
   onOpenContentReview,
 }: {
   agents: Agent[];
@@ -48,6 +50,8 @@ export function FocusView({
   onApprove: (missionId: string) => void;
   onCancel: (missionId: string) => void;
   onOpenApproveForProduction: () => void;
+  onOpenCommissionPilot: () => void;
+  onOpenProduceAgain: () => void;
   onOpenContentReview: (contentItemId: string) => void;
 }) {
   return (
@@ -116,6 +120,8 @@ export function FocusView({
                         detail={missionDetail}
                         busy={busyMissionId === mission.id}
                         onOpenApproveForProduction={onOpenApproveForProduction}
+                        onOpenCommissionPilot={onOpenCommissionPilot}
+                        onOpenProduceAgain={onOpenProduceAgain}
                         onOpenContentReview={onOpenContentReview}
                       />
                     )}

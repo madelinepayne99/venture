@@ -22,11 +22,17 @@ import {
   recordCost,
   listContentItemsForMissions,
   transitionContentItemState,
+  listAssignments,
+  listApprovals,
+  listActivity,
 } from "@/lib/db/repositories";
 import { validateMissionInput, type MissionInput } from "@/lib/domain/missionValidation";
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
 import { isContentItemCancellable } from "@/lib/domain/contentItemStates";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
+import { ScoutReportSchema } from "@/lib/agents/scout/schema";
+import { findProductionRecommendationInconsistency } from "@/lib/agents/scout/guardrails";
+import { formatDiagnostics } from "@/lib/agents/scout/diagnostics";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import { inngest, MISSION_APPROVED_EVENT, MISSION_FOLLOWUP_NEEDED_EVENT } from "@/lib/inngest/client";
 
@@ -194,10 +200,226 @@ export async function approveMission(
   // of) the atomic transition above and the function's own concurrency
   // key (see scoutResearchJob.ts), which together are what actually
   // prevent duplicate research runs and duplicate ledger charges.
+  //
+  // The id is scoped to THIS specific successful transition, not just the
+  // mission — it incorporates transition.mission.updated_at, the exact
+  // timestamp `transitionMissionState`'s own atomic UPDATE just wrote (no
+  // new column: a real, persisted value that is unique to this successful
+  // awaiting_founder_approval -> queued write, stable within this one call
+  // — including any network-level retry of this exact send()). Using only
+  // `missionId` here was a real bug: a mission that fails, gets resubmitted
+  // (failed -> awaiting_founder_approval, an explicitly allowed transition),
+  // and is approved a second time reuses the same missionId, so the old id
+  // collided with the first approval's — Inngest silently deduped the
+  // genuinely new approval and no second Scout run was ever dispatched. A
+  // true duplicate/retried send of THIS SAME approval still reproduces the
+  // same id (same transition.mission.updated_at) and still dedupes exactly
+  // as before; only a genuinely later, distinct transition gets a new one.
   await inngest.send({
-    id: `mission-approved-${missionId}`,
+    id: `mission-approved-${missionId}-${transition.mission.updated_at}`,
     name: MISSION_APPROVED_EVENT,
     data: { missionId },
+  });
+
+  return transition.mission;
+}
+
+export class MissionNotStuckError extends Error {
+  constructor(missionId: string, msSinceApproval: number) {
+    super(
+      `Mission ${missionId} has only been "queued" for ${Math.round(msSinceApproval / 1000)}s — under the ` +
+      `${Math.round(STUCK_QUEUED_AFTER_MS / 1000)}s a healthy dispatch normally takes. Refusing to recover a ` +
+      `mission whose Scout job may still be genuinely pending; try again once it has been queued longer.`,
+    );
+    this.name = "MissionNotStuckError";
+  }
+}
+
+// A healthy approval's Inngest dispatch starts Scout within seconds (see
+// scoutResearchJob.ts) — there is no legitimate reason for a mission to sit
+// in "queued" this long with zero progress. This is the same "a healthy
+// step is fast, so don't wait long to notice one didn't happen" reasoning
+// as stuckMissionWatchdog.ts's AWAITING_EVIDENCE_STALE_AFTER_MS, reused
+// here rather than inventing a new threshold philosophy.
+export const STUCK_QUEUED_AFTER_MS = 2 * 60 * 1000;
+
+/**
+ * The narrow, founder-triggered recovery for the real class of bug found in
+ * production (Acceptance 5, Milestone 5.1): a genuine approval's Inngest
+ * dispatch can silently fail to reach scoutResearchJob (the original cause
+ * was a deterministic event-id collision on a resubmitted mission's second
+ * approval — now fixed in approveMission — but this recovery is the general
+ * safety net for *any* dispatch failure of this shape, not a fix specific
+ * to that one bug). Deliberately NOT a generic "move a queued mission
+ * backwards" tool:
+ *  - It only ever moves "queued" -> "awaiting_founder_approval" — the one
+ *    edge ALLOWED_TRANSITIONS grants it (see missionStates.ts), and that
+ *    edge exists for no other caller.
+ *  - It refuses (MissionNotStuckError) unless the mission has been
+ *    genuinely stale in "queued" for STUCK_QUEUED_AFTER_MS — a mission
+ *    whose Scout job is legitimately about to start (the normal case)
+ *    cannot be yanked backwards out from under it.
+ *  - The atomic `transitionMissionState(..., ["queued"], ...)` call is
+ *    itself the final safety check: if the mission has moved on to
+ *    "researching" (a legitimately late-but-working dispatch) by the time
+ *    this write lands, the transition simply fails rather than reverting
+ *    real, in-flight work — same non-clobbering guarantee every other
+ *    transition in this file already relies on.
+ *  - It touches only `missions.state`/`research_pass_count` and adds one
+ *    new activity row — it never deletes or rewrites the original
+ *    approval, the failed/in-progress stage, the agent assignment, or any
+ *    other history. A founder re-approving afterward gets a fresh,
+ *    correctly-scoped event id (see approveMission) and
+ *    runScoutPipeline's own assignment-idempotency check (see its `queued`
+ *    branch) means the existing assignment is reused, never duplicated.
+ */
+export async function recoverStuckQueuedMission(missionId: string, opts: { now?: Date } = {}): Promise<Mission> {
+  const mission = await getMission(missionId);
+  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+
+  assertTransition(mission.state, "awaiting_founder_approval");
+
+  const now = opts.now ?? new Date();
+  const msSinceUpdate = now.getTime() - new Date(mission.updated_at).getTime();
+  if (msSinceUpdate < STUCK_QUEUED_AFTER_MS) {
+    throw new MissionNotStuckError(missionId, msSinceUpdate);
+  }
+
+  const transition = await transitionMissionState(missionId, ["queued"], "awaiting_founder_approval", {
+    research_pass_count: 0,
+  });
+  if (!transition.ok) {
+    // The mission moved on (most plausibly to "researching" — a late but
+    // genuinely working dispatch) between our read and our write. Leaving
+    // it exactly where it is is the correct behavior: never revert real,
+    // in-flight or already-settled work.
+    throw new MissionConcurrencyError(missionId, ["queued"], "awaiting_founder_approval", transition.mission.state);
+  }
+
+  await recordActivity({
+    missionId,
+    actor: "system",
+    action: "queued_dispatch_recovered",
+    detail:
+      `Mission was stuck "queued" for over ${Math.round(msSinceUpdate / 1000)}s with no progress — its ` +
+      `approval dispatch likely never reached the research job. Returned to awaiting_founder_approval so a ` +
+      `founder can re-approve and get a fresh dispatch. The original approval, any failed research attempt, ` +
+      `and the Scout assignment were preserved, not deleted.`,
+  });
+
+  return transition.mission;
+}
+
+export class ProductionGenuinelyStartedError extends Error {
+  constructor(missionId: string, reason: string) {
+    super(
+      `Mission ${missionId} cannot be recovered from "in_production" — real evidence that production genuinely ` +
+        `started already exists (${reason}). Recovering it would risk silently reverting or duplicating real work.`,
+    );
+    this.name = "ProductionGenuinelyStartedError";
+  }
+}
+
+// Any one of these existing means production genuinely began — recovery
+// must refuse if ANY of them is present, not just the content item itself
+// (a real bug proved a content item can be absent while other real
+// progress already happened in a different failure shape — this list is
+// deliberately redundant/defense-in-depth rather than trusting one signal).
+const PRODUCTION_DISPATCH_ACTIVITY_ACTIONS = new Set([
+  "approved_for_production",
+  "commissioned_pilot_anyway",
+  "production_dispatch_failed",
+]);
+const PRODUCTION_APPROVAL_DECISIONS = new Set(["approve_for_production", "commission_pilot_anyway"]);
+
+/**
+ * The narrow, founder-triggered recovery for the real class of bug found
+ * in production (Milestone 5.1/C1 follow-up): commissionPilotAnyway's (and
+ * approveForProduction's) atomic ready_for_founders_review -> in_production
+ * transition can commit and then genuinely fail before Content Bot is ever
+ * dispatched — e.g. the live case where the "content_bot" agent row was
+ * simply missing from a long-lived database's seed data. That leaves a
+ * mission stranded in "in_production" with nothing to show for it and,
+ * before this function, no way back: in_production's only other edges are
+ * "production_complete" / "failed" / "cancelled".
+ *
+ * Deliberately NOT a general "undo production" tool. It refuses
+ * (ProductionGenuinelyStartedError) unless ALL of the following hold —
+ * i.e. unless there is no evidence whatsoever that production actually
+ * began:
+ *  - no content_items row exists for the mission;
+ *  - no Content Bot ("content_bot") lead assignment exists;
+ *  - no activity row recording a production approval/dispatch
+ *    (approved_for_production, commissioned_pilot_anyway,
+ *    production_dispatch_failed) exists;
+ *  - no approvals row recording a production decision
+ *    (approve_for_production, commission_pilot_anyway) exists.
+ * A mission with ANY one of these is refused outright — recovering it
+ * would risk silently reverting or duplicating real work, exactly what
+ * this function must never do.
+ *
+ * The atomic `transitionMissionState(..., ["in_production"], ...)` call is
+ * the final safety net, same as every other transition in this file: if
+ * the mission has moved on (settled to production_complete/failed, or was
+ * cancelled) between these checks and this write, the transition simply
+ * fails rather than reverting real, now-settled work. The narrow window
+ * between the checks above and that write — a genuinely concurrent
+ * dispatch starting in between — is the same accepted, documented
+ * precedent every other atomic-transition function in this file already
+ * carries (see recoverStuckQueuedMission); it is not pretended away.
+ */
+export async function recoverStrandedProduction(missionId: string): Promise<Mission> {
+  const mission = await getMission(missionId);
+  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+
+  assertTransition(mission.state, "ready_for_founders_review");
+
+  const [existingItems, assignments, approvals, activity] = await Promise.all([
+    listContentItemsForMissions([missionId]),
+    listAssignments(missionId),
+    listApprovals(missionId),
+    listActivity(missionId),
+  ]);
+
+  if (existingItems.length > 0) {
+    throw new ProductionGenuinelyStartedError(missionId, "a content item already exists for this mission");
+  }
+
+  const contentBot = await getAgentByKey("content_bot");
+  if (contentBot && assignments.some((a) => a.agent_id === contentBot.id)) {
+    throw new ProductionGenuinelyStartedError(missionId, "Content Bot is already assigned to this mission");
+  }
+
+  const dispatchedActivity = activity.find((a) => PRODUCTION_DISPATCH_ACTIVITY_ACTIONS.has(a.action));
+  if (dispatchedActivity) {
+    throw new ProductionGenuinelyStartedError(
+      missionId,
+      `a "${dispatchedActivity.action}" activity entry already exists`,
+    );
+  }
+
+  const productionApproval = approvals.find((a) => PRODUCTION_APPROVAL_DECISIONS.has(a.decision));
+  if (productionApproval) {
+    throw new ProductionGenuinelyStartedError(
+      missionId,
+      `a "${productionApproval.decision}" approval already exists`,
+    );
+  }
+
+  const transition = await transitionMissionState(missionId, ["in_production"], "ready_for_founders_review");
+  if (!transition.ok) {
+    throw new MissionConcurrencyError(missionId, ["in_production"], "ready_for_founders_review", transition.mission.state);
+  }
+
+  await recordActivity({
+    missionId,
+    actor: "system",
+    action: "stranded_production_recovered",
+    detail:
+      `Mission was stranded "in_production" with no content item, no Content Bot assignment, and no production ` +
+      `approval or dispatch record — production never actually began. Returned to ready_for_founders_review so ` +
+      `a founder can decide again (Approve for production, or Commission Anyway). Scout's original report, ` +
+      `evidence, and verdict were preserved exactly, not re-run.`,
   });
 
   return transition.mission;
@@ -328,7 +550,17 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
     }
     mission = started.mission;
     await recordActivity({ missionId, actor: "system", action: "research_started" });
-    await assignAgent(missionId, scout.id, "lead");
+    // Idempotent, same as the awaiting_evidence branch and the crash-resume
+    // branch below: a mission resubmitted after a technical failure (state
+    // machine: failed -> awaiting_founder_approval -> ... -> queued again)
+    // can already have a real Scout/lead assignment row from its earlier
+    // attempt — assignAgent() is a plain INSERT with no unique constraint to
+    // lean on (see the discrepancy note in repositories.ts), so this branch
+    // must check first rather than assuming a queued mission is always on
+    // its first assignment.
+    if (!(await hasAssignment(missionId, scout.id))) {
+      await assignAgent(missionId, scout.id, "lead");
+    }
     stage = await startStage(missionId, "scout_research", "Scout is researching the opportunity.");
   } else if (mission.state === "awaiting_evidence") {
     // Layer 2 of the research-pass cap: a hard backstop against real spend,
@@ -487,6 +719,31 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
       detail: `Pass ${mission.research_pass_count} verdict: ${outcome.report.verdict}`,
     });
 
+    // A real, valid report can still fail an internal consistency check —
+    // Scout's own prose recommending production while
+    // production_recommendation is absent (see guardrails.ts's doc
+    // comment). Never rejected: the paid research above is preserved
+    // exactly as returned. This activity row is the one new, structured
+    // signal a founder (and the UI) can rely on to tell "Scout genuinely
+    // had nothing to recommend" apart from "Scout's summary and its
+    // production decision disagreed" — the Approve-for-Production gate
+    // already refuses without a real production_recommendation regardless
+    // (see contentHandoff.ts), so nothing here changes what founders can
+    // do; it only makes WHY clear.
+    const inconsistencies = findProductionRecommendationInconsistency(outcome.report);
+    if (inconsistencies.length > 0) {
+      await recordActivity({
+        missionId: mission.id,
+        actor: "system",
+        action: "production_recommendation_inconsistent",
+        detail:
+          `Scout's ${[...new Set(inconsistencies.map((v) => v.field))].join(" and ")} appears to recommend ` +
+          `production ("${inconsistencies[0]!.matchedText}"), but no valid structured production_recommendation ` +
+          `was included. Production remains unavailable until a report provides one — the research itself is ` +
+          `unaffected and preserved exactly as returned.`,
+      });
+    }
+
     if (settlement.mission.state === "awaiting_evidence") {
       // Automatic dispatch of the one allowed follow-up pass — mirrors
       // approveMission's "send the event, don't wait" pattern exactly.
@@ -543,9 +800,30 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
     }
 
     const reason = error instanceof Error ? error.message : "Unknown error during research.";
-    const settlement = await transitionMissionState(mission.id, ["researching"], "failed", {
-      failure_reason: reason,
-    });
+    // Safe, raw-output-free run metadata (stop reasons, block counts, token
+    // counts, failure kind) — recorded in the activity log ONLY, so the
+    // founder-facing failure_reason / stage detail stay clean.
+    const diagnosticsSuffix =
+      error instanceof ScoutResearchError && error.diagnostics
+        ? ` [scout diagnostics: ${formatDiagnostics(error.diagnostics)}]`
+        : "";
+
+    // Narrow fallback: ONLY a failed automatic follow-up pass (pass 2) whose
+    // pass 1 completed with a stored, still-schema-valid report. Pass 1's
+    // result is real, reviewable research the founders shouldn't lose to a
+    // technical failure of the optional second look — so the mission settles
+    // to founder review on pass 1 alone (its real, unchanged final_status —
+    // the "investigate_further" verdict — is preserved; failure_reason is NOT
+    // set, since the mission isn't failed). Nothing about pass 2 is invented:
+    // no follow-up deliverable or evidence exists, the failed stage row and
+    // "followup_research_failed" activity carry the real reason, and cost was
+    // already recorded above. A pass 1 failure, or a pass 2 with no valid
+    // pass 1 report to fall back on, still fails normally.
+    const isFollowupFailure = mission.research_pass_count >= 2;
+    const pass1Preserved = isFollowupFailure && (await hasValidPassOneReport(mission.id));
+    const settlement = pass1Preserved
+      ? await transitionMissionState(mission.id, ["researching"], "ready_for_founders_review")
+      : await transitionMissionState(mission.id, ["researching"], "failed", { failure_reason: reason });
 
     if (!settlement.ok) {
       // Same non-overwrite guarantee as the success path: if the mission
@@ -565,12 +843,27 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
     }
 
     await failStage(stage.id, reason);
-    await recordActivity({
-      missionId: mission.id,
-      actor: "system",
-      action: "research_failed",
-      detail: reason,
-    });
+    if (pass1Preserved) {
+      await recordActivity({
+        missionId: mission.id,
+        actor: "system",
+        action: "followup_research_failed",
+        detail: `Follow-up research (pass ${mission.research_pass_count}) failed: ${reason} The mission moved to founder review on Scout's first-pass report alone; its unresolved questions remain unresolved.${diagnosticsSuffix}`,
+      });
+    } else {
+      await recordActivity({
+        missionId: mission.id,
+        actor: "system",
+        action: "research_failed",
+        detail: `${reason}${diagnosticsSuffix}`,
+      });
+    }
     return settlement.mission;
   }
+}
+
+/** True only when the mission has a stored pass 1 report that still passes the full Scout report schema. */
+async function hasValidPassOneReport(missionId: string): Promise<boolean> {
+  const deliverable = (await listDeliverables(missionId)).find((d) => d.kind === "scout_research_report");
+  return Boolean(deliverable && ScoutReportSchema.safeParse(deliverable.content).success);
 }

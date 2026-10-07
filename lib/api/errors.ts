@@ -3,8 +3,19 @@ import { MissionValidationError, MissionCancellationBlockedError } from "@/lib/d
 import { ProjectValidationError } from "@/lib/domain/projectWorkflow";
 import { IllegalMissionTransitionError, MissionConcurrencyError } from "@/lib/domain/missionStates";
 import { IllegalContentItemTransitionError, ContentItemConcurrencyError } from "@/lib/domain/contentItemStates";
-import { ProductionApprovalValidationError, ContentDecisionValidationError } from "@/lib/domain/contentWorkflow";
-import { NoProductionRecommendationError } from "@/lib/domain/contentHandoff";
+import {
+  ProductionApprovalValidationError,
+  ContentDecisionValidationError,
+  CommissionPilotValidationError,
+  ProductionRecommendationAlreadyExistsError,
+  InsufficientEvidenceToCommissionError,
+  MissionStrandedInProductionError,
+  NotRecoverableFailureError,
+  ProduceAgainValidationError,
+  MissionNotReadyForProductionError,
+} from "@/lib/domain/contentWorkflow";
+import { NoProductionRecommendationError, FounderCommissionValidationError } from "@/lib/domain/contentHandoff";
+import { ProductionGenuinelyStartedError } from "@/lib/domain/missionWorkflow";
 import { ContentVersionCapExceededError } from "@/lib/domain/contentProduction";
 import { UnauthenticatedError } from "@/lib/api/authErrors";
 
@@ -36,7 +47,31 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   if (error instanceof NoProductionRecommendationError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
+  if (error instanceof CommissionPilotValidationError || error instanceof FounderCommissionValidationError) {
+    return NextResponse.json({ error: error.message, details: "errors" in error ? error.errors : undefined }, { status: 400 });
+  }
+  if (error instanceof ProductionRecommendationAlreadyExistsError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof InsufficientEvidenceToCommissionError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof MissionStrandedInProductionError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof ProductionGenuinelyStartedError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
   if (error instanceof ContentVersionCapExceededError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof NotRecoverableFailureError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof ProduceAgainValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof MissionNotReadyForProductionError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof IllegalMissionTransitionError) {

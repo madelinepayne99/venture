@@ -17,8 +17,16 @@ import {
 } from "@/lib/db/repositories";
 import type { StorageProvider, StoredObject } from "@/lib/storage/types";
 import type { ImageProvider, VoiceProvider, EditProvider, MediaResult, VoiceMediaResult } from "@/lib/media/types";
-import { MAX_GENERATION_ATTEMPTS_PER_VERSION, MAX_ITEM_SPEND_USD } from "@/lib/domain/contentProduction";
-import { makeContentPlan, makeProductionRecommendation, setupMissionReadyForProduction } from "./testUtils";
+import { MAX_GENERATION_ATTEMPTS_PER_VERSION, MAX_ITEM_SPEND_USD, MAX_QC_REGENERATIONS_PER_VERSION } from "@/lib/domain/contentProduction";
+import {
+  makeContentPlan,
+  makeProductionRecommendation,
+  makeCreativeStrategy,
+  makeVisualQCReport,
+  setupMissionReadyForProduction,
+  TINY_JPEG_BASE64,
+  makeFakeVideoProvider,
+} from "./testUtils";
 
 vi.mock("@/lib/inngest/client", () => ({
   inngest: { send: vi.fn() },
@@ -29,6 +37,8 @@ vi.mock("@/lib/inngest/client", () => ({
 vi.mock("@/lib/agents/contentBot", () => ({
   planContentVersion: vi.fn(),
   reviewContentSafety: vi.fn(),
+  planCreativeStrategy: vi.fn(),
+  reviewVisualQuality: vi.fn(),
   ContentBotError: class ContentBotError extends Error {
     usage: { model: string; inputTokens: number; outputTokens: number };
     constructor(message: string, usage: { model: string; inputTokens: number; outputTokens: number }) {
@@ -207,6 +217,8 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const contentBotModule = await import("@/lib/agents/contentBot");
     vi.mocked(contentBotModule.planContentVersion).mockReset();
     vi.mocked(contentBotModule.reviewContentSafety).mockReset();
+    vi.mocked(contentBotModule.planCreativeStrategy).mockReset();
+    vi.mocked(contentBotModule.reviewVisualQuality).mockReset();
     // claims: [] — the real frozen brief in these tests carries a real
     // evidence UUID, not the "evidence-1" fixture id makeContentPlan()
     // defaults to; assertClaimsAreEvidenced correctly rejects a mismatch,
@@ -218,6 +230,20 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     vi.mocked(contentBotModule.reviewContentSafety).mockResolvedValue({
       verdict: { verdict: "pass", reasons: [], concerns: [] },
       usage: { model: "claude-sonnet-5", inputTokens: 200, outputTokens: 100, usdCost: 0.005 },
+    });
+    vi.mocked(contentBotModule.planCreativeStrategy).mockResolvedValue({
+      strategy: makeCreativeStrategy(),
+      usage: { model: "claude-sonnet-5", inputTokens: 300, outputTokens: 150, usdCost: 0.006 },
+    });
+    // A clean pass (empty findings — see VisualQCReportSchema's own doc
+    // comment: findings holds only genuine problems, never one entry per
+    // asset) — real tests of Visual QC itself (flagging, regeneration, the
+    // cap, stopping for founder review) override this per-test; every
+    // other test here is exercising unrelated pipeline behavior and needs
+    // QC to simply get out of the way.
+    vi.mocked(contentBotModule.reviewVisualQuality).mockResolvedValue({
+      report: { overall_verdict: "pass", findings: [] },
+      usage: { model: "claude-sonnet-5", inputTokens: 400, outputTokens: 100, usdCost: 0.008 },
     });
   });
 
@@ -237,10 +263,11 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("awaiting_review");
     // plan has 2 script beats -> 1 thumbnail + 2 stills = 3 real image calls.
@@ -252,7 +279,7 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     expect(versions).toHaveLength(1);
     expect(versions[0]!.status).toBe("complete");
     expect(versions[0]!.assets.map((a) => a.kind).sort()).toEqual(
-      ["audio", "caption_track", "image", "image", "thumbnail", "video"].sort(),
+      ["audio", "caption_track", "image", "image", "thumbnail", "video", "video_clip", "video_clip"].sort(),
     );
 
     const costs = await listCostsForContentItem(item.id);
@@ -266,6 +293,7 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
 
     const { storageKeysFor } = await import("@/lib/domain/contentWorkflow");
@@ -307,7 +335,7 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     await seedAsset(keys.image(1), "image", "image/jpeg");
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("awaiting_review");
     // Nothing already stored is regenerated — only assembly (the one real
@@ -321,13 +349,16 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     expect(contentBotModule.reviewContentSafety).not.toHaveBeenCalled();
 
     const assets = await listContentAssets(version.id);
-    expect(assets.map((a) => a.kind).sort()).toEqual(["audio", "caption_track", "image", "image", "thumbnail", "video"].sort());
+    expect(assets.map((a) => a.kind).sort()).toEqual(
+      ["audio", "caption_track", "image", "image", "thumbnail", "video", "video_clip", "video_clip"].sort(),
+    );
   });
 
   it("settles to failed with real partial cost recorded when a provider genuinely fails", async () => {
     const item = await createRealContentItem();
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
     const brokenEdit: EditProvider = {
       key: "broken-edit",
@@ -340,7 +371,7 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     };
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit: brokenEdit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit: brokenEdit, video }, storage });
 
     expect(settled.state).toBe("failed");
     expect(settled.failure_reason).toContain("simulated provider outage");
@@ -362,10 +393,11 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("blocked");
     expect(image.calls).toHaveLength(0);
@@ -387,13 +419,175 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("blocked");
     expect(voice.calls).toBe(0);
+  });
+
+  describe("the one bounded automatic guardrail-correction attempt (live bug: 'in the style of')", () => {
+    it("succeeds: a corrected plan passes after the first attempt is rejected, before any real asset spend", async () => {
+      const item = await createRealContentItem();
+      const contentBotModule = await import("@/lib/agents/contentBot");
+      vi.mocked(contentBotModule.planContentVersion)
+        .mockResolvedValueOnce({
+          plan: makeContentPlan({ hook: "Narrated in the style of a nature documentary.", claims: [] }),
+          usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 300, usdCost: 0.01 },
+        })
+        .mockResolvedValueOnce({
+          plan: makeContentPlan({ hook: "Narration is calm, measured, and matter-of-fact.", claims: [] }),
+          usage: { model: "claude-sonnet-5", inputTokens: 600, outputTokens: 320, usdCost: 0.012 },
+        });
+
+      const image = makeFakeImageProvider();
+      const voice = makeFakeVoiceProvider();
+      const edit = makeFakeEditProvider();
+      const video = makeFakeVideoProvider();
+      const storage = makeFakeStorage();
+
+      const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
+      const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+
+      expect(settled.state).toBe("awaiting_review"); // reached the end — never blocked
+      expect(contentBotModule.planContentVersion).toHaveBeenCalledTimes(2); // exactly one correction, no loop
+      // The corrected call carried the rejected plan and the real reason,
+      // not a founder revisionNote — a distinct mechanism from a founder-
+      // requested revision.
+      const secondCallArgs = vi.mocked(contentBotModule.planContentVersion).mock.calls[1]![0] as {
+        guardrailCorrection?: { rejectedPlan: unknown; reason: string };
+        revisionNote?: string;
+      };
+      expect(secondCallArgs.guardrailCorrection).toBeTruthy();
+      expect(secondCallArgs.guardrailCorrection?.reason).toMatch(/in the style of/i);
+      expect(secondCallArgs.revisionNote).toBeUndefined();
+
+      // Both real calls' cost were recorded — never dropped. Filtered by
+      // exact token counts (unique to these two planning calls), not
+      // usd_cost alone — a fixture asset-generation cost can coincidentally
+      // share the same dollar figure.
+      const costs = await listCostsForContentItem(item.id);
+      const planningCosts = costs.filter(
+        (c) => (c.input_tokens === 500 && c.output_tokens === 300) || (c.input_tokens === 600 && c.output_tokens === 320),
+      );
+      expect(planningCosts).toHaveLength(2);
+
+      const activity = await listActivity(item.mission_id);
+      expect(activity.some((a) => a.action === "production_plan_guardrail_correction_attempted")).toBe(true);
+      expect(activity.some((a) => a.action === "production_plan_auto_corrected")).toBe(true);
+      expect(activity.some((a) => a.action === "production_plan_drafted")).toBe(false); // not the "clean first try" label
+      expect(activity.some((a) => a.action === "production_plan_auto_correction_failed")).toBe(false);
+
+      // The finished version's plan is genuinely the CORRECTED text, never
+      // the rejected one, and the flagged phrase is gone.
+      const versions = await listVersionsWithAssets(item.id);
+      expect((versions[0]!.plan as { hook: string }).hook).toContain("calm, measured");
+    });
+
+    it("still blocks (never fails) when the corrected plan ALSO fails a guardrail — no third attempt, both costs recorded", async () => {
+      const item = await createRealContentItem();
+      const contentBotModule = await import("@/lib/agents/contentBot");
+      vi.mocked(contentBotModule.planContentVersion)
+        .mockResolvedValueOnce({
+          plan: makeContentPlan({ hook: "Narrated in the style of a nature documentary.", claims: [] }),
+          usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 300, usdCost: 0.01 },
+        })
+        .mockResolvedValueOnce({
+          plan: makeContentPlan({ hook: "A recreation of that same viral documentary moment.", claims: [] }),
+          usage: { model: "claude-sonnet-5", inputTokens: 600, outputTokens: 320, usdCost: 0.012 },
+        });
+
+      const image = makeFakeImageProvider();
+      const voice = makeFakeVoiceProvider();
+      const edit = makeFakeEditProvider();
+      const video = makeFakeVideoProvider();
+      const storage = makeFakeStorage();
+
+      const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
+      const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+
+      expect(settled.state).toBe("blocked"); // not "failed" — a real, honest refusal
+      expect(contentBotModule.planContentVersion).toHaveBeenCalledTimes(2); // exactly one correction, never a third
+      expect(image.calls).toHaveLength(0); // no asset spend of any kind
+      expect(voice.calls).toBe(0);
+      expect(edit.calls).toBe(0);
+
+      const costs = await listCostsForContentItem(item.id);
+      const planningCosts = costs.filter(
+        (c) => (c.input_tokens === 500 && c.output_tokens === 300) || (c.input_tokens === 600 && c.output_tokens === 320),
+      );
+      expect(planningCosts).toHaveLength(2); // both real attempts' spend preserved
+
+      const activity = await listActivity(item.mission_id);
+      expect(activity.some((a) => a.action === "production_plan_guardrail_correction_attempted")).toBe(true);
+      expect(activity.some((a) => a.action === "production_plan_auto_correction_failed")).toBe(true);
+      expect(activity.some((a) => a.action === "production_plan_auto_corrected")).toBe(false);
+
+      const versions = await listVersionsWithAssets(item.id);
+      expect(versions[0]!.status).toBe("failed");
+      expect(versions[0]!.plan).toBeNull(); // the rejected plan is never persisted, either attempt
+    });
+
+    it("does not layer an automatic correction on top of a founder-requested revision", async () => {
+      // A version with parent_version_id set (a revision) that ALSO trips
+      // a guardrail must go straight to blocked — never a second
+      // guardrail-correction call on top of the founder's own revision.
+      const item = await createRealContentItem();
+      const contentBotModule = await import("@/lib/agents/contentBot");
+      vi.mocked(contentBotModule.reviewContentSafety).mockResolvedValue({
+        verdict: { verdict: "pass", reasons: [], concerns: [] },
+        usage: { model: "claude-sonnet-5", inputTokens: 200, outputTokens: 100, usdCost: 0.005 },
+      });
+
+      const image = makeFakeImageProvider();
+      const voice = makeFakeVoiceProvider();
+      const edit = makeFakeEditProvider();
+      const video = makeFakeVideoProvider();
+      const storage = makeFakeStorage();
+      const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
+
+      // V1: a clean plan, all the way through.
+      await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+      const { requestContentRevision } = await import("@/lib/domain/contentWorkflow");
+      const versionsAfterV1 = await listVersionsWithAssets(item.id);
+      await requestContentRevision(item.id, founderId, {
+        contentVersionId: versionsAfterV1[0]!.id,
+        note: "Make the hook stronger.",
+      });
+
+      vi.mocked(contentBotModule.planContentVersion).mockReset();
+      vi.mocked(contentBotModule.planContentVersion).mockResolvedValueOnce({
+        plan: makeContentPlan({ hook: "Narrated in the style of a nature documentary.", claims: [] }),
+        usage: { model: "claude-sonnet-5", inputTokens: 500, outputTokens: 300, usdCost: 0.01 },
+      });
+
+      const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+
+      expect(settled.state).toBe("blocked");
+      expect(contentBotModule.planContentVersion).toHaveBeenCalledTimes(1); // no auto-correction on a revision
+      const activity = await listActivity(item.mission_id);
+      expect(activity.some((a) => a.action === "production_plan_guardrail_correction_attempted")).toBe(false);
+    });
+
+    it("makes no correction attempt at all when the first plan already passes cleanly", async () => {
+      const item = await createRealContentItem();
+      const image = makeFakeImageProvider();
+      const voice = makeFakeVoiceProvider();
+      const edit = makeFakeEditProvider();
+      const video = makeFakeVideoProvider();
+      const storage = makeFakeStorage();
+
+      const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
+      await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+
+      const contentBotModule = await import("@/lib/agents/contentBot");
+      expect(contentBotModule.planContentVersion).toHaveBeenCalledTimes(1);
+      const activity = await listActivity(item.mission_id);
+      expect(activity.some((a) => a.action === "production_plan_guardrail_correction_attempted")).toBe(false);
+    });
   });
 
   it("refuses to spend past the real per-item budget cap", async () => {
@@ -414,10 +608,11 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("failed");
     expect(settled.failure_reason).toContain("budget");
@@ -436,11 +631,12 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
     const contentBotModule = await import("@/lib/agents/contentBot");
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("failed");
     expect(settled.failure_reason).toContain("generation attempts");
@@ -458,10 +654,11 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const image = makeFakeImageProvider();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("revision_requested");
     expect(voice.calls).toBe(0);
@@ -473,6 +670,7 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const item = await createRealContentItem();
     const voice = makeFakeVoiceProvider();
     const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
     const storage = makeFakeStorage();
     // Cancels the item for real, from inside the very first image call
     // (the thumbnail) — simulating a founder's cancel landing exactly
@@ -484,7 +682,7 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     });
 
     const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
-    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit }, storage });
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
 
     expect(settled.state).toBe("cancelled");
     // The thumbnail call itself completed (and its real cost was already

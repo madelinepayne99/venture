@@ -13,6 +13,22 @@ export const MAX_VERSIONS_PER_ITEM = 5;
 export const MAX_GENERATION_ATTEMPTS_PER_VERSION = 2;
 export const MAX_ASSET_CALLS_PER_VERSION = 20;
 export const MAX_ITEM_SPEND_USD = 8.0;
+// The Visual QC stage's hard regeneration ceiling (CLAUDE.md's Content Bot
+// Creative Quality milestone) — a soft, silently-enforced cap, not an
+// exception: if more than this many assets are flagged in one QC pass,
+// only the first MAX_QC_REGENERATIONS_PER_VERSION are regenerated and the
+// rest are left flagged, which itself guarantees the version cannot reach
+// assembly with unresolved findings (see runVisualQCStage) — the founder
+// explicitly required that nine bad images can never create an
+// uncontrolled retry fan-out.
+export const MAX_QC_REGENERATIONS_PER_VERSION = 3;
+// The reference-image continuity check's own regeneration ceiling — one
+// bounded automatic replacement, the same "exactly one correction, never
+// a loop" shape as every other guardrail in this codebase (Creative
+// Strategy, Content Plan, Visual QC). Deliberately 1, not
+// MAX_QC_REGENERATIONS_PER_VERSION's 3: there is only ever one reference
+// image to fix, never a batch of independently-flagged assets.
+export const MAX_REFERENCE_REGENERATIONS = 1;
 
 export class ContentVersionCapExceededError extends Error {
   constructor(readonly contentItemId: string) {

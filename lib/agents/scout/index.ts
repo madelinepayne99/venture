@@ -7,6 +7,13 @@ import { calculateUsdCost } from "@/lib/agents/pricing";
 import { extractRawText, parseJsonWithFallbacks } from "@/lib/agents/shared/jsonExtraction";
 import { ScoutReportSchema, type ScoutReport } from "./schema";
 import { buildScoutSystemPrompt, buildScoutUserPrompt, type ScoutFollowupContext } from "./prompt";
+import { buildSubmitReportTool, SUBMIT_REPORT_TOOL_NAME } from "./jsonSchema";
+import {
+  formatDiagnostics,
+  summarizeCall,
+  type ScoutFailureKind,
+  type ScoutRunDiagnostics,
+} from "./diagnostics";
 import { findGuaranteeLanguage, findUncitedProductionEvidenceUrls, hasMeaningfulEvidence } from "./guardrails";
 
 const DEFAULT_WORKSPACE_TYPE: WorkspaceType = "commerce";
@@ -52,15 +59,38 @@ export interface PartialUsage {
 }
 
 export class ScoutResearchError extends Error {
+  /** Safe, raw-output-free run metadata — attached by runScoutResearch on the way out. */
+  diagnostics?: ScoutRunDiagnostics;
+
   constructor(
     message: string,
     readonly usage: PartialUsage,
     readonly cause_?: unknown,
+    readonly kind?: ScoutFailureKind,
   ) {
     super(message);
     this.name = "ScoutResearchError";
   }
 }
+
+/**
+ * Sent at most once per run, in the SAME conversation (same tools/system
+ * prompt, so the request shape is the already-proven one and the search
+ * results the model gathered stay in context), when a turn ended without a
+ * report — neither a submit_scout_report call nor parseable JSON text. If
+ * that turn ended on a stray client `tool_use`, the protocol requires a
+ * matching `tool_result` first, which is sent in the same user message (a
+ * live ACCEPTANCE 3 run ended exactly that way — stop_reason "tool_use" —
+ * and the earlier text-only nudge would never have been accepted there).
+ * It is not a loosening of validation: whatever comes back still goes
+ * through the identical schema, workspace and guardrail checks, and a second
+ * non-report still fails.
+ */
+const FORMAT_NUDGE =
+  `Your last turn did not deliver the report. Do not run any more searches. Using the research ` +
+  `you have already gathered, deliver the COMPLETE report now by calling ${SUBMIT_REPORT_TOOL_NAME} ` +
+  `exactly once, obeying every length limit in the system prompt. Call no other tool and write no ` +
+  `commentary.`;
 
 interface ScoutDeps {
   client?: Anthropic;
@@ -73,15 +103,25 @@ interface ScoutDeps {
 function parseAndValidateReport(rawText: string, usageSoFar: () => PartialUsage): ScoutReport {
   const parsedJson = parseJsonWithFallbacks(rawText);
   if (parsedJson === null) {
-    throw new ScoutResearchError("Scout's report was not valid JSON.", usageSoFar());
+    throw new ScoutResearchError(
+      "Scout's report was not valid JSON.",
+      usageSoFar(),
+      undefined,
+      rawText.includes("{") ? "json_syntax" : "no_report",
+    );
   }
+  return validateReportObject(parsedJson, usageSoFar);
+}
 
+/** Schema validation for an already-parsed object — used for both the submit tool's input and parsed text. */
+function validateReportObject(parsedJson: unknown, usageSoFar: () => PartialUsage): ScoutReport {
   const validation = ScoutReportSchema.safeParse(parsedJson);
   if (!validation.success) {
     throw new ScoutResearchError(
       `Scout's report failed structural validation: ${validation.error.message}`,
       usageSoFar(),
       validation.error,
+      "schema_invalid",
     );
   }
 
@@ -109,6 +149,8 @@ function assertNoGuaranteeLanguage(report: ScoutReport, usageSoFar: () => Partia
     throw new ScoutResearchError(
       `Scout's report contained prohibited certainty language about demand, revenue, or profit and was rejected: ${detail}.`,
       usageSoFar(),
+      undefined,
+      "guardrail_rejected",
     );
   }
 }
@@ -127,6 +169,8 @@ function assertValidProductionRecommendation(report: ScoutReport, usageSoFar: ()
     throw new ScoutResearchError(
       `Scout's production recommendation cited evidence URLs it never actually sourced in this report: ${uncited.join(", ")}.`,
       usageSoFar(),
+      undefined,
+      "guardrail_rejected",
     );
   }
 }
@@ -228,21 +272,25 @@ async function attemptBoundedRecovery(params: RecoveryParams): Promise<string> {
     throw new ScoutResearchError(
       "Scout's report was cut off again even after a compact retry — the mission likely needs a narrower brief.",
       usageSoFar(),
+      undefined,
+      "truncated",
     );
   }
   if (response.stop_reason === "refusal") {
-    throw new ScoutResearchError("Scout declined to complete the compact retry.", usageSoFar());
+    throw new ScoutResearchError("Scout declined to complete the compact retry.", usageSoFar(), undefined, "refused");
   }
   if (response.stop_reason !== "end_turn" && response.stop_reason !== "stop_sequence") {
     throw new ScoutResearchError(
       `Scout's compact retry did not finish cleanly (stop reason: "${response.stop_reason}").`,
       usageSoFar(),
+      undefined,
+      "recovery_failed",
     );
   }
 
   const rawText = extractRawText(response.content);
   if (!rawText.trim()) {
-    throw new ScoutResearchError("Scout's compact retry returned no report text.", usageSoFar());
+    throw new ScoutResearchError("Scout's compact retry returned no report text.", usageSoFar(), undefined, "recovery_failed");
   }
   return rawText;
 }
@@ -251,9 +299,41 @@ export async function runScoutResearch(
   mission: Mission,
   deps: ScoutDeps = {},
 ): Promise<AgentRunOutcome<ScoutReport>> {
+  const diagnostics: ScoutRunDiagnostics = { calls: [], nudged: false, recovered: false, usedSubmitTool: false };
+  try {
+    return await runScoutResearchInner(mission, deps, diagnostics);
+  } catch (error) {
+    if (error instanceof ScoutResearchError) {
+      if (error.kind) diagnostics.failureKind = error.kind;
+      if (error.cause_ && typeof error.cause_ === "object" && "issues" in error.cause_) {
+        diagnostics.issues = (error.cause_ as { issues: Array<{ path: Array<string | number>; code: string }> }).issues
+          .slice(0, 12)
+          .map((i) => `${i.path.join(".")}:${i.code}`);
+      }
+      error.diagnostics = diagnostics;
+      // Server-log-only, metadata only — never raw model output.
+      console.error("[scout] run failed", formatDiagnostics(diagnostics));
+    }
+    throw error;
+  }
+}
+
+async function runScoutResearchInner(
+  mission: Mission,
+  deps: ScoutDeps,
+  diagnostics: ScoutRunDiagnostics,
+): Promise<AgentRunOutcome<ScoutReport>> {
   const client = deps.client ?? getAnthropicClient();
   const workspaceType = deps.workspaceType ?? DEFAULT_WORKSPACE_TYPE;
   const systemPrompt = buildScoutSystemPrompt(workspaceType);
+  // Scout's tools: the server-executed web_search, plus the one client tool
+  // it uses to DELIVER its report (see jsonSchema.ts). `strict` isn't in this
+  // pinned SDK version's Tool typings yet, hence the cast — the field is
+  // forwarded to the API unchanged.
+  const tools = [
+    { type: "web_search_20250305", name: "web_search", max_uses: 6 },
+    buildSubmitReportTool(workspaceType),
+  ] as unknown as Anthropic.Messages.ToolUnion[];
 
   const messages: Anthropic.MessageParam[] = [
     { role: "user", content: buildScoutUserPrompt(mission, workspaceType, deps.followupContext) },
@@ -269,21 +349,68 @@ export async function runScoutResearch(
     outputTokens: totalOutputTokens,
   });
 
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+  // The submit_scout_report call's input, when the model delivered its
+  // report that way (the intended path). Text JSON remains a fallback.
+  let submittedReport: unknown;
+  let submitted = false;
+
+  // At most ONE format nudge per run, granting one extra loop turn so a run
+  // that already spent its pause_turn iterations can still be nudged.
+  let nudged = false;
+  let iterationBudget = MAX_ITERATIONS;
+
+  for (let iteration = 0; iteration < iterationBudget; iteration++) {
     response = await client.messages.create({
       model: SCOUT_MODEL,
       max_tokens: MAX_TOKENS,
       thinking: THINKING_DISABLED,
       system: systemPrompt,
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 6 }],
+      tools,
       messages,
     });
 
     totalInputTokens += response.usage.input_tokens;
     totalOutputTokens += response.usage.output_tokens;
+    diagnostics.calls.push(summarizeCall(response));
 
     if (response.stop_reason === "pause_turn") {
       messages.push({ role: "assistant", content: response.content });
+      continue;
+    }
+
+    const submitCall = response.content.find(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === SUBMIT_REPORT_TOOL_NAME,
+    );
+    if (submitCall && response.stop_reason !== "max_tokens") {
+      submitted = true;
+      submittedReport = submitCall.input;
+      diagnostics.usedSubmitTool = true;
+      break;
+    }
+
+    const endedWithoutReport =
+      response.stop_reason === "end_turn" ||
+      response.stop_reason === "stop_sequence" ||
+      response.stop_reason === "tool_use";
+    if (!nudged && endedWithoutReport && parseJsonWithFallbacks(extractRawText(response.content)) === null) {
+      nudged = true;
+      diagnostics.nudged = true;
+      iterationBudget += 1;
+      messages.push({ role: "assistant", content: response.content });
+      // Every client tool_use block needs its own tool_result in the very
+      // next user message — none of these tools exist to be executed.
+      const toolResults: Anthropic.ToolResultBlockParam[] = response.content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+        .map((b) => ({
+          type: "tool_result",
+          tool_use_id: b.id,
+          is_error: true,
+          content: `Tool "${b.name}" is not available to run. Only ${SUBMIT_REPORT_TOOL_NAME} may be called, once, with the final report.`,
+        }));
+      messages.push({
+        role: "user",
+        content: [...toolResults, { type: "text", text: FORMAT_NUDGE }],
+      });
       continue;
     }
     break;
@@ -294,32 +421,52 @@ export async function runScoutResearch(
   }
 
   if (response.stop_reason === "refusal") {
-    throw new ScoutResearchError("Scout declined to research this mission.", usageSoFar());
+    throw new ScoutResearchError("Scout declined to research this mission.", usageSoFar(), undefined, "refused");
   }
   if (response.stop_reason === "pause_turn") {
     throw new ScoutResearchError(
       "Scout's research ran too long across multiple search rounds without finishing.",
       usageSoFar(),
+      undefined,
+      "paused_too_long",
     );
   }
 
-  let rawText = extractRawText(response.content);
+  let parsedReport: ScoutReport;
 
-  if (response.stop_reason === "max_tokens") {
-    rawText = await attemptBoundedRecovery({
-      client,
-      workspaceType,
-      messages,
-      partialText: rawText,
-      accumulate: (inputTokens, outputTokens) => {
-        totalInputTokens += inputTokens;
-        totalOutputTokens += outputTokens;
-      },
-      usageSoFar,
-    });
+  if (submitted) {
+    parsedReport = validateReportObject(submittedReport, usageSoFar);
+  } else {
+    let rawText = extractRawText(response.content);
+
+    if (response.stop_reason === "max_tokens") {
+      if (nudged) {
+        // The conversation already carries a nudge round (tool_use/tool_result
+        // blocks), and the recovery request deliberately declares no tools —
+        // one bounded retry per run, so this stays a clean, distinct failure.
+        throw new ScoutResearchError(
+          "Scout's report was cut off after a format retry — the mission likely needs a narrower brief.",
+          usageSoFar(),
+          undefined,
+          "truncated",
+        );
+      }
+      diagnostics.recovered = true;
+      rawText = await attemptBoundedRecovery({
+        client,
+        workspaceType,
+        messages,
+        partialText: rawText,
+        accumulate: (inputTokens, outputTokens) => {
+          totalInputTokens += inputTokens;
+          totalOutputTokens += outputTokens;
+        },
+        usageSoFar,
+      });
+    }
+
+    parsedReport = parseAndValidateReport(rawText, usageSoFar);
   }
-
-  const parsedReport = parseAndValidateReport(rawText, usageSoFar);
 
   // Structural check, independent of the prompt: the schema only proves the
   // report is SOME valid workspace shape, not that it's the shape actually
@@ -331,6 +478,8 @@ export async function runScoutResearch(
     throw new ScoutResearchError(
       `Scout's report was built for the wrong workspace type (expected "${workspaceType}", got "${parsedReport.workspace_type}").`,
       usageSoFar(),
+      undefined,
+      "wrong_workspace",
     );
   }
 

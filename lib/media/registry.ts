@@ -4,6 +4,7 @@ import { NoProviderConfiguredError } from "./types";
 import { FalImageProvider } from "./providers/falImage";
 import { ElevenLabsVoiceProvider } from "./providers/elevenLabsVoice";
 import { ShotstackEditProvider } from "./providers/shotstackEdit";
+import { KlingVideoProvider } from "./providers/klingVideo";
 
 // Env-key-selected, singleton-per-process, exactly like
 // lib/agents/anthropicClient.ts's getAnthropicClient(). The pipeline
@@ -18,6 +19,7 @@ import { ShotstackEditProvider } from "./providers/shotstackEdit";
 let imageProvider: ImageProvider | undefined;
 let voiceProvider: VoiceProvider | undefined;
 let editProvider: EditProvider | undefined;
+let videoProvider: VideoProvider | undefined;
 
 export function getImageProvider(): ImageProvider {
   if (imageProvider) return imageProvider;
@@ -47,12 +49,22 @@ export function getEditProvider(): EditProvider {
 }
 
 /**
- * Real generated motion is C1.5's own milestone (see CLAUDE.md's Content
- * Bot milestone) — deliberately no VideoProvider implementation exists
- * yet. This always throws in C1; ContentPlanSchema's production_path
- * field only ever resolves to "assembled_stills" until C1.5 fills this in.
+ * The real, proven Kling v3 Pro image-to-video provider (see CLAUDE.md's
+ * Content Bot motion-first milestone — KlingVideoProvider was verified
+ * against a real, successful live generation before this integration).
+ * Same env-key-selected, singleton-per-process pattern as every other
+ * getter here. `MEDIA_VIDEO_PROVIDER` unset (or any other value) still
+ * throws NoProviderConfiguredError — a missing/misconfigured video
+ * provider is a real, honest, visible failure, never a silent fallback to
+ * static pan/zoom over stills (see contentWorkflow.ts's
+ * runVideoClipGenerationStage, which is now the pipeline's normal path).
  */
 export function getVideoProvider(): VideoProvider {
+  if (videoProvider) return videoProvider;
+  if (process.env.MEDIA_VIDEO_PROVIDER === "fal-ai") {
+    videoProvider = new KlingVideoProvider();
+    return videoProvider;
+  }
   throw new NoProviderConfiguredError("video");
 }
 

@@ -10,7 +10,6 @@ import {
   uniqueIndex,
   type AnyPgColumn,
 } from "drizzle-orm/pg-core";
-import { sql } from "drizzle-orm";
 
 // Venture HQ data model, mirroring the domain 1:1 with the previous
 // SQLite schema.sql. Every table backs something genuinely displayed in
@@ -191,6 +190,25 @@ export const contentItemStateValues = [
   "cancelled",
 ] as const;
 
+// Milestone: one Scout mission -> many independent Content Item
+// productions. Originally this table had a real, DB-level
+// `content_items_one_active_per_mission` partial unique index (one
+// non-terminal content item per mission at a time). That was dropped —
+// see the migration that removed it — once the founders decided a single
+// completed Scout research mission should be able to host multiple
+// independent productions (Production 1, Production 2, ...), each with
+// its own version lineage starting at V1, never a cloned mission and
+// never re-run/copied Scout research. `mission_id` here is deliberately
+// unconstrained now: `evidence`/`deliverables` stay mission-scoped and
+// immutable exactly as before (read again, never copied), and every
+// child table that matters (content_versions, content_assets, costs,
+// approvals, mission_stages) was ALREADY scoped by content_item_id/
+// content_version_id, not mission_id — so removing this one index is the
+// complete cardinality change; nothing else here needed to move. See
+// produceAgainFromMission in contentWorkflow.ts for the founder action
+// that creates production 2+, and its own doc comment for how a genuine
+// double-submit is still prevented without reintroducing a mission-level
+// uniqueness limit.
 export const contentItems = pgTable(
   "content_items",
   {
@@ -219,6 +237,17 @@ export const contentItems = pgTable(
     platform_post_url: text("platform_post_url"),
     published_at: timestamp("published_at", { mode: "string" }),
     failure_reason: text("failure_reason"),
+    // A structured classification of WHY a "failed" item failed — set
+    // alongside failure_reason at the exact point the pipeline settles a
+    // real failure (see contentFailureClassification.ts). Plain text, not
+    // a DB enum, matching every other status column's philosophy: the app
+    // layer (RECOVERABLE_FAILURE_CATEGORIES) is the single source of truth
+    // for which categories are eligible for Retry Production — never
+    // inferred from failure_reason's free text, in the UI or anywhere
+    // else. Null for every failure that isn't "failed" (a "blocked" safety
+    // refusal has no category — it's not eligible for a technical retry
+    // by construction, since it never reaches this classification point).
+    failure_category: text("failure_category"),
     // What the version/attempt/spend caps in lib/domain/contentProduction.ts
     // are actually enforced against — not display counters, the same role
     // missions.research_pass_count plays for Scout's pass cap.
@@ -228,14 +257,6 @@ export const contentItems = pgTable(
     created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
     updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
   },
-  (table) => ({
-    // One non-terminal content item per mission — the "one item in
-    // flight at a time" rule enforced as a real constraint, not just an
-    // application convention.
-    oneActivePerMission: uniqueIndex("content_items_one_active_per_mission")
-      .on(table.mission_id)
-      .where(sql`state not in ('published','rejected','failed','cancelled')`),
-  }),
 );
 
 export const contentVersionStatusValues = ["generating", "complete", "failed"] as const;
@@ -257,6 +278,41 @@ export const contentVersions = pgTable(
     status: text("status").notNull().default("generating"),
     plan: jsonb("plan"),
     safety_verdict: jsonb("safety_verdict"),
+    // The Creative Quality milestone's two new quality-provenance artifacts
+    // — persisted as real jsonb, exactly like plan/safety_verdict, so
+    // founders can inspect why Content Bot made its creative and QC
+    // decisions rather than only seeing the finished result. Null until
+    // each stage actually runs; a technical retry (retryProductionAfterTechnicalFailure)
+    // carries creative_strategy forward onto the new version (it's a
+    // creative-layer artifact, unaffected by a provider failure) but never
+    // qc_report (QC must re-run against the new version's freshly
+    // generated assets).
+    creative_strategy: jsonb("creative_strategy"),
+    qc_report: jsonb("qc_report"),
+    // How many real image-provider regenerations the Visual QC stage has
+    // triggered for THIS version — the structural enforcement of "a QC
+    // regeneration must never silently bypass the content-item spend cap"
+    // and "nine bad images cannot create an uncontrolled retry fan-out"
+    // (see MAX_QC_REGENERATIONS_PER_VERSION in contentProduction.ts).
+    qc_regeneration_count: integer("qc_regeneration_count").notNull().default(0),
+    // The reference-image continuity check's own verdict — deliberately
+    // separate from qc_report above, since it's produced by an earlier,
+    // distinct pipeline stage (reference_generation, which runs BEFORE
+    // asset_generation's beat/thumbnail batch — see runReferenceGenerationStage
+    // in contentWorkflow.ts) and gates a different, earlier decision: not
+    // "is the finished batch OK to assemble" but "is it safe to spend on
+    // the batch at all." Shape: { report: VisualQCReport;
+    // reference_checksum_sha256: string }. The checksum is what makes a
+    // copied-forward verdict (Retry Production) self-verifying — a verdict
+    // is only ever trusted if it names the checksum of the reference asset
+    // actually present on THIS version, never assumed valid just because
+    // the field is non-null (see runReferenceGenerationStage's own resume
+    // logic).
+    reference_qc_verdict: jsonb("reference_qc_verdict"),
+    // Mirrors qc_regeneration_count's exact pattern, scoped to the one
+    // reference image instead of a batch of beat images — capped at
+    // MAX_REFERENCE_REGENERATIONS (1) in contentProduction.ts.
+    reference_regeneration_count: integer("reference_regeneration_count").notNull().default(0),
     failure_reason: text("failure_reason"),
     started_at: timestamp("started_at", { mode: "string" }).notNull().defaultNow(),
     completed_at: timestamp("completed_at", { mode: "string" }),
@@ -276,6 +332,19 @@ export const contentAssetKindValues = [
   "caption_track",
   "image",
   "script",
+  // The one canonical creature/subject reference image a version's beat
+  // images and thumbnail are conditioned against (fal.ai image-to-image
+  // continuity — see runReferenceGenerationStage in contentWorkflow.ts).
+  // Exactly one per version, never counted as a "still" in the plan's own
+  // per-beat image set.
+  "reference_image",
+  // A real, genuinely generated motion video clip for one beat (see
+  // CLAUDE.md's Content Bot motion-first milestone) — the primary visual
+  // path's actual output per beat, replacing a static pan/zoom over the
+  // beat's own "image" still (which is kept, used as this clip's Kling
+  // start frame). Plain text column, no migration needed to add this
+  // value — see this file's own note on state/status columns.
+  "video_clip",
 ] as const;
 
 export const contentAssets = pgTable(

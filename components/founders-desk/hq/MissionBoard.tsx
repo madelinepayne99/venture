@@ -96,6 +96,16 @@ export function MissionBoard({
                       } ${bucket === "researching" ? "motion-safe:animate-hq-glow" : ""}`}
                     >
                       {mission.title}
+                      {/* "Completed" (the bucket header) reads as "nothing left to
+                          do" — wrong for a mission genuinely waiting on a founder
+                          decision. This is a per-card label only: the bucket
+                          itself, its grouping, and every other state's card are
+                          unchanged (see missionStates.ts's missionDockBucket). */}
+                      {mission.state === "ready_for_founders_review" && (
+                        <span className="mt-0.5 block text-[9px] font-semibold uppercase tracking-wide text-hq-brass">
+                          Awaiting decision
+                        </span>
+                      )}
                     </button>
                   ))
                 )}

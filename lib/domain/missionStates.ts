@@ -9,7 +9,13 @@ import type { MissionState } from "@/lib/db/types";
 const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
   draft: ["awaiting_founder_approval", "cancelled"],
   awaiting_founder_approval: ["queued", "cancelled"],
-  queued: ["researching", "cancelled"],
+  // "awaiting_founder_approval" here is deliberately narrow: it exists
+  // ONLY for missionWorkflow.ts's recoverStuckQueuedMission, which gates it
+  // behind a real staleness check (a genuinely queued mission with no
+  // progress well past when a healthy dispatch would have started it) —
+  // never a generic "yank any queued mission backwards" transition. See
+  // recoverStuckQueuedMission's own doc comment for the full guarantee.
+  queued: ["researching", "cancelled", "awaiting_founder_approval"],
   researching: [
     "awaiting_evidence",
     "ready_for_founders_review",
@@ -41,7 +47,19 @@ const ALLOWED_TRANSITIONS: Record<MissionState, MissionState[]> = {
   // for this mission — the real production lifecycle lives on that child
   // entity (lib/domain/contentItemStates.ts), never on missions.state
   // itself. See CLAUDE.md's Content Bot milestone for why.
-  in_production: ["production_complete", "failed", "cancelled"],
+  //
+  // "ready_for_founders_review" here is deliberately narrow, mirroring
+  // "queued" -> "awaiting_founder_approval" above: it exists ONLY for
+  // missionWorkflow.ts's recoverStrandedProduction, which gates it behind
+  // real, positive evidence that production never actually began (no
+  // content item, no Content Bot assignment, no production approval or
+  // dispatch activity) — never a generic "undo production" transition. A
+  // real bug proved this necessary: commissionPilotAnyway's own atomic
+  // transition into in_production can commit and then fail before
+  // Content Bot is ever dispatched (e.g. a missing agent seed row),
+  // stranding a mission here with nothing to show for it and no way back.
+  // See recoverStrandedProduction's own doc comment for the full guarantee.
+  in_production: ["production_complete", "failed", "cancelled", "ready_for_founders_review"],
   // Terminal — reached once the content item hit one of its own terminal
   // states (published, rejected, failed, cancelled). No edge back to
   // in_production: one content item per mission in this milestone: a

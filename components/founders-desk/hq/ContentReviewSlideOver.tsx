@@ -8,6 +8,7 @@ import { ContentVersionHistory } from "./ContentVersionHistory";
 import { ContentAssetList } from "./ContentAssetList";
 import { ContentCostSummary } from "./ContentCostSummary";
 import { ContentDecisionBar } from "./ContentDecisionBar";
+import type { ProductionBrief } from "@/lib/domain/contentHandoff";
 
 export interface ContentItemDetailData {
   item: ContentItem;
@@ -30,12 +31,14 @@ export function ContentReviewSlideOver({
   detail,
   busy,
   onDecide,
+  onRetry,
   onCancel,
   onClose,
 }: {
   detail: ContentItemDetailData | null;
   busy: boolean;
   onDecide: (decision: "approve" | "reject" | "revise", contentVersionId: string, note?: string) => void;
+  onRetry: (contentItemId: string) => void;
   onCancel: (contentItemId: string) => void;
   onClose: () => void;
 }) {
@@ -103,7 +106,17 @@ export function ContentReviewSlideOver({
               <h3 className="font-display text-base font-semibold text-hq-ink">
                 {planTitle ?? detail.mission?.title ?? "Untitled piece"}
               </h3>
-              <ContentItemStatusBadge state={detail.item.state} />
+              <div className="flex items-center gap-2">
+                {(detail.item.brief as ProductionBrief | undefined)?.source === "founder_commissioned" && (
+                  <span
+                    title="Scout did not formally recommend this for production — a founder chose to commission it directly."
+                    className="rounded-full border border-amber-400 bg-amber-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800"
+                  >
+                    Founder Commissioned
+                  </span>
+                )}
+                <ContentItemStatusBadge state={detail.item.state} />
+              </div>
             </div>
             {detail.item.failure_reason && (
               <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-status-danger">{detail.item.failure_reason}</p>
@@ -114,8 +127,10 @@ export function ContentReviewSlideOver({
             {selectedVersion && (
               <ContentDecisionBar
                 state={detail.item.state}
+                failureCategory={detail.item.failure_category}
                 busy={busy}
                 onDecide={(decision, note) => onDecide(decision, selectedVersion.id, note)}
+                onRetry={() => onRetry(detail.item.id)}
                 onCancel={() => onCancel(detail.item.id)}
               />
             )}

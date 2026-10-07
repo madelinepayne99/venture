@@ -1,5 +1,6 @@
 import "server-only";
-import type { EditProvider, EditRequest, MediaResult } from "../types";
+import type { EditProvider, EditRequest, MediaResult, CameraMovement, MovementIntensity, TransitionStyle } from "../types";
+import { MediaProviderError } from "../types";
 import { calculateMediaUsdCost } from "../pricing";
 
 const SHOTSTACK_MODEL = "default";
@@ -15,29 +16,122 @@ function aspectToSize(aspect: EditRequest["aspectRatio"]): { width: number; heig
   }
 }
 
-function motionEffect(motion: EditRequest["timeline"][number]["motion"]): string | undefined {
-  switch (motion) {
-    case "slow_zoom":
-      return "zoomIn";
-    case "pan":
-      return "slideLeft";
-    default:
-      return undefined;
-  }
+// Every value on the right is a REAL, verified Shotstack Clip.effect enum
+// value (confirmed directly from Shotstack's own SDK source — the effect
+// speed variants are the base name plus "Slow"/"Fast", e.g. "zoomInFast" —
+// never invented). "static" deliberately maps to no `effect` property at
+// all, a genuine static hold, rather than a fabricated "none" capability.
+const CAMERA_MOVEMENT_BASE_EFFECT: Record<Exclude<CameraMovement, "static">, string> = {
+  zoom_in: "zoomIn",
+  zoom_out: "zoomOut",
+  pan_left: "slideLeft",
+  pan_right: "slideRight",
+  pan_up: "slideUp",
+  pan_down: "slideDown",
+};
+
+/** Exported for tests only — verifies the constrained vocabulary maps 1:1 onto real Shotstack values, without a real network call. */
+export function shotstackEffect(movement: CameraMovement, intensity: MovementIntensity): string | undefined {
+  if (movement === "static") return undefined;
+  const base = CAMERA_MOVEMENT_BASE_EFFECT[movement];
+  if (intensity === "slow") return `${base}Slow`;
+  if (intensity === "fast") return `${base}Fast`;
+  return base;
 }
+
+// Every value on the right is a REAL, verified Shotstack Transition
+// in/out enum value. "cut" deliberately maps to omitting the `transition`
+// property entirely (a real hard cut, Shotstack's own default) rather than
+// the literal string "none" — either is accepted by the API, but omitting
+// keeps the payload minimal.
+/** Exported for tests only. */
+export const TRANSITION_TO_SHOTSTACK: Record<Exclude<TransitionStyle, "cut">, string> = {
+  fade: "fade",
+  wipe_left: "wipeLeft",
+  wipe_right: "wipeRight",
+  slide_left: "slideLeft",
+  slide_right: "slideRight",
+  slide_up: "slideUp",
+  slide_down: "slideDown",
+  zoom: "zoom",
+};
 
 interface ShotstackTrack {
   clips: Array<Record<string, unknown>>;
 }
 
-function buildTimeline(req: EditRequest, stagedVoiceoverUrl: string, stagedCaptionUrl: string | null) {
-  const imageClips: ShotstackTrack["clips"] = req.timeline.map((clip) => ({
-    asset: { type: "image", src: clip.imageStorageKey },
-    start: clip.startSeconds,
-    length: clip.endSeconds - clip.startSeconds,
-    fit: "crop",
-    ...(motionEffect(clip.motion) ? { effect: motionEffect(clip.motion) } : {}),
+/**
+ * Structured on-screen text (disclosure, per-beat emphasis) rendered as
+ * real Shotstack `title` clips — never as an instruction inside an image-
+ * generation prompt (see CLAUDE.md's Content Bot Creative Quality
+ * milestone, "text/disclosure separation": the real failure this fixes is
+ * an image model asked to render disclosure text producing garbled,
+ * frame-dominating pseudo-text). Every field/value used here (type, text,
+ * style presets, size presets, position presets, background) is a real,
+ * verified TitleAsset field — confirmed from Shotstack's own SDK source.
+ * "badge" is a small, corner-positioned, semi-transparent-backed treatment
+ * meant to coexist with captions (which default to the bottom) without
+ * competing for the same screen space; "end_card" is a larger, centered
+ * treatment for its own dedicated window. Exported for tests only.
+ */
+export function buildTitleClips(onScreenText: EditRequest["onScreenText"]): ShotstackTrack["clips"] {
+  if (!onScreenText || onScreenText.length === 0) return [];
+  return onScreenText.map((t) => ({
+    asset: {
+      type: "title",
+      text: t.text,
+      style: t.style === "end_card" ? "minimal" : "subtitle",
+      size: t.style === "end_card" ? "medium" : "x-small",
+      position: t.style === "end_card" ? "center" : "topLeft",
+      ...(t.style === "badge" ? { background: "#66000000" } : {}),
+    },
+    start: t.startSeconds,
+    length: Math.max(t.endSeconds - t.startSeconds, 0.5),
   }));
+}
+
+/**
+ * A video-clip timeline entry never gets a `camera_movement` effect,
+ * structurally — never trusting the caller to have passed "static" for a
+ * real generated clip (see CLAUDE.md's Content Bot motion-first
+ * milestone: "Do not apply fake Ken Burns movement to Kling clips").
+ * Exported for tests only.
+ */
+export function buildVisualClips(timeline: EditRequest["timeline"]): ShotstackTrack["clips"] {
+  return timeline.map((clip) => {
+    const isVideoClip = Boolean(clip.videoClipStorageKey);
+    if (isVideoClip === Boolean(clip.imageStorageKey)) {
+      throw new Error(
+        "Each Shotstack timeline entry must set exactly one of imageStorageKey/videoClipStorageKey — " +
+          `got imageStorageKey=${JSON.stringify(clip.imageStorageKey)}, videoClipStorageKey=${JSON.stringify(clip.videoClipStorageKey)}.`,
+      );
+    }
+    const transitionValue = clip.transitionIn === "cut" ? undefined : TRANSITION_TO_SHOTSTACK[clip.transitionIn];
+    if (isVideoClip) {
+      // Real generated motion — never a fake pan/zoom effect on top of it.
+      return {
+        asset: { type: "video", src: clip.videoClipStorageKey, trim: 0 },
+        start: clip.startSeconds,
+        length: clip.endSeconds - clip.startSeconds,
+        fit: "crop",
+        ...(transitionValue ? { transition: { in: transitionValue } } : {}),
+      };
+    }
+    const effect = shotstackEffect(clip.cameraMovement, clip.movementIntensity);
+    return {
+      asset: { type: "image", src: clip.imageStorageKey },
+      start: clip.startSeconds,
+      length: clip.endSeconds - clip.startSeconds,
+      fit: "crop",
+      ...(effect ? { effect } : {}),
+      ...(transitionValue ? { transition: { in: transitionValue } } : {}),
+    };
+  });
+}
+
+/** Exported for tests only. */
+export function buildTimeline(req: EditRequest, stagedVoiceoverUrl: string, stagedCaptionUrl: string | null) {
+  const imageClips: ShotstackTrack["clips"] = buildVisualClips(req.timeline);
 
   const audioTrack: ShotstackTrack = {
     clips: [
@@ -49,7 +143,11 @@ function buildTimeline(req: EditRequest, stagedVoiceoverUrl: string, stagedCapti
     ],
   };
 
+  const titleClips = buildTitleClips(req.onScreenText);
   const tracks: ShotstackTrack[] = [{ clips: imageClips }, audioTrack];
+  if (titleClips.length > 0) {
+    tracks.unshift({ clips: titleClips });
+  }
 
   if (stagedCaptionUrl) {
     tracks.unshift({
@@ -145,7 +243,8 @@ export class ShotstackEditProvider implements EditProvider {
       }),
     });
     if (!submitRes.ok) {
-      throw new Error(`Shotstack render submission failed (${submitRes.status}): ${await submitRes.text()}`);
+      const rawBody = await submitRes.text();
+      throw new MediaProviderError("shotstack", submitRes.status, rawBody, `Shotstack render submission failed (${submitRes.status}): ${rawBody}`);
     }
     const submitted = (await submitRes.json()) as ShotstackSubmitResponse;
     const renderId = submitted.response.id;
@@ -157,7 +256,8 @@ export class ShotstackEditProvider implements EditProvider {
         headers: { "x-api-key": this.apiKey() },
       });
       if (!statusRes.ok) {
-        throw new Error(`Could not poll Shotstack render status (${statusRes.status}): ${await statusRes.text()}`);
+        const rawBody = await statusRes.text();
+        throw new MediaProviderError("shotstack", statusRes.status, rawBody, `Could not poll Shotstack render status (${statusRes.status}): ${rawBody}`);
       }
       const status = (await statusRes.json()) as ShotstackStatusResponse;
       if (status.response.status === "done") {
@@ -180,7 +280,7 @@ export class ShotstackEditProvider implements EditProvider {
       open: async () => {
         const videoRes = await fetch(finalStatus!.url!);
         if (!videoRes.ok || !videoRes.body) {
-          throw new Error(`Could not download the rendered video from Shotstack: ${videoRes.status}`);
+          throw new MediaProviderError("shotstack", videoRes.status, "", `Could not download the rendered video from Shotstack: ${videoRes.status}`);
         }
         return videoRes.body as unknown as ReadableStream<Uint8Array>;
       },

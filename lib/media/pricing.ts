@@ -10,15 +10,30 @@ import { UnpricedProviderError } from "./types";
 // 2026 research recorded in CLAUDE.md's Content Bot milestone and the
 // implementation plan, not a live-queried price.
 //
-// C1 only wires up image (fal.ai), voice (ElevenLabs), and assembly
-// (Shotstack) — video generation (fal.ai hosting Kling/Veo) is C1.5's own
-// milestone and deliberately has no entry here yet; adding one is exactly
-// the "smallest architecture-compatible correction" this table is built to
-// take without any other change.
+// C1 only wired up image (fal.ai), voice (ElevenLabs), and assembly
+// (Shotstack) — real generated video (fal.ai hosting Kling) is the
+// Minimum Motion Proof-of-Concept's own addition; the full motion-first
+// pipeline this unblocks is still future work.
 const MEDIA_PRICING_PER_UNIT: Record<string, Record<string, number>> = {
   "fal-ai": {
     // Per generated image.
     "fal-ai/flux/schnell": 0.003,
+    // Per generated image — real, documented price ($0.04/image, stated
+    // as "Fixed $0.04 cost per image edit" on fal.ai's own model page),
+    // not estimated. Used only for reference-conditioned generation (see
+    // ImageRequest.referenceImageUrl) — a real ~13x per-image cost over
+    // the plain text-to-image model above, which is why it's used only
+    // for the reference image itself and the conditioned beat/thumbnail
+    // batch, never as a blanket replacement for flux/schnell.
+    "fal-ai/flux-pro/kontext": 0.04,
+    // Per SECOND of generated video, audio OFF — real, documented price
+    // from fal.ai's own model page ("$0.112" per second with audio off;
+    // audio-on tiers are materially more expensive and deliberately never
+    // used — see KlingVideoProvider's own doc comment for why generate_audio
+    // is hardcoded false). Quantity passed to calculateMediaUsdCost is the
+    // real requested clip duration in seconds, matching this table's other
+    // per-second entries (Shotstack) exactly.
+    "fal-ai/kling-video/v3/pro/image-to-video": 0.112,
   },
   elevenlabs: {
     // Per character of input text.
