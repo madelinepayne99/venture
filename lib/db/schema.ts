@@ -87,6 +87,40 @@ export const agentTasks = pgTable("agent_tasks", {
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });
 
+// Finance Agent (Operations Wing). Deliberately its OWN tables, not a
+// reuse of `ledger_entries`/`costs` — those are hard-coded to USD
+// (`amount_usd`, built for real provider-spend tracking) and the
+// founder's own real example here is in GBP. Silently treating £12 as
+// $12 would be exactly the kind of fabrication CLAUDE.md's safety rules
+// forbid, so `expenses`/`budgets` carry their currency explicitly instead
+// of assuming one. Provider costs stay exactly where they are — this is
+// additive, not a migration of existing data.
+export const expenses = pgTable("expenses", {
+  id: text("id").primaryKey(),
+  category: text("category").notNull(),
+  description: text("description").notNull(),
+  amount: real("amount").notNull(),
+  currency: text("currency").notNull(),
+  incurred_at: timestamp("incurred_at", { mode: "string" }).notNull().defaultNow(),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// One budget ceiling per category+period. No founder_id — like
+// ledger_entries, this is a shared business ledger, not per-founder data
+// (consistent with how listLedgerEntries/ledgerTotalUsd already work
+// globally, not scoped to a founder).
+export const budgetPeriodValues = ["monthly", "one_off"] as const;
+
+export const budgets = pgTable("budgets", {
+  id: text("id").primaryKey(),
+  category: text("category").notNull(),
+  amount: real("amount").notNull(),
+  currency: text("currency").notNull(),
+  period: text("period").notNull().default("monthly"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 // A project IS a workspace — "commerce" (the original Etsy/KDP digital-
 // product focus) or "service_business" (client-facing local businesses
 // like hairdressers or garages). Missions don't carry their own workspace

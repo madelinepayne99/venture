@@ -161,7 +161,14 @@ const CANONICAL_AGENTS: Array<{
     key: "finance_agent",
     name: "Finance Agent",
     role_summary: "Venture HQ budget, provider costs, subscriptions, and actual-vs-budget reporting.",
-    status: "planned",
+    status: "active",
+    capabilities: [
+      {
+        capability: "expense_and_budget_tracking",
+        description:
+          "Records a real expense (amount, currency, category) and reports actual-vs-budget for that category — currency-explicit, never guesses or converts.",
+      },
+    ],
   },
   {
     key: "business_analyst",
@@ -279,7 +286,7 @@ export async function resetDbForTests(): Promise<void> {
       activity_history, ledger_entries, costs, approvals,
       content_assets, content_versions, content_items,
       deliverables, evidence, agent_assignments, mission_stages, missions,
-      agent_tasks, projects, agent_capabilities, agents, founders,
+      agent_tasks, expenses, budgets, projects, agent_capabilities, agents, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);

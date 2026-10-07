@@ -8,6 +8,9 @@ import type {
   AgentAssignment,
   AgentTask,
   AgentTaskState,
+  Budget,
+  BudgetPeriod,
+  Expense,
   ActivityEntry,
   Approval,
   ContentAsset,
@@ -139,6 +142,109 @@ export async function updateAgentTaskState(
     .where(and(eq(schema.agentTasks.id, id), inArray(schema.agentTasks.state, fromStates)))
     .returning({ id: schema.agentTasks.id });
   return result.length > 0;
+}
+
+// --- Finance (Operations Wing) ---------------------------------------------
+// Deliberately separate from ledger_entries/costs — see schema.ts's doc
+// comment on `expenses`/`budgets` for why (currency correctness).
+
+export async function recordExpense(input: {
+  category: string;
+  description: string;
+  amount: number;
+  currency: string;
+  incurredAt?: string;
+}): Promise<Expense> {
+  const db = await getDb();
+  const id = randomUUID();
+  const timestamp = now();
+  await db.insert(schema.expenses).values({
+    id,
+    category: input.category,
+    description: input.description,
+    amount: input.amount,
+    currency: input.currency,
+    incurred_at: input.incurredAt ?? timestamp,
+    created_at: timestamp,
+  });
+  const [row] = await db.select().from(schema.expenses).where(eq(schema.expenses.id, id));
+  return row as Expense;
+}
+
+export async function listExpenses(opts?: { category?: string }): Promise<Expense[]> {
+  const db = await getDb();
+  const query = db.select().from(schema.expenses);
+  const rows = opts?.category
+    ? await query.where(eq(schema.expenses.category, opts.category)).orderBy(desc(schema.expenses.incurred_at))
+    : await query.orderBy(desc(schema.expenses.incurred_at));
+  return rows as Expense[];
+}
+
+export async function upsertBudget(input: {
+  category: string;
+  amount: number;
+  currency: string;
+  period?: BudgetPeriod;
+}): Promise<Budget> {
+  const db = await getDb();
+  const existing = await db
+    .select()
+    .from(schema.budgets)
+    .where(and(eq(schema.budgets.category, input.category), eq(schema.budgets.period, input.period ?? "monthly")));
+
+  if (existing.length > 0) {
+    const id = existing[0]!.id;
+    await db
+      .update(schema.budgets)
+      .set({ amount: input.amount, currency: input.currency, updated_at: now() })
+      .where(eq(schema.budgets.id, id));
+    const [row] = await db.select().from(schema.budgets).where(eq(schema.budgets.id, id));
+    return row as Budget;
+  }
+
+  const id = randomUUID();
+  const timestamp = now();
+  await db.insert(schema.budgets).values({
+    id,
+    category: input.category,
+    amount: input.amount,
+    currency: input.currency,
+    period: input.period ?? "monthly",
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  const [row] = await db.select().from(schema.budgets).where(eq(schema.budgets.id, id));
+  return row as Budget;
+}
+
+export async function listBudgets(): Promise<Budget[]> {
+  const db = await getDb();
+  const rows = await db.select().from(schema.budgets).orderBy(schema.budgets.category);
+  return rows as Budget[];
+}
+
+export async function getBudgetByCategory(category: string, period: BudgetPeriod = "monthly"): Promise<Budget | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.budgets)
+    .where(and(eq(schema.budgets.category, category), eq(schema.budgets.period, period)));
+  return row as Budget | undefined;
+}
+
+export async function sumExpensesByCategoryAndCurrency(
+  category: string,
+): Promise<Array<{ currency: string; total: number }>> {
+  const db = await getDb();
+  const rows = await db
+    .select({
+      currency: schema.expenses.currency,
+      total: sql<number>`coalesce(sum(${schema.expenses.amount}), 0)`,
+    })
+    .from(schema.expenses)
+    .where(eq(schema.expenses.category, category))
+    .groupBy(schema.expenses.currency);
+  return rows;
 }
 
 // --- Projects ---------------------------------------------------------------
