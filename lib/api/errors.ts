@@ -18,6 +18,11 @@ import { NoProductionRecommendationError, FounderCommissionValidationError } fro
 import { ProductionGenuinelyStartedError } from "@/lib/domain/missionWorkflow";
 import { ContentVersionCapExceededError } from "@/lib/domain/contentProduction";
 import { UnauthenticatedError } from "@/lib/api/authErrors";
+import {
+  AgentTaskValidationError,
+  AgentTaskNotFoundError,
+  AgentTaskStateError,
+} from "@/lib/domain/executiveAssistantWorkflow";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -84,6 +89,15 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof ContentItemConcurrencyError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof AgentTaskValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof AgentTaskNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof AgentTaskStateError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof Error && error.message.includes("not found")) {

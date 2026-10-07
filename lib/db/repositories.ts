@@ -6,6 +6,8 @@ import * as schema from "./schema";
 import type {
   Agent,
   AgentAssignment,
+  AgentTask,
+  AgentTaskState,
   ActivityEntry,
   Approval,
   ContentAsset,
@@ -60,6 +62,83 @@ export async function getAgentByKey(key: string): Promise<Agent | undefined> {
   const db = await getDb();
   const [row] = await db.select().from(schema.agents).where(eq(schema.agents.key, key));
   return row;
+}
+
+// --- Agent tasks (Operations Wing) -----------------------------------------
+// General-purpose task records for the non-mission agents. See schema.ts's
+// doc comment on agentTasks for why this is deliberately separate from
+// `missions`.
+
+export async function createAgentTask(input: {
+  agentKey: string;
+  founderId: string;
+  taskType: string;
+  title: string;
+  detail?: string | null;
+  dueAt?: string | null;
+  payload?: unknown;
+}): Promise<AgentTask> {
+  const db = await getDb();
+  const id = randomUUID();
+  const timestamp = now();
+  await db.insert(schema.agentTasks).values({
+    id,
+    agent_key: input.agentKey,
+    founder_id: input.founderId,
+    task_type: input.taskType,
+    title: input.title,
+    detail: input.detail ?? null,
+    state: "open",
+    due_at: input.dueAt ?? null,
+    payload: input.payload ?? null,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  const [row] = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.id, id));
+  return row as AgentTask;
+}
+
+export async function listAgentTasksForFounder(
+  founderId: string,
+  opts?: { agentKey?: string },
+): Promise<AgentTask[]> {
+  const db = await getDb();
+  const conditions = [eq(schema.agentTasks.founder_id, founderId)];
+  if (opts?.agentKey) conditions.push(eq(schema.agentTasks.agent_key, opts.agentKey));
+  const rows = await db
+    .select()
+    .from(schema.agentTasks)
+    .where(and(...conditions))
+    .orderBy(desc(schema.agentTasks.created_at));
+  return rows as AgentTask[];
+}
+
+export async function getAgentTask(id: string): Promise<AgentTask | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.agentTasks).where(eq(schema.agentTasks.id, id));
+  return row as AgentTask | undefined;
+}
+
+// Atomic conditional update, same pattern as transitionMissionState — a
+// task cancelled while "in progress" can't be silently revived by a late
+// write, and a completion can't double-apply.
+export async function updateAgentTaskState(
+  id: string,
+  fromStates: AgentTaskState[],
+  toState: AgentTaskState,
+  fields?: { result?: unknown },
+): Promise<boolean> {
+  const db = await getDb();
+  const result = await db
+    .update(schema.agentTasks)
+    .set({
+      state: toState,
+      updated_at: now(),
+      ...(fields?.result !== undefined ? { result: fields.result } : {}),
+    })
+    .where(and(eq(schema.agentTasks.id, id), inArray(schema.agentTasks.state, fromStates)))
+    .returning({ id: schema.agentTasks.id });
+  return result.length > 0;
 }
 
 // --- Projects ---------------------------------------------------------------

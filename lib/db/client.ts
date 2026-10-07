@@ -131,6 +131,50 @@ const CANONICAL_AGENTS: Array<{
     role_summary: "Coordinates collaborative missions and prevents duplicated or conflicting work.",
     status: "planned",
   },
+  // --- Operations Wing (Milestone 6) --------------------------------------
+  // "active" here means exactly one real, tested capability exists — see
+  // each agent's capabilities list below. Nothing else about that agent is
+  // implemented yet, and the roster/UI must not imply otherwise. The other
+  // four start "planned", identically to inventor/inspector/merchant/etc
+  // above: recorded, visible, real, and not simulated running.
+  {
+    key: "executive_assistant",
+    name: "Executive Assistant",
+    role_summary:
+      "Internal task lists, reminders, and day planning for the founders. Email/calendar integrations are not yet connected.",
+    status: "active",
+    capabilities: [
+      {
+        capability: "internal_tasks",
+        description:
+          "Creates and tracks a founder's internal tasks/reminders (title, detail, due date, state) with real persistence — no external account connections.",
+      },
+    ],
+  },
+  {
+    key: "chief_of_staff",
+    name: "Chief of Staff",
+    role_summary: "Coordinates the AI workforce — turns a founder goal into delegated subtasks across agents.",
+    status: "planned",
+  },
+  {
+    key: "finance_agent",
+    name: "Finance Agent",
+    role_summary: "Venture HQ budget, provider costs, subscriptions, and actual-vs-budget reporting.",
+    status: "planned",
+  },
+  {
+    key: "business_analyst",
+    name: "Business Analyst",
+    role_summary: "Opportunity and competitor research with traceable sources, separate from Scout's mission-scoped research.",
+    status: "planned",
+  },
+  {
+    key: "operations_agent",
+    name: "Operations Agent",
+    role_summary: "Checklists, document templates, and repeatable internal processes.",
+    status: "planned",
+  },
 ];
 
 /**

@@ -4,6 +4,7 @@ import { MissionForm } from "./MissionForm";
 import { MissionDetail, type MissionDetailData } from "./MissionDetail";
 import { ProductionActions } from "./ProductionActions";
 import { AgentRoster } from "./AgentRoster";
+import { ExecutiveAssistantTasks } from "./ExecutiveAssistantTasks";
 import { Ledger } from "./Ledger";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { isCancellable } from "@/lib/domain/missionStates";
@@ -58,6 +59,7 @@ export function FocusView({
     <div className="grid gap-6 lg:grid-cols-[280px_1fr_420px]">
       <aside className="space-y-6">
         <AgentRoster agents={agents} />
+        <ExecutiveAssistantTasks />
         <Ledger entries={ledgerEntries} totalUsd={ledgerTotal} />
       </aside>
 

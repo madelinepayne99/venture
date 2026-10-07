@@ -57,6 +57,13 @@
       "when": 1790718956064,
       "tag": "0007_reference_image_continuity",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1791413242952,
+      "tag": "0008_wandering_wendell_rand",
+      "breakpoints": true
     }
   ]
 }

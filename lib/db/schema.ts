@@ -54,6 +54,39 @@ export const agentCapabilities = pgTable("agent_capabilities", {
   description: text("description").notNull(),
 });
 
+// Operations Wing (Milestone 6): a general-purpose task record for the
+// non-mission agents (Executive Assistant, Chief of Staff, Finance,
+// Business Analyst, Operations). Deliberately NOT the `missions` table —
+// missions carries Scout/Content-Bot-specific concepts (workspace type,
+// research_pass_count, content-item hand-off) that don't apply to "remind
+// me Friday" or "add this expense". Keeping these separate means nothing
+// about missions, Scout, or Content Bot changes to support this. A task
+// belongs to exactly one agent and one founder; `payload`/`result` are
+// jsonb specifically because each task_type's shape genuinely differs
+// (a reminder's payload isn't a checklist's) — this mirrors how
+// content_items already uses jsonb for the same real reason (brief,
+// audience_context, plan).
+export const agentTaskStateValues = ["open", "in_progress", "completed", "cancelled"] as const;
+
+export const agentTasks = pgTable("agent_tasks", {
+  id: text("id").primaryKey(),
+  agent_key: text("agent_key")
+    .notNull()
+    .references(() => agents.key),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  task_type: text("task_type").notNull(),
+  title: text("title").notNull(),
+  detail: text("detail"),
+  state: text("state").notNull().default("open"),
+  due_at: timestamp("due_at", { mode: "string" }),
+  payload: jsonb("payload"),
+  result: jsonb("result"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 // A project IS a workspace — "commerce" (the original Etsy/KDP digital-
 // product focus) or "service_business" (client-facing local businesses
 // like hairdressers or garages). Missions don't carry their own workspace
