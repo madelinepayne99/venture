@@ -8,6 +8,7 @@ import { ExecutiveAssistantTasks } from "./ExecutiveAssistantTasks";
 import { FinanceAgentPanel } from "./FinanceAgentPanel";
 import { OperationsAgentChecklists } from "./OperationsAgentChecklists";
 import { BusinessAnalystPanel } from "./BusinessAnalystPanel";
+import { ChiefOfStaffPanel } from "./ChiefOfStaffPanel";
 import { Ledger } from "./Ledger";
 import { WorkspacePanel } from "./WorkspacePanel";
 import { isCancellable } from "@/lib/domain/missionStates";
@@ -66,6 +67,7 @@ export function FocusView({
         <FinanceAgentPanel />
         <OperationsAgentChecklists />
         <BusinessAnalystPanel />
+        <ChiefOfStaffPanel />
         <Ledger entries={ledgerEntries} totalUsd={ledgerTotal} />
       </aside>
 

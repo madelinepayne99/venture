@@ -16,6 +16,9 @@ export type AgentTask = Omit<InferSelectModel<typeof schema.agentTasks>, "state"
   state: AgentTaskState;
 };
 
+export type ChiefOfStaffGoal = InferSelectModel<typeof schema.chiefOfStaffGoals>;
+export type ChiefOfStaffGoalWithSubtasks = ChiefOfStaffGoal & { subtasks: AgentTask[] };
+
 export type Expense = InferSelectModel<typeof schema.expenses>;
 export type BudgetPeriod = (typeof schema.budgetPeriodValues)[number];
 export type Budget = Omit<InferSelectModel<typeof schema.budgets>, "period"> & {

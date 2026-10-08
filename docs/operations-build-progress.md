@@ -204,46 +204,100 @@ required zero changes** to support this milestone. See the doc comment on
     `/api/business-analyst/*` routes in the route manifest. Committed as
     its own clean commit, Scout/Content Bot untouched.
 
+## Slice 5: Chief of Staff (complete, verified) — all five agents now real
+
+24. **Agent flipped**: `chief_of_staff` is now `status: "active"`, with
+    one real capability, `goal_delegation` — **the fifth and final
+    Operations Wing agent to graduate from "planned."**
+25. **Architecture**: a new `chief_of_staff_goals` table (immutable
+    grouping container — a founder's stated goal) plus one additive,
+    nullable `goal_id` column on the EXISTING `agent_tasks` table
+    (migration `drizzle/0012_chief_of_staff_goals.sql`). A delegated
+    subtask is simply an ordinary `agent_tasks` row with `goal_id` set
+    and `task_type: "delegated_subtask"` — genuine reuse, not a parallel
+    task system. Completing or cancelling one goes through the
+    **unmodified** `completeFounderTask`/`cancelFounderTask`
+    (`executiveAssistantWorkflow.ts`) and the existing
+    `/api/agent-tasks/[id]` route — those check only founder ownership,
+    never `agent_key`, so they already worked for this with zero new
+    mutation code (proven directly by two tests in
+    `tests/chiefOfStaff.test.ts`).
+26. **`lib/domain/chiefOfStaffWorkflow.ts`**: `DELEGATABLE_AGENT_KEYS` is
+    a hardcoded allowlist — `executive_assistant`, `finance_agent`,
+    `operations_agent`, `business_analyst` only. Scout and Content Bot
+    are structurally excluded: they're mission-dispatched, and creating
+    an `agent_tasks` row naming either would fabricate activity that
+    doesn't actually make either agent do anything (neither reads
+    `agent_tasks`) — a direct, concrete application of CLAUDE.md's "never
+    fabricate activity" rule to this agent's own design, and of the
+    "protect Scout and Content Bot" instruction. `createGoalWithDelegatedSubtasks`
+    validates every subtask's target agent is both in that allowlist
+    *and* currently `"active"` in the real `agents` table — defense in
+    depth, not just the hardcoded list alone.
+27. **API**: `GET`/`POST /api/chief-of-staff/goals`,
+    `GET /api/chief-of-staff/goals/[id]`.
+28. **UI**: `components/founders-desk/ChiefOfStaffPanel.tsx` — state a
+    goal, add one or more subtasks each assigned to a real agent from a
+    dropdown, then view a goal's subtasks and mark them done/cancelled
+    (via the existing agent-tasks endpoint, reused as-is).
+29. **Verified, not assumed**: `tests/chiefOfStaff.test.ts` (14 tests) —
+    persistence, the real agent-targeting restriction (explicitly proves
+    delegating to `"scout"` or `"content_bot"` is rejected, not just
+    assumed safe), rejecting a planned or nonexistent agent key, ownership
+    isolation, and — the key reuse proof — completing/cancelling a
+    delegated subtask through the untouched Executive Assistant
+    functions. Full regression: `npx tsc --noEmit` clean,
+    **50 files / 618 tests passing** (604 prior + 14 new, zero
+    regressions), `npm run build` succeeds with both new
+    `/api/chief-of-staff/*` routes in the route manifest. Committed as
+    its own clean commit, Scout/Content Bot untouched.
+
 ## What is explicitly NOT done yet
 
-- Chief of Staff: **no code**. Registered as `planned`, nothing simulates
-  it running, per CLAUDE.md's own standing rule.
 - No 3D-office expansion (no new rooms, no new character rigs) — the
-  `office-reference.html`/`office-extension.json` design reference has not
-  been acted on. Explicitly ordered after real agent function per the
-  founder's own brief; **4 of 5 Operations Wing agents now have a working
-  capability** — Chief of Staff is the last one needed before this gate
-  opens.
-- No Chief-of-Staff delegation/hand-off mechanism.
+  `office-reference.html`/`office-extension.json` design reference has
+  not been acted on. **All 5 of 5 Operations Wing agents now have a
+  working capability — this gate is open as of this slice.** Office-scene
+  work may now begin when a founder asks for it; it was not started here
+  since that's a separate, explicit next decision, not an automatic
+  follow-on to this milestone.
 - No email/calendar integration (Executive Assistant is internal-only,
   as the brief itself required for a first slice).
 - Business Analyst's research call is synchronous, not durable/
-  background — a known, documented tradeoff (see Slice 4 above), not an
+  background — a known, documented tradeoff (see Slice 4), not an
   oversight.
+- Chief of Staff's delegation is a founder-driven breakdown (the founder
+  specifies each subtask and its target agent); it does not itself use
+  an LLM call to decide the breakdown. A real, honest first capability —
+  not every agent in this wing needed a model call to be genuine (Finance
+  and Operations don't either); a future slice could add an LLM-assisted
+  breakdown suggestion without changing the real delegation mechanism
+  underneath it.
 - Acceptance Tests A, C, D, E, F (everything except B) are not built as
-  named in the original brief, though their underlying capabilities now
-  mostly exist in some form (checklists for D, sourced research for C).
+  literally named in the original brief, though their underlying
+  capabilities now mostly exist in some form (checklists for D, sourced
+  research for C, delegation for part of A/E).
 
 ## Exact restart point for a future session
 
-Founder's explicit ordering (governing instruction, see chat history):
-1. ~~Finance Agent~~ — **done.**
-2. ~~Operations Agent~~ — **done.**
-3. ~~Business Analyst~~ — **done, this slice.**
-4. **Chief of Staff** — next, and last of the five. Deliberately last;
-   delegation only makes sense once there's more than one real agent to
-   delegate *to*. Likely shape: a founder states a goal, Chief of Staff
-   breaks it into subtasks and creates real `agent_tasks` rows (reusing
-   Executive Assistant's existing table/workflow rather than inventing a
-   parallel one) assigned conceptually to the other agents — check
-   whether `agent_tasks.agent_key` already supports attributing a task to
-   a *different* agent than the one that created it before assuming new
-   schema is needed.
+All five Operations Wing agents are now real and verified:
+1. ~~Executive Assistant~~ — **done** (Slice 1).
+2. ~~Finance Agent~~ — **done** (Slice 2).
+3. ~~Operations Agent~~ — **done** (Slice 3).
+4. ~~Business Analyst~~ — **done** (Slice 4).
+5. ~~Chief of Staff~~ — **done, this slice** (Slice 5).
 
-Once Chief of Staff has at least one working capability, all five
-Operations Wing agents are real — re-read CLAUDE.md's "do not expand the
-3D headquarters" gate and the founder's own brief before starting any
-office-scene work, since that gate will have just opened.
+Nothing in the founders' explicit ordering remains. Before starting any
+further work: re-read CLAUDE.md's "do not expand the 3D headquarters
+until all five new agents have at least one working capability" gate —
+it is now satisfied, but office-scene expansion is still a *separate*
+decision for a founder to make explicitly, not an automatic next step
+just because the gate opened. Absent a new founder instruction, good
+next candidates (not started, not promised) are: durability for Business
+Analyst's research (Inngest, matching Scout's own pattern), an
+LLM-assisted goal breakdown for Chief of Staff, or wiring any of these
+five agents into the HQ office scene once a founder actually asks for
+that.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm this
-baseline (604 tests) still holds, then continue from step 4 above.
+baseline (618 tests) still holds before starting anything new.

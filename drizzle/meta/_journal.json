@@ -85,6 +85,13 @@
       "when": 1791493596146,
       "tag": "0011_business_analyst_reports",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791494390116,
+      "tag": "0012_chief_of_staff_goals",
+      "breakpoints": true
     }
   ]
 }

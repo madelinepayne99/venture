@@ -155,7 +155,14 @@ const CANONICAL_AGENTS: Array<{
     key: "chief_of_staff",
     name: "Chief of Staff",
     role_summary: "Coordinates the AI workforce — turns a founder goal into delegated subtasks across agents.",
-    status: "planned",
+    status: "active",
+    capabilities: [
+      {
+        capability: "goal_delegation",
+        description:
+          "Breaks a founder's goal into real subtasks delegated to specific active Operations Wing agents (never Scout/Content Bot, never a planned agent) — reuses the existing agent_tasks table, each one trackable through to completion.",
+      },
+    ],
   },
   {
     key: "finance_agent",
@@ -300,7 +307,7 @@ export async function resetDbForTests(): Promise<void> {
       activity_history, ledger_entries, costs, approvals,
       content_assets, content_versions, content_items,
       deliverables, evidence, agent_assignments, mission_stages, missions,
-      agent_tasks, expenses, budgets, checklist_items, checklists, business_analyst_reports, projects, agent_capabilities, agents, founders,
+      agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports, projects, agent_capabilities, agents, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);

@@ -21,21 +21,24 @@ describe("Executive Assistant is registered correctly", () => {
     await resetDbForTests();
   });
 
-  it("seeds executive_assistant, finance_agent, operations_agent, and business_analyst as active (each has a real capability), and chief_of_staff as planned", async () => {
-    const ea = await getAgentByKey("executive_assistant");
-    expect(ea?.status).toBe("active");
-
+  it("seeds all five Operations Wing agents as active — each graduated once its real workflow shipped", async () => {
     // Each graduated to active once its real workflow shipped (see
     // tests/financeAgent.test.ts, tests/operationsAgent.test.ts,
-    // tests/businessAnalyst.test.ts) — this assertion is updated alongside
-    // each, not loosened generically.
-    for (const key of ["finance_agent", "operations_agent", "business_analyst"]) {
+    // tests/businessAnalyst.test.ts, tests/chiefOfStaff.test.ts) — this
+    // assertion is updated alongside each, not loosened generically.
+    // Chief of Staff was the last of the five (see CLAUDE.md's Milestone
+    // 6 — delegation only makes sense once there's more than one real
+    // agent to delegate to).
+    for (const key of [
+      "executive_assistant",
+      "finance_agent",
+      "operations_agent",
+      "business_analyst",
+      "chief_of_staff",
+    ]) {
       const agent = await getAgentByKey(key);
       expect(agent?.status).toBe("active");
     }
-
-    const chiefOfStaff = await getAgentByKey("chief_of_staff");
-    expect(chiefOfStaff?.status).toBe("planned");
   });
 });
 

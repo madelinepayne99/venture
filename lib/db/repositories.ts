@@ -8,6 +8,8 @@ import type {
   AgentAssignment,
   AgentTask,
   AgentTaskState,
+  ChiefOfStaffGoal,
+  ChiefOfStaffGoalWithSubtasks,
   Budget,
   BudgetPeriod,
   BusinessAnalystReportRecord,
@@ -85,6 +87,8 @@ export async function createAgentTask(input: {
   detail?: string | null;
   dueAt?: string | null;
   payload?: unknown;
+  /** Set only when Chief of Staff is delegating this as part of a goal breakdown — see schema.ts. */
+  goalId?: string | null;
 }): Promise<AgentTask> {
   const db = await getDb();
   const id = randomUUID();
@@ -99,6 +103,7 @@ export async function createAgentTask(input: {
     state: "open",
     due_at: input.dueAt ?? null,
     payload: input.payload ?? null,
+    goal_id: input.goalId ?? null,
     created_at: timestamp,
     updated_at: timestamp,
   });
@@ -147,6 +152,57 @@ export async function updateAgentTaskState(
     .where(and(eq(schema.agentTasks.id, id), inArray(schema.agentTasks.state, fromStates)))
     .returning({ id: schema.agentTasks.id });
   return result.length > 0;
+}
+
+// --- Chief of Staff (Operations Wing) ---------------------------------------
+// A goal is an immutable grouping container; its real delegated work lives
+// in agent_tasks rows carrying this goal's id (see schema.ts's doc comment
+// on agentTasks.goal_id).
+
+export async function createChiefOfStaffGoal(input: { founderId: string; title: string }): Promise<ChiefOfStaffGoal> {
+  const db = await getDb();
+  const id = randomUUID();
+  await db.insert(schema.chiefOfStaffGoals).values({
+    id,
+    founder_id: input.founderId,
+    title: input.title,
+    created_at: now(),
+  });
+  const [row] = await db.select().from(schema.chiefOfStaffGoals).where(eq(schema.chiefOfStaffGoals.id, id));
+  return row as ChiefOfStaffGoal;
+}
+
+export async function listChiefOfStaffGoalsForFounder(founderId: string): Promise<ChiefOfStaffGoal[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.chiefOfStaffGoals)
+    .where(eq(schema.chiefOfStaffGoals.founder_id, founderId))
+    .orderBy(desc(schema.chiefOfStaffGoals.created_at));
+  return rows as ChiefOfStaffGoal[];
+}
+
+export async function getChiefOfStaffGoal(id: string): Promise<ChiefOfStaffGoal | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.chiefOfStaffGoals).where(eq(schema.chiefOfStaffGoals.id, id));
+  return row as ChiefOfStaffGoal | undefined;
+}
+
+export async function listSubtasksForGoal(goalId: string): Promise<AgentTask[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.agentTasks)
+    .where(eq(schema.agentTasks.goal_id, goalId))
+    .orderBy(schema.agentTasks.created_at);
+  return rows as AgentTask[];
+}
+
+export async function getChiefOfStaffGoalWithSubtasks(id: string): Promise<ChiefOfStaffGoalWithSubtasks | undefined> {
+  const goal = await getChiefOfStaffGoal(id);
+  if (!goal) return undefined;
+  const subtasks = await listSubtasksForGoal(id);
+  return { ...goal, subtasks };
 }
 
 // --- Finance (Operations Wing) ---------------------------------------------

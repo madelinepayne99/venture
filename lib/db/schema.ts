@@ -54,6 +54,20 @@ export const agentCapabilities = pgTable("agent_capabilities", {
   description: text("description").notNull(),
 });
 
+// Chief of Staff (Operations Wing). A goal is the immutable grouping
+// container for a founder's stated objective — its real delegated work
+// lives entirely in `agent_tasks` rows (see `goal_id` below), not
+// duplicated here. Defined before `agentTasks` specifically so that
+// table's new `goal_id` column can reference it.
+export const chiefOfStaffGoals = pgTable("chief_of_staff_goals", {
+  id: text("id").primaryKey(),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  title: text("title").notNull(),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 // Operations Wing (Milestone 6): a general-purpose task record for the
 // non-mission agents (Executive Assistant, Chief of Staff, Finance,
 // Business Analyst, Operations). Deliberately NOT the `missions` table —
@@ -85,6 +99,13 @@ export const agentTasks = pgTable("agent_tasks", {
   result: jsonb("result"),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+  // Chief of Staff (Milestone 6, Slice 5): set only on a task Chief of
+  // Staff itself delegated as part of breaking down a founder's goal —
+  // null for every ordinary task created directly by/for its own agent
+  // (an Executive Assistant reminder, a Finance Agent record, etc.).
+  // Nullable and additive, exactly like content_items_id on mission_stages
+  // (Milestone 5) — existing rows are unaffected.
+  goal_id: text("goal_id").references(() => chiefOfStaffGoals.id),
 });
 
 // Finance Agent (Operations Wing). Deliberately its OWN tables, not a
