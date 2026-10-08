@@ -174,7 +174,14 @@ const CANONICAL_AGENTS: Array<{
     key: "business_analyst",
     name: "Business Analyst",
     role_summary: "Opportunity and competitor research with traceable sources, separate from Scout's mission-scoped research.",
-    status: "planned",
+    status: "active",
+    capabilities: [
+      {
+        capability: "sourced_research",
+        description:
+          "Answers a standalone founder research question (market/competitor/opportunity) via real web search, returning a structured report with opportunities, risks, and real cited sources — independent of Scout's mission pipeline.",
+      },
+    ],
   },
   {
     key: "operations_agent",
@@ -293,7 +300,7 @@ export async function resetDbForTests(): Promise<void> {
       activity_history, ledger_entries, costs, approvals,
       content_assets, content_versions, content_items,
       deliverables, evidence, agent_assignments, mission_stages, missions,
-      agent_tasks, expenses, budgets, checklist_items, checklists, projects, agent_capabilities, agents, founders,
+      agent_tasks, expenses, budgets, checklist_items, checklists, business_analyst_reports, projects, agent_capabilities, agents, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);

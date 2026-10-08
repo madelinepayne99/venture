@@ -26,6 +26,15 @@ export type Checklist = InferSelectModel<typeof schema.checklists>;
 export type ChecklistItem = InferSelectModel<typeof schema.checklistItems>;
 export type ChecklistWithItems = Checklist & { items: ChecklistItem[] };
 
+export type BusinessAnalystReportState = (typeof schema.businessAnalystReportStateValues)[number];
+export type BusinessAnalystReportRecord<TReport = unknown> = Omit<
+  InferSelectModel<typeof schema.businessAnalystReports>,
+  "state" | "report"
+> & {
+  state: BusinessAnalystReportState;
+  report: TReport | null;
+};
+
 export type WorkspaceType = (typeof schema.workspaceTypeValues)[number];
 export type Project = Omit<InferSelectModel<typeof schema.projects>, "workspace_type"> & {
   workspace_type: WorkspaceType;

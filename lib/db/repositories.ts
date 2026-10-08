@@ -10,6 +10,8 @@ import type {
   AgentTaskState,
   Budget,
   BudgetPeriod,
+  BusinessAnalystReportRecord,
+  BusinessAnalystReportState,
   Checklist,
   ChecklistItem,
   ChecklistWithItems,
@@ -349,6 +351,65 @@ export async function setChecklistItemDone(itemId: string, isDone: boolean): Pro
     await db.update(schema.checklists).set({ updated_at: timestamp }).where(eq(schema.checklists.id, row.checklist_id));
   }
   return row as ChecklistItem | undefined;
+}
+
+// --- Business Analyst: research reports ---------------------------------
+// One row per real research request, success or failure (see schema.ts's
+// doc comment on `business_analyst_reports` for why this is neither a
+// mission nor an agent_task).
+
+export async function saveBusinessAnalystReport(input: {
+  founderId: string;
+  query: string;
+  state: BusinessAnalystReportState;
+  report: unknown | null;
+  error: string | null;
+  model: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  usdCost: number | null;
+}): Promise<BusinessAnalystReportRecord> {
+  const db = await getDb();
+  const id = randomUUID();
+  await db.insert(schema.businessAnalystReports).values({
+    id,
+    founder_id: input.founderId,
+    query: input.query,
+    state: input.state,
+    report: input.report,
+    error: input.error,
+    model: input.model,
+    input_tokens: input.inputTokens,
+    output_tokens: input.outputTokens,
+    usd_cost: input.usdCost,
+    created_at: now(),
+  });
+  const [row] = await db
+    .select()
+    .from(schema.businessAnalystReports)
+    .where(eq(schema.businessAnalystReports.id, id));
+  return row as unknown as BusinessAnalystReportRecord;
+}
+
+export async function listBusinessAnalystReportsForFounder(founderId: string): Promise<BusinessAnalystReportRecord[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.businessAnalystReports)
+    .where(eq(schema.businessAnalystReports.founder_id, founderId))
+    .orderBy(desc(schema.businessAnalystReports.created_at));
+  return rows as unknown as BusinessAnalystReportRecord[];
+}
+
+export async function getBusinessAnalystReport(
+  id: string,
+): Promise<BusinessAnalystReportRecord | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.businessAnalystReports)
+    .where(eq(schema.businessAnalystReports.id, id));
+  return row as unknown as BusinessAnalystReportRecord | undefined;
 }
 
 // --- Projects ---------------------------------------------------------------

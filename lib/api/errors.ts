@@ -29,6 +29,10 @@ import {
   ChecklistNotFoundError,
   ChecklistItemNotFoundError,
 } from "@/lib/domain/operationsWorkflow";
+import {
+  BusinessAnalystValidationError,
+  BusinessAnalystReportNotFoundError,
+} from "@/lib/domain/businessAnalystWorkflow";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -113,6 +117,12 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }
   if (error instanceof ChecklistNotFoundError || error instanceof ChecklistItemNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof BusinessAnalystValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof BusinessAnalystReportNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
   }
   if (error instanceof Error && error.message.includes("not found")) {

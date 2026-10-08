@@ -150,6 +150,32 @@ export const checklistItems = pgTable("checklist_items", {
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });
 
+// Business Analyst (Operations Wing). One row per real research request —
+// deliberately NOT missions (this is a standalone founder question, e.g.
+// "how saturated is the Etsy planner niche?", not a Scout-style mission
+// with a workspace/approval/production lifecycle) and NOT agent_tasks
+// (the result is a structured report, not a completable to-do). `report`
+// is null when `state` is "failed" — a failed run is still persisted
+// (with its real token usage) rather than silently discarded, the same
+// "never drop real cost" discipline Scout's own failure path follows.
+export const businessAnalystReportStateValues = ["completed", "failed"] as const;
+
+export const businessAnalystReports = pgTable("business_analyst_reports", {
+  id: text("id").primaryKey(),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  query: text("query").notNull(),
+  state: text("state").notNull(),
+  report: jsonb("report"),
+  error: text("error"),
+  model: text("model").notNull(),
+  input_tokens: integer("input_tokens"),
+  output_tokens: integer("output_tokens"),
+  usd_cost: real("usd_cost"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 // A project IS a workspace — "commerce" (the original Etsy/KDP digital-
 // product focus) or "service_business" (client-facing local businesses
 // like hairdressers or garages). Missions don't carry their own workspace
