@@ -21,3 +21,14 @@
 .vw-error{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;background:#eeeadd;color:#204636;padding:3rem;font:14px/1.6 system-ui,sans-serif}
 .vw-error p{max-width:460px}.vw-error button{background:#244e41;color:white;border:0;padding:12px 20px;border-radius:9px;cursor:pointer}
 @media(max-width:700px){.vw-room-tag{font-size:8px;padding:4px 6px}.vw-scout-tag{font-size:10px}.vw-host{min-height:280px}}
+/* Quiet labels retain explicit keyboard access; hover brings the chosen room forward. */
+.vw-room-tag:not(.vw-scout-tag){font-size:9px;letter-spacing:.055em;padding:5px 8px;box-shadow:0 1px 4px #233b2012;background:#faf7ede6}
+.vw-studio-status{color:#304e65;max-width:245px;white-space:normal;text-align:center;line-height:1.35}
+.vw-scout-tag{font-size:10px;padding:5px 8px}
+
+/* Labels emerge on intent; keyboard focus remains available even when visually quiet. */
+.vw-room-tag{opacity:0;pointer-events:none;transition:opacity .18s,background .15s,box-shadow .15s}
+.vw-room-tag.is-revealed,.vw-room-tag:focus-visible,.vw-room-tag.has-attention{opacity:1;pointer-events:auto}
+.vw-room-tag.has-attention{border-color:#bd9454;background:#fbf1dc;color:#77501e}
+@media(hover:none){.vw-room-tag{opacity:.8;pointer-events:auto}}
+@media(prefers-reduced-motion:reduce){.vw-room-tag{transition:none}}

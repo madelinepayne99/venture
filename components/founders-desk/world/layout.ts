@@ -12,44 +12,68 @@ export const MARKS = {
   hub: { x: -0.65, z: 0.7 },
   research: { x: 2.95, z: -1.29 },
   lounge: { x: 1.75, z: 2.45 },
-  // Content Bot's own idle spot near the founders' desk — offset from
-  // Scout's hub mark so the two characters don't visually stack when both
-  // are idle at once (see CLAUDE.md's shared-world-architecture milestone:
-  // one building, both agents visibly present, never overlapping).
-  contentBotHome: { x: -0.9, z: 0.3 },
-  // The Content Studio nook — placed inside the EXISTING building
-  // footprint (verified walkable and reachable from every other real
-  // destination) rather than a new east-wing room extension. A deliberate
-  // smaller-footprint implementation of the plan's Content Studio room:
-  // real, functional, and visually distinct (see studioFurniture in
-  // furniture.ts), without the ~40% floor-plan growth the original plan
-  // itself flagged as its highest-risk regression to founders' existing
-  // view of Scout.
-  studio: { x: 0, z: -2.1 },
-  // --- Operations Wing (Milestone 7) ---------------------------------
-  // A real east-wing extension — the "legitimate follow-up" CLAUDE.md's
-  // Content Studio note explicitly deferred, now that five more agents
-  // need their own desks rather than one. Each agent's working-station
-  // mark sits just south of its own desk (see furniture.ts's
-  // departmentDesk — the desk's own group origin is further north, at
-  // the same x, closer to the new wing's back wall); each home/idle mark
-  // sits further south again, in the open aisle, so "walk to workstation
-  // when assigned work" is a real, visible walk every time, not a
-  // same-point animation toggle.
-  command: { x: 6.0, z: -2.7 },
-  chiefOfStaffHome: { x: 6.0, z: -1.9 },
-  admin: { x: 7.3, z: -2.7 },
-  executiveAssistantHome: { x: 7.3, z: -1.9 },
-  ledger: { x: 8.6, z: -2.7 },
-  financeAgentHome: { x: 8.6, z: -1.9 },
-  intel: { x: 9.9, z: -2.7 },
-  businessAnalystHome: { x: 9.9, z: -1.9 },
-  process: { x: 11.2, z: -2.7 },
-  operationsAgentHome: { x: 11.2, z: -1.9 },
+  // Independent home positions leave space for both characters (approved
+  // "Living Polish" design — see docs/operations-build-progress.md).
+  contentBotHome: { x: -0.65, z: 1.85 },
+  // The Content Studio moved into its own real adjoining wing (Milestone
+  // 8 integration) — see STUDIO below for its geometry. This mark is now
+  // just the agent's own approach point inside that wing.
+  studio: { x: 7.5, z: .35 },
+  // --- Operations Wing (Milestone 7, relocated for Milestone 8) ------
+  // The approved Content Studio wing claims x∈[5.37,10.6] — the exact
+  // space Milestone 7 originally placed these five desks in. Relocated
+  // further east, just past the studio's own east side (which — like the
+  // original building's east side — is open, not walled, so no doorway
+  // is needed), as a simple open floor extension in the same spirit as
+  // Milestone 7's first attempt, not a second walled wing: the founders'
+  // own larger "Four Connected Wings" Central HQ is explicitly deferred,
+  // separate work (see their Milestone 8 integration instruction).
+  command: { x: 11.4, z: -2.7 },
+  chiefOfStaffHome: { x: 11.4, z: -1.9 },
+  admin: { x: 12.7, z: -2.7 },
+  executiveAssistantHome: { x: 12.7, z: -1.9 },
+  ledger: { x: 14.0, z: -2.7 },
+  financeAgentHome: { x: 14.0, z: -1.9 },
+  intel: { x: 15.3, z: -2.7 },
+  businessAnalystHome: { x: 15.3, z: -1.9 },
+  process: { x: 16.6, z: -2.7 },
+  operationsAgentHome: { x: 16.6, z: -1.9 },
 } satisfies Record<string, Point>;
+
+// Studio geometry and navigation share these bounds. The original suite is
+// preserved. Ported verbatim from the approved "Living Polish" design.
+export const STUDIO = { left: 5.37, right: 10.6, back: -4.08, front: 3.45, doorBack: 1.45, doorFront: 2.8 };
+export const STUDIO_OBSTACLES: Rect[] = [
+  { x: 5.37, z: -1.315, w: .2, d: 5.53 }, // divider ends at the entrance
+  { x: 5.37, z: 3.67, w: .2, d: 1.74 },
+  { x: 8.68, z: -.75, w: .50, d: 1.55 }, // wraparound editing desk return
+  { x: 7.5, z: -1.45, w: 2.85, d: 1.05 },
+  { x: 7.5, z: -.48, w: .65, d: .68 },
+  { x: 8.0, z: -3.62, w: 2.65, d: .62 },
+  { x: 9.46, z: -1.65, w: .58, d: 1.4 },
+  { x: 6.0, z: -3.0, w: .62, d: 1.0 },
+  { x: 9.18, z: .25, w: 1.0, d: 1.2 },
+  { x: 8.78, z: 2.5, w: 1.65, d: .53 },
+];
+
+// Operations Wing (Milestone 7) — one small obstacle per relocated desk,
+// matching furniture.ts's departmentDesk footprint (w: 1.0, d: .6).
+export const OPS_WING_RIGHT = 17.6;
+const OPS_WING_OBSTACLES: Rect[] = [
+  { x: 11.4, z: -3.35, w: 1.0, d: 0.6 },
+  { x: 12.7, z: -3.35, w: 1.0, d: 0.6 },
+  { x: 14.0, z: -3.35, w: 1.0, d: 0.6 },
+  { x: 15.3, z: -3.35, w: 1.0, d: 0.6 },
+  { x: 16.6, z: -3.35, w: 1.0, d: 0.6 },
+];
 
 // Wall gaps and furniture footprints are shared with the rendered composition.
 export const OBSTACLES: Rect[] = [
+  ...STUDIO_OBSTACLES,
+  ...OPS_WING_OBSTACLES,
+  { x: 1.27, z: -3.27, w: .71, d: .59 }, // detective filing chest
+  { x: -.35, z: 3.75, w: .42, d: .42 }, // coat stand
+  { x: -1.55, z: -3.55, w: .50, d: .50 }, // existing palm
   { x: 0.55, z: -1.8, w: 0.2, d: 4.4 },
   { x: 0.55, z: 3.42, w: 0.2, d: 2.36 },
   { x: 3.99, z: 0.2, w: 2.76, d: 0.2 },
@@ -67,35 +91,28 @@ export const OBSTACLES: Rect[] = [
   { x: 3.48, z: 2.67, w: 1.0, d: 0.85 },
   { x: 4.65, z: 3.85, w: 0.7, d: 0.65 },
   { x: -4.75, z: -3.28, w: 0.65, d: 0.65 },
-  // Operations Wing (Milestone 7) — one small obstacle per new desk,
-  // matching furniture.ts's departmentDesk footprint (w: 1.0, d: .6)
-  // exactly, the same "obstacle rect mirrors the rendered box" discipline
-  // every existing entry above already follows. No new exterior-wall
-  // obstacles are needed: the new wing's back wall sits entirely in the
-  // z < -3.8 band the outer walkable() bound already excludes, exactly
-  // like the original north/west walls needed none either.
-  { x: 6.0, z: -3.35, w: 1.0, d: 0.6 },
-  { x: 7.3, z: -3.35, w: 1.0, d: 0.6 },
-  { x: 8.6, z: -3.35, w: 1.0, d: 0.6 },
-  { x: 9.9, z: -3.35, w: 1.0, d: 0.6 },
-  { x: 11.2, z: -3.35, w: 1.0, d: 0.6 },
 ];
 
-// The east bound widened from 5.15 to 12.5 for the Operations Wing
-// extension (Milestone 7) — z bounds are unchanged, since the new wing
-// reuses the same depth as the rest of the building. See engine.ts's
-// resize() for why the camera's own fixed framing was deliberately left
-// untouched (panning further east reaches the new wing; the existing
-// room's on-screen size/prominence never shrinks to make room for it).
+// Three zones: the original founders'/research/lounge suite, the approved
+// Content Studio wing (its own, narrower z-range — see STUDIO above), and
+// the Operations Wing extension beyond it (reusing the original suite's
+// z-range, since it's a simple open floor extension, not a separately
+// walled room — see MARKS's own comment for why).
 export function walkable(p: Point, margin = 0.23) {
-  return p.x > -5.13 + margin && p.x < 12.5 - margin &&
-    p.z > -3.8 + margin && p.z < 4.4 - margin &&
+  const inOriginal = p.x > -5.13 + margin && p.x < 5.37 && p.z > -3.8 + margin && p.z < 4.4 - margin;
+  const inStudio = p.x >= 5.13 && p.x < STUDIO.right - .15 - margin && p.z > -3.8 + margin && p.z < STUDIO.front - .12 - margin;
+  // Overlaps inStudio's own x-range (same margin as inOriginal/inStudio's
+  // own overlap above) rather than meeting it exactly — a precise meeting
+  // point left a real, found-via-test dead strip neither zone covered.
+  const inOpsWing = p.x >= STUDIO.right - .5 && p.x < OPS_WING_RIGHT - margin && p.z > -3.8 + margin && p.z < 4.4 - margin;
+  return (inOriginal || inStudio || inOpsWing) &&
     !OBSTACLES.some(r => Math.abs(p.x - r.x) < r.w / 2 + margin && Math.abs(p.z - r.z) < r.d / 2 + margin);
 }
 
 /** A small deterministic four-neighbour grid. No diagonal corner cutting. */
-export function findPath(start: Point, destination: Point): Point[] {
-  if (!walkable(destination)) return [];
+export function findPath(start: Point, destination: Point, occupied: readonly Point[] = []): Point[] {
+  const clear = (p: Point) => walkable(p) && occupied.every(o => Math.hypot(p.x - o.x, p.z - o.z) >= .76);
+  if (!clear(destination)) return [];
   const step = 0.18;
   const key = (x: number, z: number) => `${x},${z}`;
   const cell = (p: Point) => ({ x: Math.round(p.x / step), z: Math.round(p.z / step) });
@@ -108,7 +125,7 @@ export function findPath(start: Point, destination: Point): Point[] {
     if (node.x === goal.x && node.z === goal.z) { finish = node; break; }
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
       const next = { x: node.x + dx, z: node.z + dz }, id = key(next.x, next.z);
-      if (seen.has(id) || !walkable({ x: next.x * step, z: next.z * step })) continue;
+      if (seen.has(id) || !clear({ x: next.x * step, z: next.z * step })) continue;
       seen.add(id); parents.set(id, node); queue.push(next);
     }
   }

@@ -1,7 +1,10 @@
 import * as T from "three";
 import { ball, box, canvasTexture, cylinder, group, material, type Materials } from "./materials";
+import { buildContentStudio } from "./studio";
+import { dressDetectiveOffice } from "./detectiveOffice";
+import { STUDIO } from "./layout";
 import {
-  books, commandDesk, cup, departmentDesk, plant, researchFurniture, sofa, studioFurniture,
+  books, commandDesk, cup, departmentDesk, plant, researchFurniture, sofa,
   chiefOfStaffProp, executiveAssistantProp, financeAgentProp, businessAnalystProp, operationsAgentProp,
 } from "./furniture";
 
@@ -64,16 +67,6 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   box(root, .052, .009, 8.43, .55, .033, .2, m.brass);
   wall(root, m, 0, -4.08, 10.77, .2, 2.63);
   wall(root, m, -5.38, .2, .2, 8.77, 2.63);
-  // Operations Wing (Milestone 7) — a real east-wing extension, not a
-  // second environment: the same back (north) wall simply continues
-  // further east, abutting the original wall's right edge (x=5.385)
-  // rather than overlapping or gapping it. See layout.ts's widened
-  // walkable() bound and its new OBSTACLES entries for this wing's five
-  // desks — there is no door to cut: the original building's east side
-  // was never a rendered wall (only a numeric walkable() limit), so this
-  // extension is already open to the main room exactly like the lounge
-  // and credenza areas already are.
-  wall(root, m, 8.79, -4.08, 6.81, .2, 2.63);
   // Interior cutaway walls keep their footprint and door openings visible.
   wall(root, m, .55, -2.65, .19, 2.82, 1.88);
   wall(root, m, .55, -.44, .19, 1.6, .93);
@@ -85,7 +78,28 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   box(root, .28, .017, 1.72, .55, .041, 1.34, m.brass);
   for (const x of [1.19, 2.60]) box(root, .08, 1.0, .22, x, .5, .2, m.ivory, .01);
   box(root, 1.4, .017, .27, 1.9, .041, .2, m.brass);
-  box(root, .14, .12, 8.75, 5.37, .06, .2, m.ivory, .01);
+  // The old east edge becomes the studio divider; the lounge doorway remains open.
+  // Approved "Living Polish" studio wing (Milestone 8 integration).
+  wall(root, m, STUDIO.left, -2.1, .2, 3.96, 2.02);
+  wall(root, m, STUDIO.left, .665, .2, 1.57, .82);
+  wall(root, m, STUDIO.left, 3.67, .2, 1.74, .55);
+  for (const z of [STUDIO.doorBack, STUDIO.doorFront]) box(root, .25, 1.03, .08, STUDIO.left, .515, z, m.ivory, .01);
+  box(root, .28, .018, STUDIO.doorFront - STUDIO.doorBack, STUDIO.left, .042, (STUDIO.doorBack + STUDIO.doorFront) / 2, m.brass);
+  // Adjoining production wing. Existing rooms, floors, windows and furniture retain their coordinates.
+  box(root, 5.42, .23, 7.70, 8.01, -.145, -.315, m.ivory, .065);
+  box(root, 5.33, .055, 7.58, 8.01, -.028, -.315, m.brass, .035);
+  box(root, 5.10, .055, 7.34, 8.01, -.001, -.315, m.marble);
+  wall(root, m, 7.99, -4.08, 5.23, .2, 2.63);
+  box(root, .14, .12, 7.56, 10.6, .06, -.315, m.ivory, .01);
+  box(root, 5.22, .15, .14, 7.99, .075, 3.45, m.ivory, .012);
+  arch(root, 6.12, -3.963, m, .83, 1.64);
+  // --- Operations Wing (Milestone 7, relocated east of the approved
+  // studio wing for Milestone 8 — see layout.ts's own comment on MARKS
+  // for why it's a simple open extension, not a second walled wing).
+  box(root, 7.2, .23, 9.02, 13.9, -.145, .27, m.ivory, .065);
+  box(root, 7.1, .055, 8.86, 13.9, -.028, .27, m.brass, .035);
+  box(root, 6.9, .055, 8.45, 13.9, -.001, .27, m.marble);
+  wall(root, m, 14.2, -4.08, 7.4, .2, 2.63);
   box(root, 10.77, .12, .14, 0, .06, 4.53, m.ivory, .01);
   // Tall arched coastal windows and wall panelling.
   arch(root, -3.83, -3.963, m); arch(root, -2.5, -3.963, m); arch(root, -1.17, -3.963, m);
@@ -93,24 +107,18 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   for (const x of [-4.73, -.25]) box(root, .06, 2.4, .06, x, 1.28, -3.94, m.ivory, .009);
   box(root, 5.66, .045, .06, -2.36, .52, -3.94, m.ivory, .008);
   rug(root, m, -2.8, -1, 4.3, 3.85);
-  const desk = commandDesk(root, m); const research = researchFurniture(root, m); const studio = studioFurniture(root, m);
-  // --- Operations Wing floor + desks (Milestone 7) -----------------
-  // The floor slab simply continues east of the original building's
-  // right edge (x=5.6) — same ivory/brass trim treatment as line 60-61
-  // above, with a marble surface (matching the lounge's own east-side
-  // marble) to read as a continuation of the same house, not an annex.
-  box(root, 6.4, .23, 9.02, 8.8, -.145, .27, m.ivory, .085);
-  box(root, 6.26, .055, 8.86, 8.8, -.028, .27, m.brass, .04);
-  box(root, 6.1, .055, 8.45, 8.8, -.001, .2, m.marble);
+  dressDetectiveOffice(root, m);
+  const desk = commandDesk(root, m); const research = researchFurniture(root, m); const studio = buildContentStudio(root, m);
+  // --- Operations Wing desks (Milestone 7) -----------------------------
   const opsWing = group(root, 0, 0, 0);
-  departmentDesk(opsWing, m, 6.0, -3.35, m.gold, 0, "chief_of_staff", chiefOfStaffProp);
-  departmentDesk(opsWing, m, 7.3, -3.35, m.plum, 1, "executive_assistant", executiveAssistantProp);
-  departmentDesk(opsWing, m, 8.6, -3.35, m.bronze, 0, "finance_agent", financeAgentProp);
-  departmentDesk(opsWing, m, 9.9, -3.35, m.indigo, 1, "business_analyst", businessAnalystProp);
-  departmentDesk(opsWing, m, 11.2, -3.35, m.slate, 0, "operations_agent", operationsAgentProp);
+  departmentDesk(opsWing, m, 11.4, -3.35, m.gold, 0, "chief_of_staff", chiefOfStaffProp);
+  departmentDesk(opsWing, m, 12.7, -3.35, m.plum, 1, "executive_assistant", executiveAssistantProp);
+  departmentDesk(opsWing, m, 14.0, -3.35, m.bronze, 0, "finance_agent", financeAgentProp);
+  departmentDesk(opsWing, m, 15.3, -3.35, m.indigo, 1, "business_analyst", businessAnalystProp);
+  departmentDesk(opsWing, m, 16.6, -3.35, m.slate, 0, "operations_agent", operationsAgentProp);
   // A small wall plaque over the wing, the same "wall-mounted flourish"
   // motif as the strategy chart/clock from earlier milestones.
-  const opsSign = group(root, 8.79, 1.9, -3.94);
+  const opsSign = group(root, 14.2, 1.9, -3.94);
   frame(opsSign, m, 1.5, .42, canvasTexture((c, s) => {
     c.fillStyle = "#2c2521"; c.fillRect(0, 0, s, s);
     c.fillStyle = "#cdb98a"; c.font = "600 54px Georgia"; c.textAlign = "center";
@@ -159,9 +167,17 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   box(coffee, .33, .34, .24, 0, .17, 0, m.dark, .025);
   box(coffee, .23, .2, .015, 0, .16, .13, m.brass, .015);
   box(coffee, .3, .02, .2, 0, .04, .19, m.dark, .008); cup(coffee, 0, .052, .19, m);
+  // Restrained storage details in the existing coffee corner.
+  for (let i = 0; i < 3; i++) cup(coffee, -.28, .035 + i * .085, .04, m);
+  const coat = group(root, -.35, 0, 3.75);
+  cylinder(coat, .18, .21, .035, 0, .06, 0, m.brass);
+  cylinder(coat, .025, .028, 1.45, 0, .77, 0, m.wood);
+  for (const x of [-.2, .2]) { box(coat, .25, .035, .035, x / 2, 1.34, 0, m.brass, .01); ball(coat, .04, x, 1.36, 0, m.brass); }
   // Exterior: narrow planted border, no oversized grass backdrop.
   const stone = material("#babfa9", .95), gravel = material("#c9cbb9", .94);
   box(root, 11.98, .075, 9.9, 0, -.29, .27, stone, .16);
+  box(root, 5.54, .075, 8.1, 8.14, -.29, -.315, stone, .12);
+  box(root, 7.3, .075, 9.9, 13.9, -.29, .27, stone, .12);
   for (let i = 0; i < 16; i++) {
     const x = -5.78, z = -4.1 + i * .55;
     ball(root, .23 + (i % 3) * .025, x, -.03, z, i % 2 ? m.leaf : m.leaf2, [.85, .87, 1.2]);
@@ -170,5 +186,12 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   for (let i = 0; i < 4; i++) box(root, .83, .055, .42, 1.86, -.20, 4.9 + i * .51, m.marble, .035);
   // Tiny garden stones break the precision at the foundation edge.
   for (let i = 0; i < 45; i++) ball(root, .035 + i % 4 * .009, -5.62 - i % 3 * .11, -.20, -4.25 + i * .2, gravel, [1.2, .5, 1]);
-  return { root, desk, research, studio, board, lounge };
+  const leaves: T.Object3D[] = [];
+  root.traverse(object => { if (typeof object.userData.breezePhase === "number") leaves.push(object); });
+  return {
+    root, desk, research, studio, board, lounge,
+    animate(time: number, reduced: boolean) {
+      for (const leaf of leaves) leaf.rotation.z = reduced ? 0 : Math.sin(time * .42 + leaf.userData.breezePhase) * .003;
+    },
+  };
 }

@@ -526,3 +526,182 @@ Restart command: `npm test && npx tsc --noEmit` to reconfirm this
 baseline (633 tests) still holds. The real dev server was stopped
 cleanly after verification; no agent-task polling or world-sync code
 needs anything further before a founder actually opens HQ View.
+
+## Milestone 8: integrating the approved Noir Studio / Living Polish world
+
+A founder-requested investigation (see the question-and-answer exchange
+preserved in this session's own history) found that Milestone 7's 3D
+work had been built without ever locating or opening the founders'
+actually-approved visual design: two real, tested, ready-to-apply
+patches (`Venture-HQ-Noir-Studio-Source.zip`, superseded by
+`Venture-HQ-Living-Polish-Source.zip`) sitting in Downloads, built
+against base commit `fe4ee6d` — the exact commit this session's own
+Operations Wing work started from. Neither had ever been applied to the
+real git history. This milestone is that integration: a careful,
+file-by-file merge, not a blind patch application (confirmed via a
+read-only `git apply --check`, which failed on exactly the six files
+Milestone 7 had also rewritten — the two change sets had genuinely
+diverged and needed reconciling by hand).
+
+### What was brought forward from the approved design
+
+- **Scout's detective identity** — fedora, split charcoal coat with
+  emerald lapel lining, tan satchel with a real dimensional magnifying
+  glass, and a curved screen face (glyph eyes, never anatomical) —
+  ported verbatim from the approved patch (`characterWardrobe.ts`,
+  `screenFace.ts`, `characterSurfaces.ts`, `scout.ts`'s rebuilt
+  `buildAgentCharacter`).
+- **Scout's noir-paneled office** — `detectiveOffice.ts` (ported
+  verbatim): emerald panelling, a patterned study rug, a real filing
+  cabinet, a stationery evidence board, desk pedestals, and a warm
+  ambient light. Dressed onto the existing research desk, not a
+  replacement of it.
+- **Content Bot's identity and a real, dedicated Content Studio wing** —
+  tailored jacket, headphones, a play-badge, same screen-face system.
+  The studio itself moved from Milestone 5's smaller-footprint
+  in-building nook into a real adjoining wing (`studio.ts`, ported
+  verbatim) with its own walls, doorway from the lounge, and an arched
+  window — the "legitimate follow-up" CLAUDE.md's own Milestone 5 note
+  said the original smaller footprint had deferred, now actually built.
+  Its wall plaque and three screens render the real `studioStatus`
+  (`studioState.ts`, ported verbatim) — now covering all nine real
+  content-item states, not just generating/planning.
+- **The richer `officeLife.ts` idle system** — real leisure itineraries
+  (lounge seating with genuine sit-down animation, coffee breaks,
+  window-gazing, desk check-ins), live body-avoidance during ANY
+  movement (`safeStep`, not just idle wandering), and bounded replanning
+  around a blocked peer — replacing the simpler fixed-offset `idle.ts`
+  (left in place, unused by the live engine, its own tests —
+  `idleWander.test.ts` — still passing as a record of what it once
+  drove).
+- **A real "one continuous company world" architecture** —
+  `HQView.tsx`/`Room.tsx` changed from one separately-mounted
+  Room/OfficeWorld per workspace tab (which silently reset Scout/Content
+  Bot's position and idle state on every tab switch) to a single,
+  always-mounted Room receiving the real, unfiltered missions/lead
+  assignments/content items regardless of which workspace tab is
+  active — only the `MissionBoard` list filters by the active project.
+  This was a genuine fix, not just adopted for its own sake: the old
+  per-room-filtered design actually contradicted CLAUDE.md's own
+  Milestone 4.6 principle ("the founders' desk, Scout's research desk,
+  and Content Bot's workstation all exist in the ONE HQ scene regardless
+  of which workspace") — now it's actually true.
+
+### Reconciling with Milestone 7 — the real work of this integration
+
+The approved studio wing claims exactly the physical space
+(`x∈[5.37,10.6]`) Milestone 7 had placed the five Operations Wing desks
+in. Resolved by **relocating** the Operations Wing further east, just
+past the studio's own open side (no doorway needed, matching the
+original building's own open east side) — `layout.ts`'s `MARKS`/
+`OBSTACLES`/`walkable()` all updated, verified via a real reachability
+script before any rendering code was written (and a real, found-via-
+testing gap — a 0.23-unit dead strip between the two zones' boundaries —
+caught and fixed before it shipped).
+
+`characterWardrobe.ts`'s own `accent` parameter turned out to be
+accepted but never actually used by the original patch — porting it
+as-is would have rendered all five new agents in Content Bot's exact
+jacket color with zero visual distinction. Caught before writing
+`scout.ts`'s five new builder functions; fixed by adding an
+`accentOverride` (cloth/lining color pair, one per new agent, derived
+from each one's own Milestone 7 accent) that Scout and Content Bot never
+pass, so their colors stay byte-for-byte the approved ones.
+
+The five Operations Wing agents reuse Content Bot's "creator" wardrobe
+silhouette (jacket, badge, tablet pocket) in their own accent color and
+ink-tinted screen expression, without headphones — a deliberate,
+honestly-scoped choice: a sixth/seventh/... fully bespoke costume each
+was judged not worth the real risk of unverifiable geometry bugs in a
+sandbox with no way to screenshot (the same trade-off CLAUDE.md already
+documents for the Content Studio's own first, smaller-footprint
+iteration). Each also gained its own short, genuine `officeLife.ts`
+itinerary (own desk, a neighbor check-in, home) using the identical
+collision-aware mechanism Scout/Content Bot's richer itineraries use —
+not a scaled-down imitation of it.
+
+`engine.ts`'s own 7-agent rig array, `agentTaskSignals` threading
+through `syncWorld`, and generalized `focus()` (Milestone 7) were kept
+intact and merged with the patch's collision-aware movement, richer
+`CharacterLife`-driven animation, studio status tag, and `select()`
+acknowledgement gesture — generalized to look up any of the 7 agents by
+key directly rather than the original patch's own hardcoded two-agent
+ternary.
+
+### Verified, not assumed
+
+- `npx tsc --noEmit`: clean throughout, checked after every major file.
+- A standalone reachability/walkability script (not a guess) confirmed
+  every mark — old and new — walkable and reachable before any rendering
+  code referenced them; the same script caught and proved the fix for
+  the zone-boundary gap mentioned above.
+- Full regression: **the existing 633 tests passed unchanged** on the
+  first full run after the merge — including `officeWorld.test.ts`'s
+  `MARKS.studio`/`contentBotHome` walkability test, which is generic
+  (checks `walkable()`/`verifyRoute()`, not hardcoded coordinates) and
+  so correctly re-validated the relocated marks without needing an edit.
+- **`tests/livingEngine.test.ts`** (11 new tests, ported from the
+  approved patch's own `livingEngine.test.ts` and extended) — a real
+  engine-level harness (mocked renderer, fake clock, no WebGL needed)
+  directly exercising the live tick loop: three minutes of independent
+  idle wandering with no body overlap; real work genuinely interrupting
+  leisure and settling both Scout and Content Bot; snap-placement with
+  several agents working at once; reduced-motion snapping; idempotent
+  re-syncs not replaying a journey; clean disposal — plus five new
+  Operations-Wing-specific cases: a real `agent_tasks` row moving its
+  own agent and no other; completion sending it home; Chief of Staff
+  genuinely reaching its desk from a real delegated subtask; all seven
+  agents genuinely busy at once with zero body overlap; and extended
+  independent idle wandering near a neighbor. Porting the original
+  patch's own `syncWorld(...)` calls caught a real integration bug before
+  it shipped: Milestone 7 had inserted `agentTasks` as a new 4th
+  parameter before `snap`, so the original patch's 4-argument calls would
+  have silently passed `true` as `agentTasks` (wrong type) and left
+  `snap` defaulting to `false` — every call site was updated, not papered
+  over. One of the new tests also caught a real premise error in itself,
+  not the engine: an assertion assumed an agent's desk x-coordinate alone
+  proved "not busy," missing that Chief of Staff's own idle itinerary
+  legitimately visits its own desk as a leisure stop (the same pattern
+  Scout's "At home desk" idle visit already uses) — fixed by asserting
+  what's actually reliable (the positive, real-task-driven case) rather
+  than weakening or deleting the test.
+- **Real HTTP verification against the live dev server**, using the same
+  genuine, already-valid Auth.js session as Milestone 7's own
+  verification: the authenticated root page renders a clean `200` with
+  zero real errors in the server log (the one "BAILOUT_TO_CLIENT_SIDE_
+  RENDERING" marker in the raw SSR HTML is Next.js's own expected,
+  pre-existing mechanism for `OfficeWorld`'s deliberate `{ssr:false}`
+  dynamic import — unrelated to this milestone, invisible to an actual
+  browser, confirmed harmless by checking the surrounding render
+  completed with a real `200`). A fresh real delegation →
+  `agentTaskSignals` reflecting it → completion cycle was re-run
+  end-to-end against the live server and database after the full visual
+  merge, exactly reproducing Milestone 7's own successful result.
+- `npm run build` succeeds; the main route's First Load JS grew modestly
+  (21.5kB → 21.9kB), consistent with the richer character/office
+  geometry and nothing else.
+
+### What could not be tested, and exactly why
+
+Same standing limitation as every prior milestone: no browser-automation
+tool is available in this environment, and a real GitHub OAuth consent
+screen requires a human in an actual browser. Pixel-level visual
+confirmation that the detective office, the studio wing, the screen
+faces, and the relocated Operations Wing actually look right — not just
+that they're structurally sound and collision-free, which IS verified
+above — still needs a founder's own eyes in a real browser tab.
+
+### What is explicitly NOT done — the larger Central HQ expansion
+
+Per the founders' own explicit instruction, this milestone deliberately
+stops here: it restores and integrates the approved visual foundation
+and living-world behavior into the CURRENT building footprint (the
+original suite + the approved studio wing + the relocated Operations
+Wing beyond it). The separately-agreed, substantially larger "Central HQ
+with Four Connected Wings" is real future work, not started, not
+designed, and not to be combined with this integration — the founders
+were explicit that this foundation should be stable first.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm this
+baseline (644 tests) still holds before starting the Central HQ
+expansion or anything else.

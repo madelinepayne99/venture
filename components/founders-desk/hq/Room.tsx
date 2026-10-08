@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { ContentItem, Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
 import type { AgentTaskSignal, WorldTarget } from "../world/layout";
+import { studioStatus } from "../world/studioState";
 import { MissionBoard } from "./MissionBoard";
 
 // Operations Wing (Milestone 7) — the five agents dispatched through
@@ -20,35 +21,37 @@ const OfficeWorld = dynamic(
 );
 
 /**
- * One office "suite" — a real workspace's room, rendered with the
- * `components/founders-desk/world/` scene (direct Three.js — see its own
- * README, integrated verbatim per its "Integrate into the existing
- * Venture app" section). Everything the scene shows is derived from this
- * room's real missions and real lead assignments: `world/layout.ts`'s
- * `researchDestination` moves Scout to his research room only when a
- * mission is `researching` AND a real `agent_assignments` row names him
- * (not any agent) as its lead — never from mission state alone, so a
- * future second agent's work can never animate the wrong character. The
- * mission board below lists the same real missions Focus View would.
+ * The shared company world (Milestone 8 integration — see HQView.tsx's
+ * own doc comment for why this is now a single, continuously-mounted
+ * scene rather than one per workspace tab) rendered with the
+ * `components/founders-desk/world/` scene (direct Three.js). Everything
+ * the scene shows is derived from the real, unfiltered missions/lead
+ * assignments/content items/agent-task signals passed in — only the
+ * `MissionBoard` below is scoped to this room's own `project`.
+ * `world/layout.ts`'s `agentDestination` moves each agent only when a
+ * real mission/content item/agent_tasks row genuinely names it as lead —
+ * never from aggregate state, so one agent's real work can never animate
+ * the wrong character.
  *
  * The world's own `onSelect` targets are wired to the exact same real
  * handlers Focus View already uses — no new mission-creation path, no
  * new backend endpoint:
  *  - "desk" (and "scout"/"research" with nothing actually researching)
  *    open the real Assign Work modal.
- *  - "scout"/"research" while a mission is researching opens that
- *    mission's real detail slide-over.
+ *  - "scout"/"research" while a mission Scout genuinely leads is
+ *    researching opens that mission's real detail slide-over.
  *  - "board" scrolls the real `MissionBoard` already rendered below the
  *    scene into view — the wall board and the dock are the same data,
  *    just two ways to reach it.
+ *  - "studio"/"content_bot" opens Content Bot's real current item via
+ *    `studioStatus` (now covering every real content-item state, not
+ *    just generating/planning — a founder can reach a review-required
+ *    or failed item this way too, not only an in-flight one).
+ *  - the five Operations Wing targets open that agent's real detail via
+ *    `AgentDetailSlideOver`.
  *  - "lounge" has no backing feature yet; rather than silently doing
  *    nothing or fabricating one, clicking it shows a small, honestly
  *    labeled notice that there's nothing there yet.
- *
- * Only the active carousel room mounts a live scene (see `interactive`
- * below) — the world's own README asks for this specifically, so hidden
- * rooms never hold a second live WebGL context or remain reachable by
- * keyboard while off-screen.
  */
 export function Room({
   project,
@@ -82,11 +85,16 @@ export function Room({
   const [loungeNoticeOpen, setLoungeNoticeOpen] = useState(false);
   const [studioNoticeOpen, setStudioNoticeOpen] = useState(false);
 
-  const activeResearch = missions.find((m) => m.state === "researching");
-  // The one real content item currently in flight in this room, if any —
-  // clicking Content Bot or his studio desk opens exactly this, never an
-  // inference from mission state alone.
-  const activeProduction = contentItems.find((c) => c.state === "generating" || c.state === "planning");
+  const scoutMissions = new Set(leadAssignments.filter((a) => a.agent_key === "scout").map((a) => a.mission_id));
+  // Scoped to Scout's own real lead assignment — a real, found-via-the-
+  // approved-patch tightening: the original check matched ANY researching
+  // mission regardless of who leads it, harmless only because Scout is
+  // currently the sole agent that ever sets this state.
+  const activeResearch = missions.find((m) => m.state === "researching" && scoutMissions.has(m.id));
+  // The studio plaque and its click action use the same real, assigned
+  // content item — review-required and failed items remain reachable
+  // instead of becoming an idle notice (see studioState.ts).
+  const productionDisplay = studioStatus(missions, leadAssignments, contentItems);
 
   function handleSelect(target: WorldTarget) {
     if (OPERATIONS_WING_TARGETS.has(target)) {
@@ -99,7 +107,7 @@ export function Room({
     } else if (target === "board") {
       boardRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
     } else if (target === "studio" || target === "content_bot") {
-      if (activeProduction) onOpenContentItem(activeProduction.id);
+      if (productionDisplay.itemId) onOpenContentItem(productionDisplay.itemId);
       else setStudioNoticeOpen(true);
     } else {
       setLoungeNoticeOpen(true);
@@ -111,7 +119,6 @@ export function Room({
       <div className="relative w-full overflow-hidden" style={{ height: "70vh", minHeight: 420 }}>
         {interactive ? (
           <OfficeWorld
-            workspaceId={project.id}
             missions={missions}
             leadAssignments={leadAssignments}
             contentItems={contentItems}
@@ -141,7 +148,7 @@ export function Room({
             role="status"
             className="absolute bottom-4 left-1/2 z-10 -translate-x-1/2 rounded-lg border border-hq-brass/40 bg-night-panel px-4 py-2 text-xs text-night-text shadow-desk"
           >
-            Content Bot has nothing in production for this workspace right now.
+            Content Bot has nothing in production right now.
             <button
               type="button"
               onClick={() => setStudioNoticeOpen(false)}
@@ -155,7 +162,7 @@ export function Room({
 
       <div ref={boardRef}>
         <MissionBoard
-          missions={missions}
+          missions={missions.filter((m) => m.project_id === project.id)}
           selectedMissionId={selectedMissionId}
           onSelectMission={onSelectMission}
           onAssignWork={onAssignWork}

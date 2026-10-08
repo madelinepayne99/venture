@@ -3,7 +3,7 @@ import * as T from "three";
 /**
  * CPU rasterizer for browsers without WebGL (including the review browser).
  * Uses the same meshes, camera, hit testing and animation. Static geometry is
- * cached; only Scout is rasterized each frame. Native WebGL stays the default.
+ * cached; agents and the subtle leaf motion are rasterized each frame. Native WebGL stays the default.
  */
 type Vertex = { x: number; y: number; z: number; nx: number; ny: number; nz: number; u: number; v: number };
 type TextureData = { data: Uint8ClampedArray; w: number; h: number; sx: number; sy: number; repeat: boolean };
@@ -30,6 +30,7 @@ export class SoftwareRenderer {
   private lightMatrix = new T.Matrix4();
   private lastCamera = new T.Matrix4();
   private image?: ImageData;
+  invalidate() { this.signature = ""; this.textures.clear(); }
   setPixelRatio() { /* Bound CPU work independently of device pixel ratio. */ }
   setSize(w: number, h: number) {
     const ratio = Math.min(1.35, 1800 / w, 1100 / h);
@@ -110,7 +111,7 @@ export class SoftwareRenderer {
         const wc = 1 - wa - wb; if (wa < -.00001 || wb < -.00001 || wc < -.00001) continue;
         const depth = a.depth * wa + b.depth * wb + c.depth * wc, index = y * w + x;
         if (depth >= depths[index]!) continue;
-        depths[index] = depth; if (shadowOnly) continue;
+        if (shadowOnly) { depths[index] = depth; continue; }
         let intensity = basic ? 1 : la * wa + lb * wb + lc * wc;
         if (!basic) {
           const wx = a.x * wa + b.x * wb + c.x * wc, wy = a.y * wa + b.y * wb + c.y * wc, wz = a.z * wa + b.z * wb + c.z * wc;
@@ -124,18 +125,21 @@ export class SoftwareRenderer {
           }
           if (evening) intensity *= .85;
         }
-        let red = cr * 255, green = cg * 255, blue = cb * 255;
+        let red = cr * 255, green = cg * 255, blue = cb * 255, alpha = tri.mat.opacity;
         if (tex) {
           let u = (a.u * wa + b.u * wb + c.u * wc) * tex.sx, v = (a.v * wa + b.v * wb + c.v * wc) * tex.sy;
           u = tex.repeat ? u - Math.floor(u) : Math.min(.999, Math.max(0, u));
           v = tex.repeat ? v - Math.floor(v) : Math.min(.999, Math.max(0, v));
           const ti = (Math.min(tex.h - 1, Math.floor((1 - v) * tex.h)) * tex.w + Math.min(tex.w - 1, Math.floor(u * tex.w))) * 4;
+          alpha *= tex.data[ti + 3]! / 255;
           red = cr * tex.data[ti]!; green = cg * tex.data[ti + 1]!; blue = cb * tex.data[ti + 2]!;
         }
+        if (alpha <= .001) continue;
+        if (tri.mat.depthWrite) depths[index] = depth;
         const pi = index * 4;
-        this.pixels[pi] = Math.min(255, red * intensity * (evening ? 1.06 : 1));
-        this.pixels[pi + 1] = Math.min(255, green * intensity);
-        this.pixels[pi + 2] = Math.min(255, blue * intensity * (evening ? .9 : 1)); this.pixels[pi + 3] = 255;
+        this.pixels[pi] = alpha * Math.min(255, red * intensity * (evening ? 1.06 : 1)) + (1 - alpha) * this.pixels[pi]!;
+        this.pixels[pi + 1] = alpha * Math.min(255, green * intensity) + (1 - alpha) * this.pixels[pi + 1]!;
+        this.pixels[pi + 2] = alpha * Math.min(255, blue * intensity * (evening ? .9 : 1)) + (1 - alpha) * this.pixels[pi + 2]!; this.pixels[pi + 3] = 255;
       }
     }
   }

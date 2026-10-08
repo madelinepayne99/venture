@@ -9,14 +9,22 @@ const ROOM_LABELS: Record<string, string> = {
 };
 
 /**
- * The HQ scene — a "dollhouse" building with one office suite per real
- * workspace the founders have created so far. Switching workspaces (via
- * the top workspace bar) slides between these rooms rather than swapping
- * a flat panel out from under the founder. A room only ever exists for a
- * workspace type that already has a real project behind it — Content
- * Studio and Game Studio, having none, never get a room; that's the same
- * "must not pretend to have agents" rule the workspace bar already
- * follows, just applied to the office view too.
+ * One company world; business tabs filter the mission board, not agent
+ * life (Milestone 8 integration, adopting the approved "Living Polish"
+ * architecture). Previously (Milestones 4.1-7) each workspace tab mounted
+ * its OWN separate Room/OfficeWorld instance, filtered to that tab's own
+ * missions — meaning Scout/Content Bot's position and idle state were
+ * silently reset every time a founder switched tabs, and (worse) a
+ * mission's real state could make an agent appear busy in one tab's
+ * scene while idle in another's, for the exact same real mission. That
+ * directly contradicted CLAUDE.md's own Milestone 4.6 principle ("the
+ * founders' desk, Scout's research desk, and Content Bot's workstation
+ * all exist in the ONE HQ scene regardless of which workspace") — this
+ * fixes it: one Room, one OfficeWorld, mounted once, receiving the real
+ * unfiltered missions/leadAssignments/contentItems/agentTaskSignals
+ * regardless of which workspace tab is active. Only the mission board
+ * list inside Room.tsx filters by the active project — the physical
+ * scene and every agent's real position never do.
  */
 export function HQView({
   projects,
@@ -36,11 +44,7 @@ export function HQView({
   missions: Mission[];
   leadAssignments: MissionLeadAssignment[];
   contentItems: ContentItem[];
-  // Operations Wing (Milestone 7) — global, the same real list passed to
-  // EVERY room below unfiltered: these five agents have no workspace
-  // concept, unlike missions/leadAssignments/contentItems above (which
-  // ARE filtered per room, since Scout/Content Bot's work IS
-  // workspace-scoped via each mission's project_id).
+  // Global, unfiltered — see this file's own doc comment above.
   agentTaskSignals: readonly AgentTaskSignal[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
@@ -48,20 +52,10 @@ export function HQView({
   onOpenContentItem: (contentItemId: string) => void;
   onOpenAgentPanel: (agentKey: string) => void;
 }) {
-  const rooms = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
-    .filter((project): project is Project => project !== null)
-    .map((project) => {
-      const roomMissions = missions.filter((m) => m.project_id === project.id);
-      const roomMissionIds = new Set(roomMissions.map((m) => m.id));
-      return {
-        project,
-        missions: roomMissions,
-        leadAssignments: leadAssignments.filter((a) => roomMissionIds.has(a.mission_id)),
-        contentItems: contentItems.filter((c) => roomMissionIds.has(c.mission_id)),
-      };
-    });
+  const available = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
+    .filter((project): project is Project => project !== null);
 
-  if (rooms.length === 0) {
+  if (available.length === 0) {
     return (
       <div className="overflow-hidden rounded-3xl border border-hq-brass/30 bg-night-bg p-10 text-center shadow-desk">
         <p className="text-sm text-night-textDim">
@@ -72,42 +66,27 @@ export function HQView({
     );
   }
 
-  const foundIndex = rooms.findIndex((r) => r.project.id === activeProjectId);
-  const activeIndex = foundIndex === -1 ? 0 : foundIndex;
+  const project = available.find((p) => p.id === activeProjectId) ?? available[0]!;
 
   return (
-    <div>
-      <div className="overflow-hidden rounded-3xl border border-hq-brass/30 shadow-desk">
-        <div
-          className="flex transition-transform duration-500 ease-out motion-reduce:transition-none motion-reduce:duration-0"
-          style={{ transform: `translateX(-${activeIndex * 100}%)` }}
-        >
-          {rooms.map((room, i) => (
-            <div key={room.project.id} className="w-full shrink-0" aria-hidden={i !== activeIndex}>
-              <Room
-                project={room.project}
-                roomLabel={ROOM_LABELS[room.project.workspace_type] ?? "Office"}
-                missions={room.missions}
-                leadAssignments={room.leadAssignments}
-                contentItems={room.contentItems}
-                agentTaskSignals={agentTaskSignals}
-                selectedMissionId={selectedMissionId}
-                onSelectMission={onSelectMission}
-                onAssignWork={onAssignWork}
-                onOpenContentItem={onOpenContentItem}
-                onOpenAgentPanel={onOpenAgentPanel}
-                interactive={i === activeIndex}
-              />
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {rooms.length > 1 && (
-        <p aria-live="polite" className="sr-only">
-          Now viewing {rooms[activeIndex]?.project.name}
-        </p>
-      )}
+    <div className="overflow-hidden rounded-3xl border border-hq-brass/30 shadow-desk">
+      <Room
+        project={project}
+        roomLabel={ROOM_LABELS[project.workspace_type] ?? "Office"}
+        missions={missions}
+        leadAssignments={leadAssignments}
+        contentItems={contentItems}
+        agentTaskSignals={agentTaskSignals}
+        selectedMissionId={selectedMissionId}
+        onSelectMission={onSelectMission}
+        onAssignWork={onAssignWork}
+        onOpenContentItem={onOpenContentItem}
+        onOpenAgentPanel={onOpenAgentPanel}
+        interactive
+      />
+      <p aria-live="polite" className="sr-only">
+        Mission board: {project.name}
+      </p>
     </div>
   );
 }

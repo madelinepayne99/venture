@@ -228,7 +228,7 @@ export function plant(parent: T.Object3D, x: number, z: number, m: Materials, he
     const vertices = [...start.toArray(), ...center.clone().add(side).toArray(), ...tip.toArray(), ...center.clone().sub(side).toArray(), ...center.clone().add(new T.Vector3(0, .07, 0)).toArray()];
     const geo = new T.BufferGeometry(); geo.setAttribute("position", new T.Float32BufferAttribute(vertices, 3)); geo.setIndex([0,1,4,1,2,4,2,3,4,3,0,4]); geo.computeVertexNormals();
     const leafMat = (i % 2 ? m.leaf : m.leaf2).clone(); leafMat.side = T.DoubleSide;
-    const leaf = new T.Mesh(geo, leafMat); leaf.castShadow = true; g.add(leaf);
+    const leaf = new T.Mesh(geo, leafMat); leaf.castShadow = true; leaf.userData.breezePhase = i * .7; leaf.userData.dynamic = true; g.add(leaf);
   }
   return g;
 }
@@ -255,6 +255,7 @@ export function researchFurniture(parent: T.Object3D, m: Materials) {
     box(g, .075, .62, .075, x, .31, z, m.brass, .01);
   }
   box(g, 2.55, .22, .06, 0, .47, -.37, m.wood, .01);
+  officeChair(parent, 2.95, -1.15, m);
   monitor(g, -.3, .71, -.22, m, 1); lamp(g, 1.1, .71, -.22, m, Math.PI);
   books(g, .7, .71, .1, m, 3, true); cup(g, -.85, .71, .28, m);
   box(g, .36, .018, .29, .3, .725, .3, m.paper, .007);

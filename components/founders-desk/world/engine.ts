@@ -5,9 +5,11 @@ import { buildEnvironment } from "./environment";
 import {
   buildScout, buildContentBot,
   buildChiefOfStaff, buildExecutiveAssistant, buildFinanceAgent, buildBusinessAnalyst, buildOperationsAgent,
+  type CharacterLife,
 } from "./scout";
 import {
   findPath,
+  walkable,
   MARKS,
   agentDestination,
   agentBusy,
@@ -23,7 +25,8 @@ import {
   type Point,
   type WorldTarget,
 } from "./layout";
-import { nextIdlePoint } from "./idle";
+import { nextVisit, safeStep, type IdleVisit } from "./officeLife";
+import { studioStatus, type WorldMission, type WorldContent } from "./studioState";
 import { SoftwareRenderer } from "./softwareRenderer";
 
 export type WorldOptions = {
@@ -35,7 +38,7 @@ export type WorldOptions = {
 };
 export type WorldEngine = ReturnType<typeof createOfficeWorld>;
 
-type Character = { root: T.Group; animate: (time: number, moving: boolean, working: boolean, reduced: boolean) => void };
+type Character = { root: T.Group; animate: (time: number, moving: boolean, working: boolean, reduced: boolean, life?: CharacterLife) => void };
 
 /**
  * Per-agent runtime state — the whole point of this shape. Nothing here is
@@ -63,6 +66,11 @@ interface Rig {
   working: boolean;
   idleHoldUntilMs: number;
   idleSeedTick: number;
+  visit?: IdleVisit;
+  routeGoal?: Point;
+  retryAt: number;
+  acknowledgeUntil: number;
+  greetedUntil: number;
   idleLabel: string;
   workingLabel: string;
 }
@@ -81,7 +89,7 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.75));
   renderer.outputColorSpace = T.SRGBColorSpace;
   renderer.toneMapping = T.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.2;
-  renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFSoftShadowMap;
+  renderer.shadowMap.enabled = true; renderer.shadowMap.type = T.PCFShadowMap;
   const canvas = renderer.domElement; canvas.className = "vw-canvas";
   canvas.setAttribute("aria-label", "Interactive Venture office. Use the room buttons for keyboard navigation.");
   host.appendChild(canvas);
@@ -91,12 +99,12 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   controls.mouseButtons = { LEFT: T.MOUSE.PAN, MIDDLE: T.MOUSE.DOLLY, RIGHT: T.MOUSE.PAN };
   controls.touches = { ONE: T.TOUCH.PAN, TWO: T.TOUCH.DOLLY_PAN };
   controls.screenSpacePanning = true;
-  const target = new T.Vector3(0, .5, .18), offset = new T.Vector3(11, 14.5, 17);
+  const target = new T.Vector3(2.0, .5, .05), offset = new T.Vector3(11, 14.5, 17);
   camera.position.copy(target).add(offset); controls.target.copy(target); controls.update();
   const ambient = new T.HemisphereLight("#f4f6ee", "#bdbaa3", 2.0); scene.add(ambient);
   const sun = new T.DirectionalLight("#fff0d5", 3.1); sun.position.set(-3.5, 10, 6.5);
   sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, { left: -9, right: 9, top: 9, bottom: -9, near: .5, far: 30 });
+  Object.assign(sun.shadow.camera, { left: -9, right: 14, top: 11, bottom: -9, near: .5, far: 30 });
   sun.shadow.normalBias = .018; sun.shadow.bias = -.00025; sun.shadow.radius = 3; scene.add(sun);
   const fill = new T.DirectionalLight("#d3e6eb", .5); fill.position.set(8, 6, -4); scene.add(fill);
   const ground = new T.Mesh(new T.PlaneGeometry(200, 200), material("#d7decd", 1));
@@ -108,13 +116,15 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     const button = document.createElement("button"); button.className = "vw-room-tag"; button.type = "button";
     button.textContent = label; button.dataset.worldTarget = id;
     button.setAttribute("aria-label", `Open ${label}`);
-    button.addEventListener("click", () => options.onSelect(id)); host.appendChild(button); labels.push({ button, point });
+    button.addEventListener("click", () => select(id)); host.appendChild(button); labels.push({ button, point });
     return button;
   };
   tag("Founders’ hub", "desk", new T.Vector3(-2.7, .03, 1.14));
   tag("Research room", "research", new T.Vector3(3.72, 2.6, -3.8));
   tag("The lounge", "lounge", new T.Vector3(3.7, .03, 3.79));
-  tag("Content Studio", "studio", new T.Vector3(0, .03, -3.4));
+  const studioTag = tag("Content Studio · Available", "studio", new T.Vector3(6.6, .2, 2.91));
+  studioTag.classList.add("vw-studio-status");
+  tag("Mission board", "board", new T.Vector3(-5.25, 1.5, -.4));
 
   function createRig(
     key: string,
@@ -127,7 +137,7 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     idleLabel: string,
     workingLabel: string,
   ): Rig {
-    char.root.userData.target = worldTarget;
+    char.root.userData.target = worldTarget; char.root.userData.dynamic = true;
     char.root.position.set(home.x, .04, home.z); char.root.rotation.y = homeRotation;
     scene.add(char.root);
     const ring = new T.Mesh(new T.RingGeometry(.35, .382, 48), new T.MeshBasicMaterial({ color: ringColor, side: T.DoubleSide, transparent: true, opacity: .9 }));
@@ -144,14 +154,14 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
       key, worldTarget, char, ring, tag: button, tagOffset: new T.Vector3(0, 1.41, 0),
       home, homeRotation, workingRotation,
       route: [], routeKind: "sync", arrival: "hub", lastDestination: undefined, working: false,
-      idleHoldUntilMs: 0, idleSeedTick: 0,
+      idleHoldUntilMs: key === SCOUT_AGENT_KEY ? 6 : 12, idleSeedTick: 0, retryAt: 0, acknowledgeUntil: 0, greetedUntil: 0,
       idleLabel, workingLabel,
     };
   }
 
   const rigs: Rig[] = [
     createRig(SCOUT_AGENT_KEY, "scout", buildScout(m), MARKS.hub, .45, Math.PI, "#d7ac5b", "Scout", "Researching"),
-    createRig(CONTENT_BOT_AGENT_KEY, "content_bot", buildContentBot(m), MARKS.contentBotHome, .2, Math.PI * .75, "#5a9bd6", "Content Bot", "Producing"),
+    createRig(CONTENT_BOT_AGENT_KEY, "content_bot", buildContentBot(m), MARKS.contentBotHome, .2, Math.PI, "#5a9bd6", "Content Bot", "Producing"),
     // Operations Wing (Milestone 7) — same createRig mechanism, each
     // agent's own home point near its own desk (see layout.ts's MARKS),
     // facing north (workingRotation ~ Math.PI) toward its desk exactly
@@ -169,6 +179,7 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   const raycaster = new T.Raycaster(), mouse = new T.Vector2(), floorPlane = new T.Plane(new T.Vector3(0, 1, 0), -.04);
   const vector = new T.Vector3();
   let hover: WorldTarget | null = null;
+  let selectedTarget: WorldTarget | null = null, revealUntil = 0;
   function pick(event: PointerEvent) {
     const rect = canvas.getBoundingClientRect();
     mouse.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
@@ -187,9 +198,16 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     return MARKS[station];
   }
   function moveRigTo(rig: Rig, point: Point, place: AgentStation, kind: "sync" | "explore" | "idle") {
-    const path = findPath(rig.char.root.position, point);
+    const peers = rigs.filter(r => r !== rig).map(r => r.char.root.position);
+    const path = findPath(rig.char.root.position, point, peers);
+    // A real assignment keeps its destination even if a peer temporarily occupies the doorway.
+    if (!path.length && kind === "sync") {
+      const waitingPath = findPath(rig.char.root.position, point);
+      if (waitingPath.length) path.push(...waitingPath);
+    }
     if (!path.length) return false;
-    rig.arrival = place; rig.routeKind = kind;
+    rig.arrival = place; rig.routeKind = kind; rig.routeGoal = point; rig.retryAt = elapsed + 1.2;
+    if (kind !== "idle") rig.visit = undefined;
     if (reduced) {
       rig.route = []; rig.char.root.position.set(point.x, .04, point.z);
       rig.char.root.rotation.y = place === "hub" ? rig.homeRotation : rig.workingRotation;
@@ -204,10 +222,12 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   const pointerMove = (event: PointerEvent) => {
     hover = pick(event); canvas.style.cursor = hover ? "pointer" : exploring ? "crosshair" : "grab";
   };
+  const pointerLeave = () => { hover = null; };
+  canvas.addEventListener("pointerleave", pointerLeave);
   const pointerUp = (event: PointerEvent) => {
     if (!pointerStart || Math.hypot(event.clientX - pointerStart.x, event.clientY - pointerStart.y) > 6) { pointerStart = null; return; }
     pointerStart = null; const selected = pick(event);
-    if (selected) options.onSelect(selected);
+    if (selected) select(selected);
     else if (exploring && raycaster.ray.intersectPlane(floorPlane, vector)) moveRigTo(rigs[0]!, { x: vector.x, z: vector.z }, "hub", "explore");
   };
   canvas.addEventListener("pointerdown", pointerDown); canvas.addEventListener("pointermove", pointerMove); canvas.addEventListener("pointerup", pointerUp);
@@ -218,9 +238,13 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   function resize() {
     const w = host.clientWidth, h = host.clientHeight; if (!w || !h) return;
     renderer.setSize(w, h, false);
-    // Project the whole furnished building into the fixed camera, then fit both axes.
+    // Project the whole furnished building (founders'/Scout/studio suite —
+    // the approved framing) into the fixed camera, then fit both axes.
+    // Deliberately NOT widened for the Operations Wing extension beyond
+    // the studio: a founder pans right to reach it (see the pan-clamp
+    // below) rather than the approved room shrinking to make room for it.
     camera.updateMatrixWorld(); const corners: T.Vector3[] = [];
-    for (const x of [-6, 6]) for (const z of [-4.7, 5.6]) for (const y of [-.4, 2.7]) corners.push(new T.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse));
+    for (const x of [-6, 11.25]) for (const z of [-4.7, 5.6]) for (const y of [-.4, 2.7]) corners.push(new T.Vector3(x, y, z).applyMatrix4(camera.matrixWorldInverse));
     const bounds = new T.Box3().setFromPoints(corners);
     baseHeight = Math.max(bounds.max.y - bounds.min.y + .6, (bounds.max.x - bounds.min.x + .8) / (w / h));
     camera.left = -baseHeight * w / h / 2; camera.right = -camera.left;
@@ -252,12 +276,30 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     for (const rig of rigs) {
       if (rig.route.length && !document.hidden) {
         const next = rig.route[0]!, dx = next.x - rig.char.root.position.x, dz = next.z - rig.char.root.position.z, distance = Math.hypot(dx, dz);
-        const step = 1.35 * delta;
+        const step = 1.1 * delta;
+        const peers = rigs.filter(r => r !== rig).map(r => ({ x: r.char.root.position.x, z: r.char.root.position.z }));
+        const proposed = safeStep(rig.char.root.position, next, peers, step);
+        if (!proposed) {
+          // Bounded replan around actual bodies, with working rigs taking priority over leisure.
+          if (elapsed >= rig.retryAt && rig.routeGoal) {
+            rig.retryAt = elapsed + 1.4;
+            const detour = findPath(rig.char.root.position, rig.routeGoal, peers);
+            if (detour.length) rig.route = detour;
+            else {
+              const idlePeer = rigs.find(r => r !== rig && !r.working && !r.route.length);
+              if (idlePeer) idlePeer.idleHoldUntilMs = elapsed;
+              if (!rig.working && rig.routeKind === "idle") { rig.route = []; rig.idleHoldUntilMs = elapsed + 2; }
+            }
+          }
+          rig.char.animate(elapsed + (rig.key === CONTENT_BOT_AGENT_KEY ? 2.3 : 0), false, false, reduced);
+          continue;
+        }
         if (distance <= step) {
           rig.char.root.position.x = next.x; rig.char.root.position.z = next.z; rig.route.shift();
           if (!rig.route.length) {
             if (rig.routeKind === "explore") destinationRing.visible = false;
-            rig.char.root.rotation.y = rig.arrival === "hub" ? rig.homeRotation : rig.workingRotation;
+            rig.char.root.rotation.y = rig.visit?.facing ?? (rig.arrival === "hub" ? rig.homeRotation : rig.workingRotation);
+            rig.idleHoldUntilMs = elapsed + (rig.visit?.pause ?? 8);
             if (rig.routeKind !== "idle") {
               options.onArrival?.(rig.arrival === "hub" ? "hub" : rig.arrival === "research" ? "research" : "explore");
             }
@@ -268,7 +310,26 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
           rig.char.root.rotation.y += diff * Math.min(1, delta * 14);
         }
       }
-      rig.char.animate(elapsed, rig.route.length > 0, rig.working && rig.route.length === 0, reduced);
+      const acknowledging = elapsed < rig.acknowledgeUntil;
+      const peer = rigs.find(other => other !== rig && !other.working && !other.route.length &&
+        other.char.root.position.distanceTo(rig.char.root.position) < 1.55 &&
+        walkable({ x: (other.char.root.position.x + rig.char.root.position.x) / 2, z: (other.char.root.position.z + rig.char.root.position.z) / 2 }));
+      // A greeting reacts to a nearby colleague, with a cooldown; it is not a repeating global timer.
+      if (peer && !reduced && !rig.route.length && !rig.working && elapsed >= rig.greetedUntil) {
+        rig.greetedUntil = elapsed + 24;
+      }
+      const greeting = !!peer && elapsed > rig.greetedUntil - 24 && elapsed < rig.greetedUntil - 22.4;
+      const cameraAttention = acknowledging;
+      const lookAt = cameraAttention ? camera.position : greeting ? peer?.char.root.position : undefined;
+      const lookYaw = lookAt ? Math.atan2(lookAt.x - rig.char.root.position.x, lookAt.z - rig.char.root.position.z) - rig.char.root.rotation.y : undefined;
+      const normalizedYaw = lookYaw === undefined ? undefined : Math.atan2(Math.sin(lookYaw), Math.cos(lookYaw));
+      const seated = !rig.route.length && (rig.working || rig.visit?.gesture === "desk" || rig.visit?.gesture === "lounge");
+      rig.char.animate(elapsed + (rig.key === CONTENT_BOT_AGENT_KEY ? 2.3 : 0), rig.route.length > 0, rig.working && !rig.route.length, reduced, {
+        acknowledging: cameraAttention, greeting,
+        lookYaw: normalizedYaw, seated,
+        seatOffset: rig.visit?.gesture === "lounge" ? rig.visit.seatOffset : rig.key === CONTENT_BOT_AGENT_KEY ? .83 : -.14,
+        activity: rig.visit?.gesture,
+      });
       rig.ring.visible = hover === rig.worldTarget || exploring;
       rig.ring.position.x = rig.char.root.position.x; rig.ring.position.z = rig.char.root.position.z;
     }
@@ -278,35 +339,40 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     // and no real work, and disabled entirely under reduced motion.
     if (!reduced && !document.hidden) {
       for (const rig of rigs) {
-        if (rig.route.length || rig.working) continue;
+        if (rig.route.length || rig.working || elapsed < rig.acknowledgeUntil) continue;
         if (elapsed < rig.idleHoldUntilMs) continue;
-        const point = nextIdlePoint(rig.home, rig.idleSeedTick);
-        rig.idleSeedTick += 1;
-        rig.idleHoldUntilMs = elapsed + 6 + (rig.idleSeedTick % 3) * 2;
-        moveRigTo(rig, point, "hub", "idle");
+        const others = rigs.filter(r => r !== rig);
+        const occupied = others.flatMap(r => [r.char.root.position, ...(r.routeGoal && r.route.length ? [r.routeGoal] : [])]);
+        const visit = nextVisit(rig.key, rig.idleSeedTick++, occupied);
+        rig.idleHoldUntilMs = elapsed + 5;
+        if (visit && moveRigTo(rig, visit.point, "hub", "idle")) rig.visit = visit;
       }
     }
 
+    environment.animate(elapsed, reduced);
     controls.update();
     // Keep panning bounded without changing the viewing direction. The
-    // east bound widened for the Operations Wing extension (Milestone 7)
-    // — deliberately NOT changing resize()'s own fixed corner-fit/zoom
-    // math, so the original room's on-screen size never shrinks to make
-    // room for the new wing; a founder pans right to reach it instead.
-    const cx = T.MathUtils.clamp(controls.target.x, -4, 10.5), cz = T.MathUtils.clamp(controls.target.z, -3, 3);
+    // east bound widened for both the approved studio wing and the
+    // Operations Wing extension beyond it (Milestone 7/8) — deliberately
+    // NOT changing resize()'s own fixed corner-fit/zoom math, so the
+    // approved room's on-screen size never shrinks to make room for
+    // either; a founder pans right to reach them instead.
+    const cx = T.MathUtils.clamp(controls.target.x, -4, 16.8), cz = T.MathUtils.clamp(controls.target.z, -3, 3);
     camera.position.x += cx - controls.target.x; camera.position.z += cz - controls.target.z;
     controls.target.x = cx; controls.target.z = cz;
 
     // "Moving" reflects any real (non-idle) route — onMovement is a
     // scene-level hook, not per-agent, so it's true whenever at least one
     // rig is genuinely walking.
-    const nowMoving = rigs.some(r => r.route.length > 0);
+    const nowMoving = rigs.some(r => r.route.length > 0 && r.routeKind !== "idle");
     if (nowMoving !== anyMoving) { anyMoving = nowMoving; options.onMovement?.(anyMoving); }
 
     for (const rig of rigs) {
       const labelEntry = labels.find(l => l.button === rig.tag)!;
+      const body = rig.char.root.getObjectByName("body");
       labelEntry.point.copy(rig.char.root.position).add(rig.tagOffset);
-      const status = rig.route.length ? `${rig.idleLabel} · Walking` : rig.working ? `${rig.idleLabel} · ${rig.workingLabel}` : `${rig.idleLabel} · Ready`;
+      if (body) labelEntry.point.add(body.position.clone().applyAxisAngle(new T.Vector3(0, 1, 0), rig.char.root.rotation.y));
+      const status = rig.route.length ? `${rig.idleLabel} · Walking` : rig.working ? `${rig.idleLabel} · ${rig.workingLabel}` : `${rig.idleLabel} · ${rig.visit?.activity ?? "Ready"}`;
       if (rig.tag.textContent !== status) {
         rig.tag.textContent = status;
         rig.tag.setAttribute("aria-label", `Open ${status}`);
@@ -314,6 +380,7 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     }
     for (const { button, point } of labels) {
       const pos = point.clone().project(camera), px = (pos.x + 1) / 2 * host.clientWidth, py = (-pos.y + 1) / 2 * host.clientHeight;
+      button.classList.toggle("is-revealed", button.dataset.worldTarget === hover || (elapsed < revealUntil && button.dataset.worldTarget === selectedTarget));
       button.style.transform = `translate(-50%, -50%) translate(${px.toFixed(1)}px, ${py.toFixed(1)}px)`;
       button.style.visibility = Math.abs(pos.x) > .97 || Math.abs(pos.y) > .95 ? "hidden" : "visible";
     }
@@ -324,8 +391,19 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   host.dataset.worldReady = "true"; options.onReady?.();
 
   function findRig(key: string): Rig | undefined { return rigs.find(r => r.key === key); }
+  function select(where: WorldTarget) {
+    selectedTarget = where; revealUntil = elapsed + 3;
+    // Any real agent key (Scout, Content Bot, or one of the five
+    // Operations Wing agents) already equals its own rig's key — no
+    // lookup table needed, unlike the original two-agent patch.
+    const rig = findRig(where);
+    if (rig && !reduced) rig.acknowledgeUntil = elapsed + 1.6;
+    // The existing app action remains immediate. The gesture never waits on or mutates a task.
+    options.onSelect(where);
+  }
 
   return {
+    select,
     moveTo(point: Point, place: "hub" | "research" | "explore" = "explore") {
       return moveRigTo(rigs[0]!, point, place === "explore" ? "hub" : place, "explore");
     },
@@ -336,21 +414,31 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
      * by its OWN agent key internally (via agentDestination/agentBusy),
      * never pre-sliced by a caller. This is deliberate: pre-slicing per
      * agent in a React component is exactly where the "any mission
-     * researching -> move Scout" bug class would return.
+     * researching -> move Scout" bug class would return. `agentTasks`
+     * (Milestone 7) drives the five Operations Wing agents the same way.
      */
     syncWorld(
-      missions: readonly { id: string; state: string }[],
+      missions: readonly WorldMission[],
       leadAssignments: readonly { mission_id: string; agent_key: string }[],
-      contentItems: readonly { mission_id: string; state: string }[],
+      contentItems: readonly WorldContent[],
       agentTasks: readonly AgentTaskSignal[] = [],
       snap = false,
     ) {
+      const status = studioStatus(missions, leadAssignments, contentItems);
+      if (environment.studio.update(status) && renderer instanceof SoftwareRenderer) renderer.invalidate();
+      studioTag.textContent = `Content Studio · ${status.label.toLowerCase()}`;
+      studioTag.setAttribute("aria-label", `Open Content Studio: ${status.label}${status.title ? ": " + status.title : ""}`);
+      studioTag.title = status.title;
+      studioTag.classList.toggle("has-attention", Boolean(status.reviewRequired));
+      if (status.reviewRequired) studioTag.setAttribute("aria-label", studioTag.getAttribute("aria-label") + "; founder review required");
+      host.dataset.studioState = status.state;
       for (const rig of rigs) {
         const next = agentDestination(missions, leadAssignments, contentItems, rig.key, agentTasks);
         rig.working = agentBusy(missions, leadAssignments, contentItems, rig.key, agentTasks);
         const point = stationPoint(next, rig);
         if (rig.lastDestination === undefined || snap) {
-          rig.route = [];
+          rig.route = []; rig.visit = undefined; rig.routeGoal = undefined;
+          rig.idleHoldUntilMs = elapsed + (rig.key === SCOUT_AGENT_KEY ? 6 : 12);
           rig.char.root.position.set(point.x, .04, point.z);
           rig.char.root.rotation.y = next === "hub" ? rig.homeRotation : rig.workingRotation;
         } else if (next !== rig.lastDestination) {
@@ -364,16 +452,14 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
       const rig = findRig(where);
       if (where === "all") { p = target; camera.zoom = 1; }
       else if (rig) {
-        // Any real agent key (Scout, Content Bot, or one of the five
-        // Operations Wing agents) — follows that rig's own current
-        // position, exactly like Scout/Content Bot already did.
+        // Any real agent key — follows that rig's own current position.
         p = rig.char.root.position.clone().add(new T.Vector3(0, .55, 0));
         camera.zoom = 2.7;
       } else {
         p = where === "desk" || where === "board" ? new T.Vector3(-2.8, .5, -1)
           : where === "research" ? new T.Vector3(3, .5, -1.8)
           : where === "lounge" ? new T.Vector3(3, .35, 2)
-          : new T.Vector3(0, .5, -2.1); // studio
+          : new T.Vector3(7.6, .7, -.5); // studio
         camera.zoom = 1.65;
       }
       controls.target.copy(p); camera.position.copy(p).add(offset); camera.updateProjectionMatrix(); controls.update();
@@ -387,12 +473,12 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     },
     dispose() {
       disposed = true; cancelAnimationFrame(frame); observer.disconnect(); media.removeEventListener("change", motionChange); controls.dispose();
-      canvas.removeEventListener("pointerdown", pointerDown); canvas.removeEventListener("pointermove", pointerMove); canvas.removeEventListener("pointerup", pointerUp); canvas.removeEventListener("webglcontextlost", contextLost);
+      canvas.removeEventListener("pointerleave", pointerLeave); canvas.removeEventListener("pointerdown", pointerDown); canvas.removeEventListener("pointermove", pointerMove); canvas.removeEventListener("pointerup", pointerUp); canvas.removeEventListener("webglcontextlost", contextLost);
       const geometries = new Set<T.BufferGeometry>(), materials = new Set<T.Material>(), textures = new Set<T.Texture>();
       scene.traverse(object => { if (object instanceof T.Mesh) { geometries.add(object.geometry); (Array.isArray(object.material) ? object.material : [object.material]).forEach(mat => materials.add(mat)); } });
       materials.forEach(mat => { Object.values(mat).forEach(value => { if (value instanceof T.Texture) textures.add(value); }); mat.dispose(); });
       geometries.forEach(g => g.dispose()); textures.forEach(t => t.dispose()); sun.shadow.dispose(); renderer.dispose();
-      labels.forEach(l => l.button.remove()); canvas.remove(); delete host.dataset.worldReady;
+      labels.forEach(l => l.button.remove()); canvas.remove(); delete host.dataset.worldReady; delete host.dataset.studioState;
     },
   };
 }
