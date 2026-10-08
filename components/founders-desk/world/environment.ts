@@ -1,6 +1,9 @@
 import * as T from "three";
 import { ball, box, canvasTexture, cylinder, group, material, type Materials } from "./materials";
-import { books, commandDesk, cup, plant, researchFurniture, sofa, studioFurniture } from "./furniture";
+import {
+  books, commandDesk, cup, departmentDesk, plant, researchFurniture, sofa, studioFurniture,
+  chiefOfStaffProp, executiveAssistantProp, financeAgentProp, businessAnalystProp, operationsAgentProp,
+} from "./furniture";
 
 function landscapeTexture() {
   return canvasTexture((c, s) => {
@@ -61,6 +64,16 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   box(root, .052, .009, 8.43, .55, .033, .2, m.brass);
   wall(root, m, 0, -4.08, 10.77, .2, 2.63);
   wall(root, m, -5.38, .2, .2, 8.77, 2.63);
+  // Operations Wing (Milestone 7) — a real east-wing extension, not a
+  // second environment: the same back (north) wall simply continues
+  // further east, abutting the original wall's right edge (x=5.385)
+  // rather than overlapping or gapping it. See layout.ts's widened
+  // walkable() bound and its new OBSTACLES entries for this wing's five
+  // desks — there is no door to cut: the original building's east side
+  // was never a rendered wall (only a numeric walkable() limit), so this
+  // extension is already open to the main room exactly like the lounge
+  // and credenza areas already are.
+  wall(root, m, 8.79, -4.08, 6.81, .2, 2.63);
   // Interior cutaway walls keep their footprint and door openings visible.
   wall(root, m, .55, -2.65, .19, 2.82, 1.88);
   wall(root, m, .55, -.44, .19, 1.6, .93);
@@ -81,6 +94,28 @@ export function buildEnvironment(scene: T.Scene, m: Materials) {
   box(root, 5.66, .045, .06, -2.36, .52, -3.94, m.ivory, .008);
   rug(root, m, -2.8, -1, 4.3, 3.85);
   const desk = commandDesk(root, m); const research = researchFurniture(root, m); const studio = studioFurniture(root, m);
+  // --- Operations Wing floor + desks (Milestone 7) -----------------
+  // The floor slab simply continues east of the original building's
+  // right edge (x=5.6) — same ivory/brass trim treatment as line 60-61
+  // above, with a marble surface (matching the lounge's own east-side
+  // marble) to read as a continuation of the same house, not an annex.
+  box(root, 6.4, .23, 9.02, 8.8, -.145, .27, m.ivory, .085);
+  box(root, 6.26, .055, 8.86, 8.8, -.028, .27, m.brass, .04);
+  box(root, 6.1, .055, 8.45, 8.8, -.001, .2, m.marble);
+  const opsWing = group(root, 0, 0, 0);
+  departmentDesk(opsWing, m, 6.0, -3.35, m.gold, 0, "chief_of_staff", chiefOfStaffProp);
+  departmentDesk(opsWing, m, 7.3, -3.35, m.plum, 1, "executive_assistant", executiveAssistantProp);
+  departmentDesk(opsWing, m, 8.6, -3.35, m.bronze, 0, "finance_agent", financeAgentProp);
+  departmentDesk(opsWing, m, 9.9, -3.35, m.indigo, 1, "business_analyst", businessAnalystProp);
+  departmentDesk(opsWing, m, 11.2, -3.35, m.slate, 0, "operations_agent", operationsAgentProp);
+  // A small wall plaque over the wing, the same "wall-mounted flourish"
+  // motif as the strategy chart/clock from earlier milestones.
+  const opsSign = group(root, 8.79, 1.9, -3.94);
+  frame(opsSign, m, 1.5, .42, canvasTexture((c, s) => {
+    c.fillStyle = "#2c2521"; c.fillRect(0, 0, s, s);
+    c.fillStyle = "#cdb98a"; c.font = "600 54px Georgia"; c.textAlign = "center";
+    c.fillText("OPERATIONS WING", s / 2, s / 2 + 18);
+  }, 1024));
   // Mission board faces into the founders' room, with no fictional mission cards.
   const board = group(root, -5.255, 1.48, -.4, Math.PI / 2); board.userData.target = "board";
   frame(board, m, 1.6, .92, canvasTexture((c, s) => {

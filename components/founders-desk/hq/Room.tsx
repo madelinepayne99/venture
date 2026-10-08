@@ -3,7 +3,16 @@
 import { useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import type { ContentItem, Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
+import type { AgentTaskSignal, WorldTarget } from "../world/layout";
 import { MissionBoard } from "./MissionBoard";
+
+// Operations Wing (Milestone 7) — the five agents dispatched through
+// agent_tasks, not missions. Clicking any of their desks/characters opens
+// the same real detail every one of them already has in Focus View (see
+// AgentDetailSlideOver.tsx) — never a second display for the same data.
+const OPERATIONS_WING_TARGETS = new Set([
+  "chief_of_staff", "executive_assistant", "finance_agent", "business_analyst", "operations_agent",
+]);
 
 const OfficeWorld = dynamic(
   () => import("../world/OfficeWorld").then((mod) => mod.OfficeWorld),
@@ -47,10 +56,12 @@ export function Room({
   missions,
   leadAssignments,
   contentItems,
+  agentTaskSignals,
   selectedMissionId,
   onSelectMission,
   onAssignWork,
   onOpenContentItem,
+  onOpenAgentPanel,
   interactive,
 }: {
   project: Project;
@@ -58,10 +69,13 @@ export function Room({
   missions: Mission[];
   leadAssignments: MissionLeadAssignment[];
   contentItems: ContentItem[];
+  // Global, not room-scoped — see OfficeWorld.tsx's own doc comment.
+  agentTaskSignals: readonly AgentTaskSignal[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
   onOpenContentItem: (contentItemId: string) => void;
+  onOpenAgentPanel: (agentKey: string) => void;
   interactive: boolean;
 }) {
   const boardRef = useRef<HTMLDivElement>(null);
@@ -74,8 +88,10 @@ export function Room({
   // inference from mission state alone.
   const activeProduction = contentItems.find((c) => c.state === "generating" || c.state === "planning");
 
-  function handleSelect(target: "desk" | "scout" | "board" | "research" | "lounge" | "studio" | "content_bot") {
-    if (target === "desk") {
+  function handleSelect(target: WorldTarget) {
+    if (OPERATIONS_WING_TARGETS.has(target)) {
+      onOpenAgentPanel(target);
+    } else if (target === "desk") {
       onAssignWork();
     } else if (target === "scout" || target === "research") {
       if (activeResearch) onSelectMission(activeResearch.id);
@@ -99,6 +115,7 @@ export function Room({
             missions={missions}
             leadAssignments={leadAssignments}
             contentItems={contentItems}
+            agentTaskSignals={agentTaskSignals}
             onSelect={handleSelect}
           />
         ) : (

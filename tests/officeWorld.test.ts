@@ -8,6 +8,12 @@ import {
   walkable,
   SCOUT_AGENT_KEY,
   CONTENT_BOT_AGENT_KEY,
+  CHIEF_OF_STAFF_AGENT_KEY,
+  EXECUTIVE_ASSISTANT_AGENT_KEY,
+  FINANCE_AGENT_KEY,
+  BUSINESS_ANALYST_AGENT_KEY,
+  OPERATIONS_AGENT_KEY,
+  type AgentTaskSignal,
   type Point,
 } from "../components/founders-desk/world/layout";
 
@@ -36,7 +42,10 @@ describe("office world navigation", () => {
   it("rejects blocked destinations and positions outside the building", () => {
     expect(findPath(MARKS.hub, { x: -2.8, z: -1.5 })).toEqual([]);
     expect(findPath(MARKS.hub, { x: .55, z: -1 })).toEqual([]);
-    expect(findPath(MARKS.hub, { x: 12, z: 0 })).toEqual([]);
+    // x: 12 is now genuinely inside the building — the Operations Wing
+    // extension (Milestone 7) widened the walkable east bound from 5.15
+    // to 12.5. This checks a point well beyond that new bound instead.
+    expect(findPath(MARKS.hub, { x: 20, z: 0 })).toEqual([]);
   });
   it("keeps Scout in research until his last led, researching mission leaves", () => {
     expect(researchDestination([], [])).toBe("hub");
@@ -166,5 +175,98 @@ describe("office world navigation", () => {
     expect(walkable(MARKS.contentBotHome)).toBe(true);
     verifyRoute(MARKS.hub, MARKS.studio);
     verifyRoute(MARKS.hub, MARKS.contentBotHome);
+  });
+
+  describe("Operations Wing (Milestone 7) — agent_tasks-driven destinations", () => {
+    const OPS_AGENTS = [
+      { key: EXECUTIVE_ASSISTANT_AGENT_KEY, station: "admin" },
+      { key: FINANCE_AGENT_KEY, station: "ledger" },
+      { key: BUSINESS_ANALYST_AGENT_KEY, station: "intel" },
+      { key: OPERATIONS_AGENT_KEY, station: "process" },
+    ] as const;
+
+    it("every new desk and home mark is real, walkable, and reachable from the hub", () => {
+      const marks = [
+        "command", "chiefOfStaffHome", "admin", "executiveAssistantHome",
+        "ledger", "financeAgentHome", "intel", "businessAnalystHome",
+        "process", "operationsAgentHome",
+      ] as const;
+      for (const key of marks) {
+        expect(walkable(MARKS[key]), `${key} should be walkable`).toBe(true);
+        verifyRoute(MARKS.hub, MARKS[key]);
+      }
+    });
+
+    it("stays home with no agent_tasks at all", () => {
+      for (const { key } of OPS_AGENTS) {
+        expect(agentDestination([], [], [], key, [])).toBe("hub");
+        expect(agentBusy([], [], [], key, [])).toBe(false);
+      }
+    });
+
+    it("walks to its own desk only while it genuinely has an open or in-progress task", () => {
+      for (const { key, station } of OPS_AGENTS) {
+        const openTasks: AgentTaskSignal[] = [{ agent_key: key, state: "open", goal_id: null }];
+        expect(agentDestination([], [], [], key, openTasks)).toBe(station);
+        expect(agentBusy([], [], [], key, openTasks)).toBe(true);
+
+        const inProgressTasks: AgentTaskSignal[] = [{ agent_key: key, state: "in_progress", goal_id: null }];
+        expect(agentDestination([], [], [], key, inProgressTasks)).toBe(station);
+
+        const settledTasks: AgentTaskSignal[] = [{ agent_key: key, state: "completed", goal_id: null }];
+        expect(agentDestination([], [], [], key, settledTasks)).toBe("hub");
+        expect(agentBusy([], [], [], key, settledTasks)).toBe(false);
+
+        const cancelledTasks: AgentTaskSignal[] = [{ agent_key: key, state: "cancelled", goal_id: null }];
+        expect(agentDestination([], [], [], key, cancelledTasks)).toBe("hub");
+      }
+    });
+
+    it("never moves one Operations Wing agent for another agent's real task", () => {
+      const tasks: AgentTaskSignal[] = [{ agent_key: FINANCE_AGENT_KEY, state: "open", goal_id: null }];
+      expect(agentDestination([], [], [], FINANCE_AGENT_KEY, tasks)).toBe("ledger");
+      expect(agentDestination([], [], [], OPERATIONS_AGENT_KEY, tasks)).toBe("hub");
+      expect(agentDestination([], [], [], BUSINESS_ANALYST_AGENT_KEY, tasks)).toBe("hub");
+      expect(agentDestination([], [], [], EXECUTIVE_ASSISTANT_AGENT_KEY, tasks)).toBe("hub");
+    });
+
+    it("Chief of Staff is busy only while a goal it created has a real unresolved (goal_id-bearing) subtask — no row is ever created naming it directly", () => {
+      // No agent_tasks row is ever created with agent_key: "chief_of_staff"
+      // (see chiefOfStaffWorkflow.ts's DELEGATABLE_AGENT_KEYS) — this
+      // proves that alone does NOT move him.
+      const ownKeyTasks: AgentTaskSignal[] = [{ agent_key: CHIEF_OF_STAFF_AGENT_KEY, state: "open", goal_id: null }];
+      expect(agentDestination([], [], [], CHIEF_OF_STAFF_AGENT_KEY, ownKeyTasks)).toBe("hub");
+
+      // A real delegated subtask (goal_id set), still open, on a
+      // DIFFERENT agent's row — this is what actually moves him.
+      const delegatedOpen: AgentTaskSignal[] = [{ agent_key: FINANCE_AGENT_KEY, state: "open", goal_id: "goal-1" }];
+      expect(agentDestination([], [], [], CHIEF_OF_STAFF_AGENT_KEY, delegatedOpen)).toBe("command");
+      expect(agentBusy([], [], [], CHIEF_OF_STAFF_AGENT_KEY, delegatedOpen)).toBe(true);
+      // Never moves the delegate's own character for Chief of Staff's sake.
+      expect(agentDestination([], [], [], FINANCE_AGENT_KEY, delegatedOpen)).toBe("ledger");
+
+      // Every delegated subtask settled — Chief of Staff heads home.
+      const delegatedSettled: AgentTaskSignal[] = [{ agent_key: FINANCE_AGENT_KEY, state: "completed", goal_id: "goal-1" }];
+      expect(agentDestination([], [], [], CHIEF_OF_STAFF_AGENT_KEY, delegatedSettled)).toBe("hub");
+    });
+
+    it("keeps Scout/Content Bot and the Operations Wing agents fully independent of each other", () => {
+      const missions = [{ id: "m1", state: "researching" }];
+      const leadAssignments = [{ mission_id: "m1", agent_key: "scout" }];
+      const contentItems: { mission_id: string; state: string }[] = [];
+      const agentTasks: AgentTaskSignal[] = [{ agent_key: OPERATIONS_AGENT_KEY, state: "open", goal_id: null }];
+
+      expect(agentDestination(missions, leadAssignments, contentItems, SCOUT_AGENT_KEY, agentTasks)).toBe("research");
+      expect(agentDestination(missions, leadAssignments, contentItems, OPERATIONS_AGENT_KEY, agentTasks)).toBe("process");
+      expect(agentDestination(missions, leadAssignments, contentItems, CONTENT_BOT_AGENT_KEY, agentTasks)).toBe("hub");
+    });
+
+    it("the default agentTasks parameter ([]) keeps every pre-Milestone-7 caller behaving identically", () => {
+      // No 5th argument at all — exactly how Scout/Content Bot callers
+      // written before this milestone still call these functions.
+      expect(agentDestination([], [], [], SCOUT_AGENT_KEY)).toBe("hub");
+      expect(agentDestination([], [], [], FINANCE_AGENT_KEY)).toBe("hub");
+      expect(agentBusy([], [], [], FINANCE_AGENT_KEY)).toBe(false);
+    });
   });
 });

@@ -154,6 +154,31 @@ export async function updateAgentTaskState(
   return result.length > 0;
 }
 
+/**
+ * A minimal, privacy-conscious projection of every real agent_tasks row
+ * — never title/detail/payload (which can hold a founder's personal
+ * reminder text) — for the one shared 3D office scene (Milestone 7).
+ * Deliberately global, not founder-scoped: the office is one shared
+ * space for both founders (consistent with listLeadAssignments() also
+ * being global, which Scout/Content Bot's room already relies on), and
+ * this is the only signal driving whether a Operations Wing agent's
+ * character walks to its own desk — never which task, whose it is, or
+ * what it says.
+ */
+export async function listAgentTaskWorldSignals(): Promise<
+  Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>
+> {
+  const db = await getDb();
+  const rows = await db
+    .select({
+      agent_key: schema.agentTasks.agent_key,
+      state: schema.agentTasks.state,
+      goal_id: schema.agentTasks.goal_id,
+    })
+    .from(schema.agentTasks);
+  return rows as Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>;
+}
+
 // --- Chief of Staff (Operations Wing) ---------------------------------------
 // A goal is an immutable grouping container; its real delegated work lives
 // in agent_tasks rows carrying this goal's id (see schema.ts's doc comment

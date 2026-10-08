@@ -136,6 +136,81 @@ export function studioFurniture(parent: T.Object3D, m: Materials) {
   return g;
 }
 
+/**
+ * Operations Wing (Milestone 7) — one small, compact desk shape reused
+ * for all five new agents (Chief of Staff, Executive Assistant, Finance
+ * Agent, Business Analyst, Operations Agent), parameterized by accent
+ * material, monitor screen variant, and a small prop-drawing callback for
+ * the one detail that makes each desk genuinely distinct (a ledger for
+ * Finance, a magnifying glass for the Business Analyst, etc.) — the same
+ * "one real shape, real per-agent differences layered on top" approach
+ * `studioFurniture` already used for Content Bot, rather than hand-built
+ * one-off geometry per desk. No chair — Scout's own research desk has
+ * none either (`researchFurniture` below); standing desks keep the
+ * obstacle footprint small and simple to verify.
+ */
+export function departmentDesk(
+  parent: T.Object3D,
+  m: Materials,
+  x: number,
+  z: number,
+  accent: T.Material,
+  screenVariant: 0 | 1,
+  worldTarget: string,
+  prop?: (desk: T.Group, m: Materials) => void,
+) {
+  const g = group(parent, x, 0, z); g.userData.target = worldTarget;
+  box(g, 1.0, .1, .6, 0, .62, 0, m.wood, .035);
+  box(g, .95, .015, .55, 0, .565, 0, accent, .025);
+  for (const side of [-1, 1]) box(g, .08, .58, .52, side * .44, .29, 0, m.wood, .025);
+  monitor(g, 0, .68, -.13, m, screenVariant);
+  prop?.(g, m);
+  return g;
+}
+
+/** Executive Command Centre — a small gavel and a tidy folder stack. */
+export function chiefOfStaffProp(desk: T.Group, m: Materials) {
+  const gavel = group(desk, .32, .64, .2);
+  cylinder(gavel, .036, .036, .13, 0, .07, 0, m.wood).rotation.z = Math.PI / 2;
+  cylinder(gavel, .017, .017, .22, -.13, .07, 0, m.wood).rotation.z = Math.PI / 2;
+  books(desk, -.4, .655, .14, m, 3, true);
+}
+
+/** Administration Office — an inbox tray of papers and a small desk clock. */
+export function executiveAssistantProp(desk: T.Group, m: Materials) {
+  const tray = box(desk, .22, .05, .17, -.32, .64, .16, m.brass, .018);
+  box(tray, .185, .013, .145, 0, .033, 0, m.paper, .004);
+  const clock = group(desk, .36, .66, .16);
+  cylinder(clock, .09, .09, .025, 0, 0, 0, m.ivory); cylinder(clock, .095, .095, .006, 0, 0, .014, m.brass);
+  ball(clock, .006, 0, .05, .02, m.dark); ball(clock, .006, .04, 0, .02, m.dark);
+}
+
+/** Finance Department — a small coin stack and a ledger. */
+export function financeAgentProp(desk: T.Group, m: Materials) {
+  const coins = group(desk, .33, .64, .17);
+  for (let i = 0; i < 4; i++) cylinder(coins, .05, .05, .018, 0, .009 + i * .018, 0, m.brass);
+  books(desk, -.4, .655, .14, m, 2, true);
+}
+
+/** Intelligence Department — a magnifying glass over a document stack. */
+export function businessAnalystProp(desk: T.Group, m: Materials) {
+  const glass = group(desk, -.34, .72, .15, .4);
+  const ring = new T.Mesh(new T.TorusGeometry(.065, .009, 8, 24), m.brass); glass.add(ring);
+  cylinder(glass, .012, .012, .16, .09, -.09, 0, m.wood).rotation.z = -.9;
+  box(desk, .18, .018, .14, .34, .645, .17, m.paper, .006);
+  box(desk, .16, .016, .12, .34, .665, .17, m.paper, .006);
+}
+
+/** Operations Centre — a checklist clipboard and a small toolbox. */
+export function operationsAgentProp(desk: T.Group, m: Materials) {
+  const clip = box(desk, .19, .25, .02, -.33, .76, .14, m.wood, .01);
+  box(clip, .15, .19, .005, 0, -.015, .012, m.paper, .004);
+  for (let i = 0; i < 3; i++) box(clip, .1, .012, .006, -.015, .055 - i * .055, .016, m.dark);
+  box(clip, .2, .02, .025, 0, .128, .013, m.brass, .006);
+  const toolbox = box(desk, .16, .09, .12, .34, .615, .15, m.dark, .015);
+  box(toolbox, .03, .06, .025, 0, .075, 0, m.brass, .006);
+}
+
 export function plant(parent: T.Object3D, x: number, z: number, m: Materials, height = 1.45, y = 0) {
   const g = group(parent, x, y, z);
   const factor = height / 1.45; g.scale.setScalar(factor);

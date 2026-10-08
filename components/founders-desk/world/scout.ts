@@ -86,3 +86,30 @@ export function buildScout(m: Materials) {
 export function buildContentBot(m: Materials) {
   return buildAgentCharacter(m, m.sapphire);
 }
+
+// Operations Wing (Milestone 7) — the exact same procedural rig Scout and
+// Content Bot already use, each in its own accent color only (see
+// materials.ts's palette.gold/plum/bronze/indigo/slate). This is a
+// deliberate choice, not a shortcut: CLAUDE.md's own "distinct visual
+// identity" requirement is met by a real, already-proven, hand-tuned
+// model reused in a new color plus each agent's own distinct desk and
+// prop (see furniture.ts's departmentDesk) — a genuinely new rig per
+// agent would mean five more hand-tuned geometries, each one a fresh
+// chance to drift from the others or clip, with no way to visually
+// verify any of them in this sandbox. Reusing the one proven rig is the
+// same, lower-risk call already made for Content Bot.
+export function buildChiefOfStaff(m: Materials) {
+  return buildAgentCharacter(m, m.gold);
+}
+export function buildExecutiveAssistant(m: Materials) {
+  return buildAgentCharacter(m, m.plum);
+}
+export function buildFinanceAgent(m: Materials) {
+  return buildAgentCharacter(m, m.bronze);
+}
+export function buildBusinessAnalyst(m: Materials) {
+  return buildAgentCharacter(m, m.indigo);
+}
+export function buildOperationsAgent(m: Materials) {
+  return buildAgentCharacter(m, m.slate);
+}

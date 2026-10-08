@@ -6,6 +6,7 @@ import {
   ledgerTotalUsd,
   listProjects,
   listFounders,
+  listAgentTaskWorldSignals,
 } from "@/lib/db/repositories";
 import { auth } from "@/auth";
 import { FoundersDeskApp } from "@/components/founders-desk/FoundersDeskApp";
@@ -15,7 +16,7 @@ import { FoundersDeskApp } from "@/components/founders-desk/FoundersDeskApp";
 export const dynamic = "force-dynamic";
 
 export default async function HomePage() {
-  const [session, agents, missions, leadAssignments, ledgerEntries, ledgerTotal, projects, founders] =
+  const [session, agents, missions, leadAssignments, ledgerEntries, ledgerTotal, projects, founders, agentTaskSignals] =
     await Promise.all([
       auth(),
       listAgents(),
@@ -25,6 +26,7 @@ export default async function HomePage() {
       ledgerTotalUsd(),
       listProjects(),
       listFounders(),
+      listAgentTaskWorldSignals(),
     ]);
 
   // middleware.ts already redirects an unauthenticated request before this
@@ -41,6 +43,7 @@ export default async function HomePage() {
       initialLedgerTotal={ledgerTotal}
       initialProjects={projects}
       initialFounders={founders}
+      initialAgentTaskSignals={agentTaskSignals}
     />
   );
 }

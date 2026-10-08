@@ -1,4 +1,5 @@
 import type { ContentItem, Mission, MissionLeadAssignment, Project } from "@/lib/db/types";
+import type { AgentTaskSignal } from "../world/layout";
 import { REAL_WORKSPACE_TYPES, mostRecentProjectOfType } from "./WorkspaceBar";
 import { Room } from "./Room";
 
@@ -23,20 +24,29 @@ export function HQView({
   missions,
   leadAssignments,
   contentItems,
+  agentTaskSignals,
   selectedMissionId,
   onSelectMission,
   onAssignWork,
   onOpenContentItem,
+  onOpenAgentPanel,
 }: {
   projects: Project[];
   activeProjectId: string | null;
   missions: Mission[];
   leadAssignments: MissionLeadAssignment[];
   contentItems: ContentItem[];
+  // Operations Wing (Milestone 7) — global, the same real list passed to
+  // EVERY room below unfiltered: these five agents have no workspace
+  // concept, unlike missions/leadAssignments/contentItems above (which
+  // ARE filtered per room, since Scout/Content Bot's work IS
+  // workspace-scoped via each mission's project_id).
+  agentTaskSignals: readonly AgentTaskSignal[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork: () => void;
   onOpenContentItem: (contentItemId: string) => void;
+  onOpenAgentPanel: (agentKey: string) => void;
 }) {
   const rooms = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
     .filter((project): project is Project => project !== null)
@@ -80,10 +90,12 @@ export function HQView({
                 missions={room.missions}
                 leadAssignments={room.leadAssignments}
                 contentItems={room.contentItems}
+                agentTaskSignals={agentTaskSignals}
                 selectedMissionId={selectedMissionId}
                 onSelectMission={onSelectMission}
                 onAssignWork={onAssignWork}
                 onOpenContentItem={onOpenContentItem}
+                onOpenAgentPanel={onOpenAgentPanel}
                 interactive={i === activeIndex}
               />
             </div>

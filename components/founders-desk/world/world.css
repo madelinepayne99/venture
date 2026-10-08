@@ -7,6 +7,17 @@
 /* Content Bot's own floating tag — same shape as Scout's, sapphire instead of emerald. */
 .vw-content-bot-tag{background:#1d4d7aed;border-color:#4d7ba8}
 .vw-content-bot-tag:hover,.vw-content-bot-tag:focus-visible{background:#173e63}
+/* Operations Wing (Milestone 7) — same tag shape, each agent's own accent (see materials.ts's palette). */
+.vw-chief-of-staff-tag{background:#a9762fed;border-color:#c9a24a}
+.vw-chief-of-staff-tag:hover,.vw-chief-of-staff-tag:focus-visible{background:#8a5f26}
+.vw-executive-assistant-tag{background:#7a4868ed;border-color:#9a5570}
+.vw-executive-assistant-tag:hover,.vw-executive-assistant-tag:focus-visible{background:#623a53}
+.vw-finance-agent-tag{background:#8a5a2eed;border-color:#a8762e}
+.vw-finance-agent-tag:hover,.vw-finance-agent-tag:focus-visible{background:#6f4825}
+.vw-business-analyst-tag{background:#4f4a80ed;border-color:#5a56a0}
+.vw-business-analyst-tag:hover,.vw-business-analyst-tag:focus-visible{background:#3f3b67}
+.vw-operations-agent-tag{background:#45606ded;border-color:#4a6472}
+.vw-operations-agent-tag:hover,.vw-operations-agent-tag:focus-visible{background:#374f5a}
 .vw-error{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;background:#eeeadd;color:#204636;padding:3rem;font:14px/1.6 system-ui,sans-serif}
 .vw-error p{max-width:460px}.vw-error button{background:#244e41;color:white;border:0;padding:12px 20px;border-radius:9px;cursor:pointer}
 @media(max-width:700px){.vw-room-tag{font-size:8px;padding:4px 6px}.vw-scout-tag{font-size:10px}.vw-host{min-height:280px}}

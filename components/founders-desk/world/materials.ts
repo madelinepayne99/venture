@@ -9,6 +9,16 @@ export const palette = {
   // fittings the same way Scout's green already is (see scout.ts's
   // buildAgentCharacter). Never used for anything else in the scene.
   sapphire: "#1d4d7a",
+  // Operations Wing (Milestone 7) — one new accent per new agent, each
+  // chosen to sit clearly apart from Scout's emerald and Content Bot's
+  // sapphire (and from each other) on the color wheel, while staying
+  // within the room's existing muted/matte palette (compare brass, clay,
+  // walnut above). Never used for anything else in the scene.
+  gold: "#a9762f", // Chief of Staff — command/leadership
+  plum: "#7a4868", // Executive Assistant — administrative warmth
+  bronze: "#8a5a2e", // Finance Agent — ledger/copper, deliberately warmer/browner than emerald
+  indigo: "#4f4a80", // Business Analyst — intelligence/analysis
+  slate: "#45606d", // Operations Agent — process/operations, grayer and flatter than sapphire
 };
 
 export function material(color: string, roughness = 0.7, metalness = 0) {
@@ -90,7 +100,16 @@ export function buildMaterials() {
   const green = material(palette.emerald, .84); green.map = fabricTexture();
   const linen = material("#d9c8a6", .93); linen.map = fabricTexture();
   const sapphire = material(palette.sapphire, .84); sapphire.map = fabricTexture();
-  return { wood, floor, marble, green, linen, sapphire, wall: material(palette.plaster), ivory: material(palette.ivory, .4),
+  // Operations Wing accents — same fabric-textured treatment as Scout's
+  // green/Content Bot's sapphire, so the five new agents' waistcoats read
+  // as the same family of character, not a different material language.
+  const gold = material(palette.gold, .84); gold.map = fabricTexture();
+  const plum = material(palette.plum, .84); plum.map = fabricTexture();
+  const bronze = material(palette.bronze, .84); bronze.map = fabricTexture();
+  const indigo = material(palette.indigo, .84); indigo.map = fabricTexture();
+  const slate = material(palette.slate, .84); slate.map = fabricTexture();
+  return { wood, floor, marble, green, linen, sapphire, gold, plum, bronze, indigo, slate,
+    wall: material(palette.plaster), ivory: material(palette.ivory, .4),
     brass: material(palette.brass, .34, .62), dark: material(palette.ink, .5), paper: material(palette.paper),
     clay: material(palette.clay), black: material("#222d2c", .5), leaf: material("#386a40"), leaf2: material("#5b8452"),
     screenBlue: material("#2f6ea8", .5, .1) };

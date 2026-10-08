@@ -2,7 +2,10 @@ import * as T from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { buildMaterials, material } from "./materials";
 import { buildEnvironment } from "./environment";
-import { buildScout, buildContentBot } from "./scout";
+import {
+  buildScout, buildContentBot,
+  buildChiefOfStaff, buildExecutiveAssistant, buildFinanceAgent, buildBusinessAnalyst, buildOperationsAgent,
+} from "./scout";
 import {
   findPath,
   MARKS,
@@ -10,7 +13,13 @@ import {
   agentBusy,
   SCOUT_AGENT_KEY,
   CONTENT_BOT_AGENT_KEY,
+  CHIEF_OF_STAFF_AGENT_KEY,
+  EXECUTIVE_ASSISTANT_AGENT_KEY,
+  FINANCE_AGENT_KEY,
+  BUSINESS_ANALYST_AGENT_KEY,
+  OPERATIONS_AGENT_KEY,
   type AgentStation,
+  type AgentTaskSignal,
   type Point,
   type WorldTarget,
 } from "./layout";
@@ -126,6 +135,11 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     const button = tag(`${idleLabel} · Ready`, worldTarget, new T.Vector3());
     button.classList.add("vw-scout-tag");
     if (key === CONTENT_BOT_AGENT_KEY) button.classList.add("vw-content-bot-tag");
+    else if (key === CHIEF_OF_STAFF_AGENT_KEY) button.classList.add("vw-chief-of-staff-tag");
+    else if (key === EXECUTIVE_ASSISTANT_AGENT_KEY) button.classList.add("vw-executive-assistant-tag");
+    else if (key === FINANCE_AGENT_KEY) button.classList.add("vw-finance-agent-tag");
+    else if (key === BUSINESS_ANALYST_AGENT_KEY) button.classList.add("vw-business-analyst-tag");
+    else if (key === OPERATIONS_AGENT_KEY) button.classList.add("vw-operations-agent-tag");
     return {
       key, worldTarget, char, ring, tag: button, tagOffset: new T.Vector3(0, 1.41, 0),
       home, homeRotation, workingRotation,
@@ -138,6 +152,15 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
   const rigs: Rig[] = [
     createRig(SCOUT_AGENT_KEY, "scout", buildScout(m), MARKS.hub, .45, Math.PI, "#d7ac5b", "Scout", "Researching"),
     createRig(CONTENT_BOT_AGENT_KEY, "content_bot", buildContentBot(m), MARKS.contentBotHome, .2, Math.PI * .75, "#5a9bd6", "Content Bot", "Producing"),
+    // Operations Wing (Milestone 7) — same createRig mechanism, each
+    // agent's own home point near its own desk (see layout.ts's MARKS),
+    // facing north (workingRotation ~ Math.PI) toward its desk exactly
+    // like Scout/Content Bot already do toward theirs.
+    createRig(CHIEF_OF_STAFF_AGENT_KEY, "chief_of_staff", buildChiefOfStaff(m), MARKS.chiefOfStaffHome, 0, Math.PI, "#c9a24a", "Chief of Staff", "Coordinating"),
+    createRig(EXECUTIVE_ASSISTANT_AGENT_KEY, "executive_assistant", buildExecutiveAssistant(m), MARKS.executiveAssistantHome, 0, Math.PI, "#9a5570", "Executive Assistant", "Working"),
+    createRig(FINANCE_AGENT_KEY, "finance_agent", buildFinanceAgent(m), MARKS.financeAgentHome, 0, Math.PI, "#a8762e", "Finance Agent", "Working"),
+    createRig(BUSINESS_ANALYST_AGENT_KEY, "business_analyst", buildBusinessAnalyst(m), MARKS.businessAnalystHome, 0, Math.PI, "#5a56a0", "Business Analyst", "Researching"),
+    createRig(OPERATIONS_AGENT_KEY, "operations_agent", buildOperationsAgent(m), MARKS.operationsAgentHome, 0, Math.PI, "#4a6472", "Operations Agent", "Working"),
   ];
 
   const destinationRing = new T.Mesh(new T.RingGeometry(.18, .2, 32), new T.MeshBasicMaterial({ color: "#416a4d", side: T.DoubleSide, transparent: true, opacity: .7 }));
@@ -265,8 +288,12 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
     }
 
     controls.update();
-    // Keep panning bounded without changing the viewing direction.
-    const cx = T.MathUtils.clamp(controls.target.x, -4, 4), cz = T.MathUtils.clamp(controls.target.z, -3, 3);
+    // Keep panning bounded without changing the viewing direction. The
+    // east bound widened for the Operations Wing extension (Milestone 7)
+    // — deliberately NOT changing resize()'s own fixed corner-fit/zoom
+    // math, so the original room's on-screen size never shrinks to make
+    // room for the new wing; a founder pans right to reach it instead.
+    const cx = T.MathUtils.clamp(controls.target.x, -4, 10.5), cz = T.MathUtils.clamp(controls.target.z, -3, 3);
     camera.position.x += cx - controls.target.x; camera.position.z += cz - controls.target.z;
     controls.target.x = cx; controls.target.z = cz;
 
@@ -315,11 +342,12 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
       missions: readonly { id: string; state: string }[],
       leadAssignments: readonly { mission_id: string; agent_key: string }[],
       contentItems: readonly { mission_id: string; state: string }[],
+      agentTasks: readonly AgentTaskSignal[] = [],
       snap = false,
     ) {
       for (const rig of rigs) {
-        const next = agentDestination(missions, leadAssignments, contentItems, rig.key);
-        rig.working = agentBusy(missions, leadAssignments, contentItems, rig.key);
+        const next = agentDestination(missions, leadAssignments, contentItems, rig.key, agentTasks);
+        rig.working = agentBusy(missions, leadAssignments, contentItems, rig.key, agentTasks);
         const point = stationPoint(next, rig);
         if (rig.lastDestination === undefined || snap) {
           rig.route = [];
@@ -331,15 +359,18 @@ export function createOfficeWorld(host: HTMLDivElement, options: WorldOptions) {
         rig.lastDestination = next;
       }
     },
-    focus(where: "all" | "desk" | "research" | "scout" | "lounge" | "studio" | "content_bot") {
+    focus(where: "all" | "desk" | "research" | "lounge" | "studio" | WorldTarget) {
       let p: T.Vector3;
+      const rig = findRig(where);
       if (where === "all") { p = target; camera.zoom = 1; }
-      else if (where === "scout" || where === "content_bot") {
-        const rig = findRig(where === "scout" ? SCOUT_AGENT_KEY : CONTENT_BOT_AGENT_KEY)!;
+      else if (rig) {
+        // Any real agent key (Scout, Content Bot, or one of the five
+        // Operations Wing agents) — follows that rig's own current
+        // position, exactly like Scout/Content Bot already did.
         p = rig.char.root.position.clone().add(new T.Vector3(0, .55, 0));
         camera.zoom = 2.7;
       } else {
-        p = where === "desk" ? new T.Vector3(-2.8, .5, -1)
+        p = where === "desk" || where === "board" ? new T.Vector3(-2.8, .5, -1)
           : where === "research" ? new T.Vector3(3, .5, -1.8)
           : where === "lounge" ? new T.Vector3(3, .35, 2)
           : new T.Vector3(0, .5, -2.1); // studio

@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import * as schema from "./schema";
 
 export type Db = PostgresJsDatabase<typeof schema>;
@@ -208,41 +208,80 @@ const CANONICAL_AGENTS: Array<{
 /**
  * Per-agent, idempotent: inserts exactly the canonical agents (and, for a
  * newly-inserted agent only, its canonical capabilities) that don't
- * already exist by `key` — never touches, resets, or duplicates a
- * `agents` row that's already there, whatever its `status` or other
- * columns hold today. Safe to call on every startup against any
- * database, empty or long-lived: this is what makes adding a future
- * agent to CANONICAL_AGENTS safe on an already-populated database too.
+ * already exist by `key`. For an agent that DOES already exist, this
+ * also graduates it from "planned" to "active" the moment its canonical
+ * definition says "active" — a real, live bug found via real end-to-end
+ * HTTP testing against the real dev database (Milestone 7): every agent
+ * flipped to "active" in a previous Operations Wing slice (finance_agent,
+ * business_analyst, operations_agent, chief_of_staff) had already been
+ * inserted as "planned" by an earlier call to this function, and the
+ * original version below never updated an EXISTING row's status when its
+ * canonical definition later changed — so a real, already-seeded database
+ * (this app's actual dev Postgres instance) silently kept reporting four
+ * genuinely-built, genuinely-active agents as "planned," which in turn
+ * made chiefOfStaffWorkflow.ts's own real "must be active" delegation
+ * check correctly, but confusingly, refuse every real delegation to any
+ * of them. This mirrors the exact bug class CLAUDE.md already documents
+ * for content_bot's own real-database graduation. The one direction this
+ * ever moves is planned -> active — never active -> planned, which would
+ * silently take away a working capability rather than grant one; that's
+ * a deliberate human decision, not something idempotent seeding should
+ * ever do on its own.
  */
 // Exported (not just used internally by seed()) specifically so this is
 // directly testable against a real Postgres instance without going through
 // resetDbForTests()'s full truncate-and-reseed — the exact scenario this
-// exists for (a database that already has SOME agents, missing one) can't
-// be constructed any other way.
+// exists for (a database that already has SOME agents, missing one, or one
+// that needs upgrading) can't be constructed any other way.
 export async function seedAgents(instance: Db): Promise<void> {
-  const existing = await instance.select({ key: schema.agents.key }).from(schema.agents);
-  const existingKeys = new Set(existing.map((row) => row.key));
+  const existing = await instance.select({ key: schema.agents.key, id: schema.agents.id, status: schema.agents.status }).from(schema.agents);
+  const existingByKey = new Map(existing.map((row) => [row.key, row]));
 
   for (const agent of CANONICAL_AGENTS) {
-    if (existingKeys.has(agent.key)) continue;
+    const existingRow = existingByKey.get(agent.key);
 
-    const id = randomUUID();
-    await instance.insert(schema.agents).values({
-      id,
-      key: agent.key,
-      name: agent.name,
-      role_summary: agent.role_summary,
-      status: agent.status,
-    });
-    if (agent.capabilities?.length) {
-      await instance.insert(schema.agentCapabilities).values(
-        agent.capabilities.map((cap) => ({
-          id: randomUUID(),
-          agent_id: id,
-          capability: cap.capability,
-          description: cap.description,
-        })),
-      );
+    if (!existingRow) {
+      const id = randomUUID();
+      await instance.insert(schema.agents).values({
+        id,
+        key: agent.key,
+        name: agent.name,
+        role_summary: agent.role_summary,
+        status: agent.status,
+      });
+      if (agent.capabilities?.length) {
+        await instance.insert(schema.agentCapabilities).values(
+          agent.capabilities.map((cap) => ({
+            id: randomUUID(),
+            agent_id: id,
+            capability: cap.capability,
+            description: cap.description,
+          })),
+        );
+      }
+      continue;
+    }
+
+    if (agent.status === "active" && existingRow.status !== "active") {
+      await instance.update(schema.agents).set({ status: "active" }).where(eq(schema.agents.id, existingRow.id));
+      if (agent.capabilities?.length) {
+        const existingCapabilities = await instance
+          .select({ capability: schema.agentCapabilities.capability })
+          .from(schema.agentCapabilities)
+          .where(eq(schema.agentCapabilities.agent_id, existingRow.id));
+        const existingCapabilityNames = new Set(existingCapabilities.map((c) => c.capability));
+        const missingCapabilities = agent.capabilities.filter((cap) => !existingCapabilityNames.has(cap.capability));
+        if (missingCapabilities.length) {
+          await instance.insert(schema.agentCapabilities).values(
+            missingCapabilities.map((cap) => ({
+              id: randomUUID(),
+              agent_id: existingRow.id,
+              capability: cap.capability,
+              description: cap.description,
+            })),
+          );
+        }
+      }
     }
   }
 }

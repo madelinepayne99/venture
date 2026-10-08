@@ -24,7 +24,12 @@ describe("idle wandering", () => {
   });
 
   it("every fixed offset is a genuinely walkable point from every real agent home station", () => {
-    for (const home of [MARKS.hub, MARKS.contentBotHome]) {
+    for (const home of [
+      MARKS.hub, MARKS.contentBotHome,
+      // Operations Wing (Milestone 7) — the five new agents' own home points.
+      MARKS.chiefOfStaffHome, MARKS.executiveAssistantHome, MARKS.financeAgentHome,
+      MARKS.businessAnalystHome, MARKS.operationsAgentHome,
+    ]) {
       for (let seedTick = 0; seedTick < IDLE_OFFSETS.length; seedTick++) {
         const point = nextIdlePoint(home, seedTick);
         expect(walkable(point), `${JSON.stringify(home)} + offset ${seedTick} -> ${JSON.stringify(point)}`).toBe(

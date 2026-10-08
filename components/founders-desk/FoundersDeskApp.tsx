@@ -13,10 +13,12 @@ import type {
 } from "@/lib/db/types";
 import { signOutAction } from "@/lib/auth/actions";
 import type { MissionDetailData } from "./MissionDetail";
+import type { AgentTaskSignal } from "./world/layout";
 import { FocusView } from "./FocusView";
 import { WorkspaceBar } from "./hq/WorkspaceBar";
 import { HQView } from "./hq/HQView";
 import { MissionSlideOver } from "./hq/MissionSlideOver";
+import { AgentDetailSlideOver } from "./hq/AgentDetailSlideOver";
 import { AssignWorkModal } from "./hq/AssignWorkModal";
 import { ProductionApprovalDialog, type ProductionApprovalInput } from "./hq/ProductionApprovalDialog";
 import { CommissionPilotDialog, type CommissionPilotInput } from "./hq/CommissionPilotDialog";
@@ -33,6 +35,7 @@ interface Props {
   initialLedgerTotal: number;
   initialProjects: Project[];
   initialFounders: Founder[];
+  initialAgentTaskSignals: AgentTaskSignal[];
 }
 
 // "awaiting_evidence" is always transient under the two-pass evidence loop
@@ -49,6 +52,22 @@ const POLLING_STATES = new Set(["queued", "researching", "awaiting_evidence"]);
 // "ready_to_publish" are founder-actionable resting states, not polled.
 const CONTENT_POLLING_STATES = new Set(["planning", "generating", "revision_requested"]);
 const POLL_INTERVAL_MS = 3000;
+// Operations Wing (Milestone 7) — the five new agents' panels
+// (ExecutiveAssistantTasks, FinanceAgentPanel, etc.) are deliberately
+// self-contained: they fetch and mutate their own /api/... routes with
+// no knowledge of FoundersDeskApp's state at all (the same design that
+// keeps them trivially reusable, unmodified, inside AgentDetailSlideOver
+// for Office View). That means a task created or completed in one of
+// them never flows through handleCreate/handleApprove/etc., so nothing
+// would otherwise refresh agentTaskSignals — the 3D scene would show a
+// stale position until some unrelated mission action happened to poll.
+// This interval is always on (not gated on "is anything in flight" the
+// way useMissionPolling's other use above is) specifically to close that
+// gap: "if a founder creates a task in Focus View, Office View should
+// reflect the assignment" needs *some* real polling cadence regardless
+// of mission state. A longer interval than mission polling — this is a
+// much lighter, rarer-to-change signal.
+const AGENT_TASK_POLL_INTERVAL_MS = 5000;
 
 type ViewMode = "hq" | "focus";
 const VIEW_MODE_STORAGE_KEY = "venture-hq:view-mode";
@@ -80,12 +99,18 @@ export function FoundersDeskApp({
   initialLedgerTotal,
   initialProjects,
   initialFounders,
+  initialAgentTaskSignals,
 }: Props) {
   const [agents] = useState(initialAgents);
   const [founders] = useState(initialFounders);
   const [missions, setMissions] = useState(initialMissions);
   const [leadAssignments, setLeadAssignments] = useState(initialLeadAssignments);
   const [contentItems, setContentItems] = useState<ContentItem[]>([]);
+  // Operations Wing (Milestone 7) — global, drives the five new agents'
+  // positions in the shared 3D office. See world/OfficeWorld.tsx's own
+  // doc comment for why this is never room/workspace-filtered.
+  const [agentTaskSignals, setAgentTaskSignals] = useState<AgentTaskSignal[]>(initialAgentTaskSignals);
+  const [selectedAgentPanelKey, setSelectedAgentPanelKey] = useState<string | null>(null);
   const [ledgerEntries, setLedgerEntries] = useState(initialLedgerEntries);
   const [ledgerTotal, setLedgerTotal] = useState(initialLedgerTotal);
   const [projects, setProjects] = useState(initialProjects);
@@ -153,7 +178,15 @@ export function FoundersDeskApp({
     setLeadAssignments(data.leadAssignments);
     const freshContentItems = (data.contentItems ?? []) as ContentItem[];
     setContentItems(freshContentItems);
+    setAgentTaskSignals((data.agentTaskSignals ?? []) as AgentTaskSignal[]);
     return { missions: data.missions as Mission[], contentItems: freshContentItems };
+  }
+
+  function openAgentPanel(agentKey: string) {
+    setSelectedAgentPanelKey(agentKey);
+  }
+  function closeAgentPanel() {
+    setSelectedAgentPanelKey(null);
   }
 
   async function loadContentItemDetail(contentItemId: string) {
@@ -274,6 +307,20 @@ export function FoundersDeskApp({
       })();
     },
     POLL_INTERVAL_MS,
+  );
+
+  // Always-on — see AGENT_TASK_POLL_INTERVAL_MS's own doc comment above
+  // for why this can't be gated on hasInFlightMission the way the poll
+  // above is. A transient failure is swallowed the same way: the next
+  // tick (the interval keeps running regardless) simply tries again.
+  useMissionPolling(
+    true,
+    () => {
+      refreshMissions().catch((pollError) => {
+        console.error("Agent-task world-sync poll failed — will retry on the next tick.", pollError);
+      });
+    },
+    AGENT_TASK_POLL_INTERVAL_MS,
   );
 
   async function handleCreate(title: string, brief: string, projectId: string) {
@@ -588,11 +635,14 @@ export function FoundersDeskApp({
             missions={missions}
             leadAssignments={leadAssignments}
             contentItems={contentItems}
+            agentTaskSignals={agentTaskSignals}
             selectedMissionId={selectedMissionId}
             onSelectMission={loadDetail}
             onAssignWork={() => setAssignWorkOpen(true)}
             onOpenContentItem={loadContentItemDetail}
+            onOpenAgentPanel={openAgentPanel}
           />
+          <AgentDetailSlideOver agentKey={selectedAgentPanelKey} onClose={closeAgentPanel} />
           <MissionSlideOver
             detail={missionDetail}
             busyMissionId={busyMissionId}

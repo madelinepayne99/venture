@@ -301,3 +301,228 @@ that.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm this
 baseline (618 tests) still holds before starting anything new.
+
+## Milestone 7: bringing the workforce into the 3D office (complete, verified)
+
+With all five Operations Wing agents real, the founders asked for the
+next real step: all seven agents sharing one persistent 3D headquarters,
+genuinely interactive, synchronized with Focus View.
+
+### Real east-wing extension — not a second environment
+
+`components/founders-desk/world/` already models one open-plan building
+(Three.js, real pathfinding grid, real obstacles). Rather than cramming
+five more desks into the existing room (already carrying the founders'
+desk, Scout's research desk, Content Bot's studio, the lounge, and the
+planning nook) or building a second scene, the walkable floor was
+genuinely widened east (`layout.ts`'s `walkable()` x-bound: 5.15 → 12.5)
+and a real "Operations Wing" extension was added in `environment.ts` —
+a floor/wall continuation abutting the existing building (no doorway
+needed: the original east side was never a rendered wall, only a
+numeric limit, so the extension is already open to the main room) with
+five small desks (`furniture.ts`'s new `departmentDesk`), each with its
+own themed prop (gavel/folders for Chief of Staff, inbox/clock for
+Executive Assistant, coins/ledger for Finance, magnifying glass/
+documents for Business Analyst, clipboard/toolbox for Operations).
+`engine.ts`'s camera **framing/zoom was deliberately left untouched** —
+only the pan-clamp bounds widened — so the existing room's on-screen
+size never shrinks to make room for the new wing; a founder pans right
+to reach it.
+
+### Five new character rigs, one proven shape
+
+Reused the exact same procedural rig Scout/Content Bot already use
+(`scout.ts`'s `buildAgentCharacter`), each in its own new accent color
+(`materials.ts`: gold/plum/bronze/indigo/slate) — a deliberate choice,
+not a shortcut: a genuinely new rig per agent would be five more
+hand-tuned geometries with no way to visually verify any of them in this
+sandbox. Distinct identity comes from accent color + desk + prop, the
+same approach already proven for Content Bot.
+
+### The real "which agent goes where" generalization
+
+`layout.ts`'s `agentDestination`/`agentBusy` — previously hardcoded to
+Scout (mission `researching` + real lead) and Content Bot (content item
+`generating` + real lead) — gained one new generic branch for the five
+Operations Wing agents, driven by a new, privacy-conscious projection of
+real `agent_tasks` rows (`AgentTaskSignal`: `agent_key`, `state`,
+`goal_id` only — never title/detail/payload, which can hold personal
+reminder text). An agent walks to its own desk only while it genuinely
+has an open/in-progress `agent_tasks` row. Chief of Staff is the one
+deliberate special case: it delegates rather than receives tasks (no
+row is ever created with `agent_key: "chief_of_staff"` — see
+`chiefOfStaffWorkflow.ts`'s `DELEGATABLE_AGENT_KEYS`), so its own signal
+is "does any goal it created still have an unresolved (`goal_id`-
+bearing) subtask anywhere." Scout/Content Bot's own branches are
+byte-for-byte unchanged. `AgentTaskSignal` defaults to `[]` everywhere,
+so every pre-Milestone-7 caller keeps compiling and behaving identically.
+
+### Real, global data plumbing — not founder-scoped
+
+`lib/db/repositories.ts`'s new `listAgentTaskWorldSignals()` is
+deliberately global (not founder-scoped, like `listLeadAssignments()`
+already is) — the office is one shared space for both founders. It
+rides on the *existing* `GET /api/missions` poll (now also returning
+`agentTaskSignals`) rather than a second polling loop, and is also
+SSR-fetched in `app/page.tsx` for a correct first paint. **A real gap
+was found and closed**: the five agents' own Focus View panels are
+deliberately self-contained (their own fetch/mutate, no knowledge of
+`FoundersDeskApp`'s state — the same design that makes them trivially
+reusable, unmodified, inside the new `AgentDetailSlideOver`), so a task
+created in one of them would never flow through `FoundersDeskApp`'s
+existing mission-centric handlers and nothing would refresh
+`agentTaskSignals`. Fixed with a second, always-on (not gated on "is a
+mission in flight") polling interval via the same `useMissionPolling`
+hook, specifically so "if a founder creates a task in Focus View, Office
+View reflects the assignment" is actually true, not just asserted.
+
+### One real interaction, reusing existing components — never a duplicate
+
+Clicking any of the five new desks/characters opens
+`hq/AgentDetailSlideOver.tsx`, which renders the **exact same** Focus
+View panel component for that agent (`ExecutiveAssistantTasks`,
+`FinanceAgentPanel`, `OperationsAgentChecklists`, `BusinessAnalystPanel`,
+`ChiefOfStaffPanel` — all already prop-less and self-fetching). This is
+what makes "Office View and Focus View stay synchronized" structurally
+guaranteed rather than something that could drift: there is only ever
+one component per agent, mounted in two places, each against the same
+real API routes. No second task system, no second display.
+
+### A real, live bug found and fixed through actual HTTP testing
+
+Per the founders' explicit instruction to test through the real running
+application rather than unit tests alone: a real dev server was started
+(`npm run dev`), and a real, already-valid Auth.js session already
+present in the real dev database (from an earlier genuine GitHub
+sign-in) was used to make real authenticated HTTP requests — the
+closest thing to a real browser round-trip achievable in a sandbox with
+no browser-automation tool and no way to complete GitHub's OAuth consent
+screen interactively (see "What could not be tested" below).
+
+This surfaced a real, live bug: `GET /api/agents` showed
+`finance_agent`, `business_analyst`, `operations_agent`, and
+`chief_of_staff` as **`"planned"`**, even though every one of their
+slices in this document says `"active"`. Root cause: `seedAgents()`
+(`lib/db/client.ts`) only ever inserts a *missing* canonical agent — it
+never updates an *existing* row's `status` when that agent's canonical
+definition later changes. Each of the four had already been inserted
+as `"planned"` by an earlier call to this function (back when Milestone
+6 started), and nothing ever revisited that row once the code began
+saying `"active"`. The real, concrete consequence: attempting a real
+delegation to `finance_agent` via `POST /api/chief-of-staff/goals`
+genuinely failed with *"that agent is not active"* — reproduced live,
+not assumed. This is the exact same bug class CLAUDE.md already
+documents for `content_bot`'s own real-database graduation, just in the
+opposite direction (an upgrade missed, not an insert missed).
+
+Fixed in `seedAgents()`: for an agent that already exists, if its
+canonical definition says `"active"` but the real row still says
+anything else, the row is updated in place (never duplicated) and any
+of its canonical capabilities missing from `agent_capabilities` are
+backfilled. This only ever moves `planned → active` — never the
+reverse, which would silently take away a working capability rather
+than grant one; that stays a deliberate human decision. Verified by
+restarting the real dev server (re-triggering `seed()`) and confirming,
+via the same live HTTP path, that all seven real agents now show
+`"active"`/`"planned"` correctly and the delegation that failed now
+succeeds. `tests/agentSeeding.test.ts` gained 4 new tests reproducing
+this exact scenario against a real Postgres instance (including the
+exact `createGoalWithDelegatedSubtasks` regression check), not just the
+live reproduction.
+
+### Real end-to-end verification performed
+
+Against the real dev server + real Postgres + the real, already-valid
+session (not a mock, not a fabricated cookie):
+
+- `GET /api/agents` — confirmed all 7 real agents present with correct
+  status (after the fix above).
+- `POST /api/chief-of-staff/goals` — a real goal delegating real
+  subtasks to `finance_agent`, `operations_agent`, and
+  `business_analyst` simultaneously; **persisted**, confirmed via a
+  fresh `GET`.
+- `GET /api/missions` — confirmed `agentTaskSignals` reflects the new
+  open tasks, carrying only `agent_key`/`state`/`goal_id` (verified
+  directly — no title/detail ever present).
+- The real response fed through the real `agentDestination`/`agentBusy`
+  functions (via `tsx`, not a mock) — confirmed Finance Agent,
+  Operations Agent, Business Analyst, **and** Chief of Staff all
+  correctly resolve to their own desks and show `busy: true`
+  simultaneously, with Executive Assistant (untouched) correctly
+  staying home.
+- `PATCH /api/agent-tasks/[id]` (`action: "complete"`) on all three
+  real subtasks — completed via the pre-existing, unmodified route.
+  Re-fetched `GET /api/missions` — confirmed all four agents resolve
+  back to `"hub"`.
+- **A real, live Business Analyst research call** — `ANTHROPIC_API_KEY`
+  turned out to be configured in this environment (unlike every prior
+  milestone in this document). `POST /api/business-analyst/research`
+  with a real question ran a genuine Claude API call with real
+  `web_search`, returned real sources (Worldometer, Wikipedia,
+  georank.org, World Population Review), real token usage (15,528 in /
+  1,072 out), and a real cost (`$0.041776`) — confirmed **genuinely
+  recorded** in the real ledger via `GET /api/ledger`
+  (`mission_id: null`, exactly as designed). This is the first time any
+  agent in this codebase has been exercised against the real Anthropic
+  API from within this development sandbox.
+- Finance Agent (`POST /api/finance/budgets` + `/expenses`) and
+  Operations Agent (`POST /api/checklists`) — both real flows re-
+  verified live, matching their own unit tests exactly.
+- **Security boundaries re-confirmed live, not just in code review**: an
+  unauthenticated `POST`/`GET` to a protected route returns a real
+  `401`; a request body with a forged `founderId` is silently ignored —
+  the real session's own founder id is what's actually used (confirmed
+  by inspecting the created row).
+- Full regression after every fix: `npx tsc --noEmit` clean,
+  **51 files / 633 tests passing** (618 prior + 15 new, zero
+  regressions), `npm run build` succeeds with every new route in the
+  manifest.
+
+Test artifacts genuinely created on the real dev database during this
+verification (titled `[Verification] ...` for easy identification; this
+app has no delete endpoint for any of these by design — insert-only,
+audit-trail philosophy — so they remain as a real, honestly-labeled
+record rather than being silently cleaned up): one Chief of Staff goal
+with three completed subtasks, one Business Analyst research report
+(Iceland population — genuinely useful to leave, since it cost real
+money to produce), one Finance budget/expense pair under category
+`"verification-test"`, one Operations checklist.
+
+### What could not be tested, and exactly why
+
+A literal rendered-browser click-through (the founders' own "launch the
+application... using browser automation where available" ask) was not
+possible: no browser-automation tool is available in this environment
+(confirmed by searching the available toolset before concluding this,
+not assumed), and completing a fresh GitHub OAuth consent screen
+requires a human in an actual browser — the same standing limitation
+CLAUDE.md has documented since Milestone 2. What *was* possible, and
+performed: using a real, already-valid session already present in the
+real dev database (the artifact of a genuine prior GitHub sign-in) to
+make real authenticated HTTP requests against a really-running server —
+exercising the actual Next.js route handlers, actual middleware, actual
+session resolution, and actual Postgres writes, not a function call in
+a test file. This is real integration testing at the HTTP layer; it is
+not pixel-level visual confirmation that the 3D scene renders or
+animates correctly, which still requires a founder's own eyes (or a
+browser-automation tool this session does not have).
+
+### What is explicitly NOT done yet
+
+- No pixel-level visual QA of the new wing's geometry (desk spacing,
+  prop proportions, camera framing at the new pan extent) — verified
+  structurally (walkability, pathfinding, obstacle non-overlap, all via
+  real tests) but not visually, for the reason above.
+- The "Operations Wing" wall plaque's texture is mapped onto a square
+  canvas stretched over a wide rectangular plane (same simplification
+  `frame()`'s other callers already accept) — a minor cosmetic detail,
+  not a functional one.
+- No LLM-assisted Chief of Staff goal breakdown (still founder-specified
+  subtasks, as scoped in Milestone 6).
+- Business Analyst's research call remains synchronous, not durable/
+  background (same documented tradeoff as Milestone 6's Slice 4).
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm this
+baseline (633 tests) still holds. The real dev server was stopped
+cleanly after verification; no agent-task polling or world-sync code
+needs anything further before a founder actually opens HQ View.
