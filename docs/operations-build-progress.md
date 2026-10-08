@@ -70,15 +70,56 @@ required zero changes** to support this milestone. See the doc comment on
    `npm run build` succeeds, both new routes appear correctly in the real
    route manifest.
 
+## Slice 2: Finance Agent (complete, verified)
+
+5. **Agent flipped**: `finance_agent` is now `status: "active"` in
+   `CANONICAL_AGENTS`, with one real capability,
+   `expense_and_budget_tracking`.
+6. **Architecture**: new `expenses`/`budgets` tables (migration
+   `drizzle/0009_glamorous_wonder_man.sql`, applied to both the dev and
+   `venture_test` databases) — deliberately **not** a reuse of
+   `ledger_entries`/`costs`. Those are hard-coded USD and built for real
+   provider-spend tracking; the founders' own example used GBP, and
+   silently treating £12 as $12 would be fabrication under CLAUDE.md's
+   own rules. Both new tables carry `currency` explicitly.
+7. **`lib/domain/financeWorkflow.ts`**: `logExpense`/`setCategoryBudget`
+   validate a positive finite amount and a real 3-letter currency code
+   (never defaulted or guessed); `getBudgetStatus` returns `budget: null`
+   (never a fabricated budget) for an unset category, and sums
+   same-currency expenses only — a different-currency expense is
+   reported separately via `excludedOtherCurrencyTotals`, never silently
+   mixed in or converted. `upsertBudget` updates a category's existing
+   budget in place rather than duplicating it.
+8. **API**: `GET`/`POST /api/finance/expenses`, `GET`/`POST
+   /api/finance/budgets`, `GET /api/finance/budgets/[category]` (status)
+   — all `requireFounderId()`-gated.
+9. **UI**: `components/founders-desk/FinanceAgentPanel.tsx` — a
+   self-contained Focus View panel (same self-fetching pattern as
+   `ExecutiveAssistantTasks.tsx`) for setting a budget, logging an
+   expense, and seeing actual-vs-budget with any currency mismatch called
+   out explicitly. Wired into `FocusView.tsx`'s sidebar.
+10. **Verified, not assumed**: `tests/financeAgent.test.ts` (10 tests)
+    proves the founders' own acceptance scenario (£12 expense against a
+    £30 monthly budget → £18 remaining) and currency isolation (a USD
+    expense never counted toward a GBP budget) directly. Fixed a
+    `resetDbForTests()` truncate-list omission (same bug class hit once
+    already for `agent_tasks`) before the suite was trustworthy. Updated
+    `tests/executiveAssistant.test.ts`'s now-stale "finance_agent is
+    planned" assertion. Full regression: `npx tsc --noEmit` clean,
+    **47 files / 574 tests passing** (564 prior + 10 new, zero
+    regressions), `npm run build` succeeds with all three new
+    `/api/finance/*` routes in the route manifest. Committed as its own
+    clean commit, Scout/Content Bot untouched.
+
 ## What is explicitly NOT done yet
 
-- Chief of Staff, Finance Agent, Business Analyst, Operations Agent: **no
-  code**. Registered as `planned`, nothing simulates them running, per
+- Chief of Staff, Business Analyst, Operations Agent: **no code**.
+  Registered as `planned`, nothing simulates them running, per
   CLAUDE.md's own standing rule.
 - No 3D-office expansion (no new rooms, no new character rigs) — the
   `office-reference.html`/`office-extension.json` design reference has not
   been acted on. Explicitly ordered after real agent function per the
-  founder's own brief.
+  founder's own brief; now 2 of 5 agents have a working capability.
 - No Chief-of-Staff delegation/hand-off mechanism.
 - No email/calendar integration (Executive Assistant is internal-only,
   as the brief itself required for a first slice).
@@ -86,17 +127,13 @@ required zero changes** to support this milestone. See the doc comment on
 
 ## Exact restart point for a future session
 
-Next real increment should be **one more full vertical slice**, not all
-four remaining agents at once — same reasoning as why this slice stopped
-at one. Suggested order, cheapest/least-coupled first:
-1. **Finance Agent** — reuses `costs`/`ledger_entries` directly (already
-   real, already exist), likely the smallest next slice: "record an
-   expense, show actual-vs-budget" needs little beyond `agent_tasks` with
-   `task_type: "expense"` or a small sibling table if ledger shape doesn't
-   fit cleanly — check before assuming either way.
-2. **Operations Agent** — checklists, same `agent_tasks` shape with
-   `task_type: "checklist"` and a `payload` of items; closest in shape to
-   what Executive Assistant already proved out.
+Founder's explicit ordering (governing instruction, see chat history):
+1. ~~Finance Agent~~ — **done, this slice.**
+2. **Operations Agent** — next. Checklists/repeatable processes; closest
+   in shape to what Executive Assistant already proved out (likely its
+   own `checklists`/`checklist_items` tables, or `agent_tasks` with a
+   `task_type: "checklist"` and a `payload` of items — check which fits
+   more honestly before assuming either way).
 3. **Business Analyst** — real web-backed research, closer in spirit to
    Scout; worth checking whether it can reuse Scout's own
    `web_search`/evidence-guardrail machinery rather than duplicating it.
@@ -104,4 +141,4 @@ at one. Suggested order, cheapest/least-coupled first:
    once there's more than one real agent to delegate *to*.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm this
-baseline still holds, then continue from step 1 above.
+baseline (574 tests) still holds, then continue from step 2 above.

@@ -21,17 +21,20 @@ describe("Executive Assistant is registered correctly", () => {
     await resetDbForTests();
   });
 
-  it("seeds executive_assistant and finance_agent as active (each has a real capability), and the remaining Operations Wing agents as planned", async () => {
+  it("seeds executive_assistant, finance_agent, and operations_agent as active (each has a real capability), and the remaining Operations Wing agents as planned", async () => {
     const ea = await getAgentByKey("executive_assistant");
     expect(ea?.status).toBe("active");
 
-    // finance_agent graduated to active once its real expense/budget workflow
-    // shipped (see tests/financeAgent.test.ts) — this assertion is updated
-    // alongside that, not loosened generically.
-    const finance = await getAgentByKey("finance_agent");
-    expect(finance?.status).toBe("active");
+    // finance_agent and operations_agent graduated to active once their real
+    // workflows shipped (see tests/financeAgent.test.ts,
+    // tests/operationsAgent.test.ts) — this assertion is updated alongside
+    // each, not loosened generically.
+    for (const key of ["finance_agent", "operations_agent"]) {
+      const agent = await getAgentByKey(key);
+      expect(agent?.status).toBe("active");
+    }
 
-    for (const key of ["chief_of_staff", "business_analyst", "operations_agent"]) {
+    for (const key of ["chief_of_staff", "business_analyst"]) {
       const agent = await getAgentByKey(key);
       expect(agent?.status).toBe("planned");
     }

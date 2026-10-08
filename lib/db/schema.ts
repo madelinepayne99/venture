@@ -121,6 +121,35 @@ export const budgets = pgTable("budgets", {
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });
 
+// Operations Agent (Operations Wing). A checklist is structurally distinct
+// from a single agent_tasks row — it's an ORDERED list of independently
+// completable items, not one task with one state — so forcing it into
+// agent_tasks' payload jsonb would mean hand-rolling item-level mutation
+// logic on top of a column that was never shaped for it. Two small, real
+// tables instead, the same "don't force-fit, give it its own honest shape"
+// call already made for expenses/budgets vs. ledger_entries/costs.
+export const checklists = pgTable("checklists", {
+  id: text("id").primaryKey(),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  title: text("title").notNull(),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+export const checklistItems = pgTable("checklist_items", {
+  id: text("id").primaryKey(),
+  checklist_id: text("checklist_id")
+    .notNull()
+    .references(() => checklists.id),
+  label: text("label").notNull(),
+  position: integer("position").notNull(),
+  is_done: boolean("is_done").notNull().default(false),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 // A project IS a workspace — "commerce" (the original Etsy/KDP digital-
 // product focus) or "service_business" (client-facing local businesses
 // like hairdressers or garages). Missions don't carry their own workspace

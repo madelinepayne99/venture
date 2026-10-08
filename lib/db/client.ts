@@ -180,7 +180,14 @@ const CANONICAL_AGENTS: Array<{
     key: "operations_agent",
     name: "Operations Agent",
     role_summary: "Checklists, document templates, and repeatable internal processes.",
-    status: "planned",
+    status: "active",
+    capabilities: [
+      {
+        capability: "checklists",
+        description:
+          "Creates a real, persisted checklist (e.g. a launch checklist) with ordered items a founder can add to and mark done — no external account connections.",
+      },
+    ],
   },
 ];
 
@@ -286,7 +293,7 @@ export async function resetDbForTests(): Promise<void> {
       activity_history, ledger_entries, costs, approvals,
       content_assets, content_versions, content_items,
       deliverables, evidence, agent_assignments, mission_stages, missions,
-      agent_tasks, expenses, budgets, projects, agent_capabilities, agents, founders,
+      agent_tasks, expenses, budgets, checklist_items, checklists, projects, agent_capabilities, agents, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);

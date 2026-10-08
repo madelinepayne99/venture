@@ -22,6 +22,10 @@ export type Budget = Omit<InferSelectModel<typeof schema.budgets>, "period"> & {
   period: BudgetPeriod;
 };
 
+export type Checklist = InferSelectModel<typeof schema.checklists>;
+export type ChecklistItem = InferSelectModel<typeof schema.checklistItems>;
+export type ChecklistWithItems = Checklist & { items: ChecklistItem[] };
+
 export type WorkspaceType = (typeof schema.workspaceTypeValues)[number];
 export type Project = Omit<InferSelectModel<typeof schema.projects>, "workspace_type"> & {
   workspace_type: WorkspaceType;

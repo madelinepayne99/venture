@@ -10,6 +10,9 @@ import type {
   AgentTaskState,
   Budget,
   BudgetPeriod,
+  Checklist,
+  ChecklistItem,
+  ChecklistWithItems,
   Expense,
   ActivityEntry,
   Approval,
@@ -245,6 +248,107 @@ export async function sumExpensesByCategoryAndCurrency(
     .where(eq(schema.expenses.category, category))
     .groupBy(schema.expenses.currency);
   return rows;
+}
+
+// --- Operations Agent: checklists --------------------------------------
+// Deliberately separate tables from agent_tasks — see schema.ts's doc
+// comment on `checklists`/`checklist_items` for why (ordered, independently
+// completable items vs. one task with one state).
+
+export async function createChecklist(input: {
+  founderId: string;
+  title: string;
+  itemLabels: string[];
+}): Promise<ChecklistWithItems> {
+  const db = await getDb();
+  const id = randomUUID();
+  const timestamp = now();
+  await db.insert(schema.checklists).values({
+    id,
+    founder_id: input.founderId,
+    title: input.title,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  if (input.itemLabels.length > 0) {
+    await db.insert(schema.checklistItems).values(
+      input.itemLabels.map((label, index) => ({
+        id: randomUUID(),
+        checklist_id: id,
+        label,
+        position: index,
+        is_done: false,
+        created_at: timestamp,
+        updated_at: timestamp,
+      })),
+    );
+  }
+  return getChecklistWithItems(id) as Promise<ChecklistWithItems>;
+}
+
+export async function listChecklistsForFounder(founderId: string): Promise<Checklist[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.checklists)
+    .where(eq(schema.checklists.founder_id, founderId))
+    .orderBy(desc(schema.checklists.created_at));
+  return rows as Checklist[];
+}
+
+export async function getChecklist(id: string): Promise<Checklist | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.checklists).where(eq(schema.checklists.id, id));
+  return row as Checklist | undefined;
+}
+
+export async function getChecklistWithItems(id: string): Promise<ChecklistWithItems | undefined> {
+  const db = await getDb();
+  const [checklist] = await db.select().from(schema.checklists).where(eq(schema.checklists.id, id));
+  if (!checklist) return undefined;
+  const items = await db
+    .select()
+    .from(schema.checklistItems)
+    .where(eq(schema.checklistItems.checklist_id, id))
+    .orderBy(schema.checklistItems.position);
+  return { ...(checklist as Checklist), items: items as ChecklistItem[] };
+}
+
+export async function addChecklistItem(checklistId: string, label: string): Promise<ChecklistItem> {
+  const db = await getDb();
+  const existing = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(schema.checklistItems)
+    .where(eq(schema.checklistItems.checklist_id, checklistId));
+  const nextPosition = existing[0]?.count ?? 0;
+  const id = randomUUID();
+  const timestamp = now();
+  await db.insert(schema.checklistItems).values({
+    id,
+    checklist_id: checklistId,
+    label,
+    position: nextPosition,
+    is_done: false,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  await db.update(schema.checklists).set({ updated_at: timestamp }).where(eq(schema.checklists.id, checklistId));
+  const [row] = await db.select().from(schema.checklistItems).where(eq(schema.checklistItems.id, id));
+  return row as ChecklistItem;
+}
+
+export async function setChecklistItemDone(itemId: string, isDone: boolean): Promise<ChecklistItem | undefined> {
+  const db = await getDb();
+  const timestamp = now();
+  await db
+    .update(schema.checklistItems)
+    .set({ is_done: isDone, updated_at: timestamp })
+    .where(eq(schema.checklistItems.id, itemId));
+  const [row] = await db.select().from(schema.checklistItems).where(eq(schema.checklistItems.id, itemId));
+  if (row) {
+    await db.update(schema.checklists).set({ updated_at: timestamp }).where(eq(schema.checklists.id, row.checklist_id));
+  }
+  return row as ChecklistItem | undefined;
 }
 
 // --- Projects ---------------------------------------------------------------

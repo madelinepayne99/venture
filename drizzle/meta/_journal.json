@@ -71,6 +71,13 @@
       "when": 1791414575123,
       "tag": "0009_glamorous_wonder_man",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791492940782,
+      "tag": "0010_operations_agent_checklists",
+      "breakpoints": true
     }
   ]
 }
