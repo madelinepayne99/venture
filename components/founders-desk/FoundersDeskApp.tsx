@@ -19,6 +19,7 @@ import { WorkspaceBar } from "./hq/WorkspaceBar";
 import { HQView } from "./hq/HQView";
 import { MissionSlideOver } from "./hq/MissionSlideOver";
 import { AgentDetailSlideOver } from "./hq/AgentDetailSlideOver";
+import { EmployeeDirectory } from "./EmployeeDirectory";
 import { AssignWorkModal } from "./hq/AssignWorkModal";
 import { ProductionApprovalDialog, type ProductionApprovalInput } from "./hq/ProductionApprovalDialog";
 import { CommissionPilotDialog, type CommissionPilotInput } from "./hq/CommissionPilotDialog";
@@ -762,6 +763,8 @@ export function FoundersDeskApp({
         onCancel={handleCancelContentItem}
         onClose={closeContentItemPanel}
       />
+
+      <EmployeeDirectory />
     </main>
   );
 }

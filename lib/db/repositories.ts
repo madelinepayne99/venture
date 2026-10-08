@@ -6,6 +6,7 @@ import * as schema from "./schema";
 import type {
   Agent,
   AgentAssignment,
+  AgentStatus,
   AgentTask,
   AgentTaskState,
   ChiefOfStaffGoal,
@@ -72,6 +73,20 @@ export async function getAgentByKey(key: string): Promise<Agent | undefined> {
   const db = await getDb();
   const [row] = await db.select().from(schema.agents).where(eq(schema.agents.key, key));
   return row;
+}
+
+/**
+ * Sets a real agent's roster status directly (Commercial MVP milestone —
+ * the Employee Directory's recruit/remove actions). Deliberately the
+ * SAME `status` column `seedAgents()` already owns — "recruited" and
+ * "active" are the same real, persisted fact; "removed" and "planned"
+ * are too. This never touches any other row (missions, costs, tasks,
+ * etc.) — removing an employee only ever changes its own roster status.
+ */
+export async function setAgentStatus(key: string, status: AgentStatus): Promise<Agent | undefined> {
+  const db = await getDb();
+  await db.update(schema.agents).set({ status }).where(eq(schema.agents.key, key));
+  return getAgentByKey(key);
 }
 
 // --- Agent tasks (Operations Wing) -----------------------------------------
