@@ -141,7 +141,174 @@ succeeds with all three new `/api/employees*` routes in the manifest.
   Chief of Staff's already-tested, protected delegation logic without a
   dedicated verification pass.
 
-## What is explicitly NOT done yet (Milestones 3-9)
+## Milestone 4: Universal Founders' Desk, Human Approvals & Complete Agent Verification — DONE
+
+### Architecture decision — an adapter, not a schema merge
+
+Three structurally different review mechanisms already existed (or
+needed to exist) across the seven agents, and this milestone's explicit
+instruction was to unify them for founders **without** touching Scout's
+or Content Bot's own protected state machines:
+
+- **Scout** — `missions` at `ready_for_founders_review`. Reviewed via the
+  *existing* `approvals` table (real `mission_id`, already `NOT NULL`),
+  with its `decision` vocabulary widened to add
+  `founders_desk_approved`/`founders_desk_rejected`/
+  `founders_desk_revision_requested`. **`missions.state` is never
+  written by this adapter** — a Founders' Desk decision is a real,
+  separate, audit-only acknowledgment, not a mission-state transition.
+  Because of that, "already reviewed" can't be told from
+  `missions.state` (it legitimately stays `ready_for_founders_review`
+  either way) — `reviewScoutMission` instead checks `listApprovals` for
+  an existing `founders_desk_*` decision, the same check
+  `listFoundersDeskInbox` uses to drop it from the pending list. (A first
+  version checked `mission.state` for this and never actually refused a
+  second review — caught by this milestone's own new test, fixed before
+  it shipped; see the file's own doc comment.)
+- **Content Bot** — deliberately gets **no new mechanism at all**. The
+  unified inbox only *lists* its `awaiting_review` content items; opening
+  one routes straight to the existing, fully protected
+  `/api/content-items/[id]/decision` flow and `ContentReviewSlideOver`,
+  completely unchanged. This is the one place the brief's "don't touch
+  Content Bot's existing approval/production/publishing gates" rule is
+  structural rather than just a reminder — there was nothing to wire up.
+- **The five Operations Wing agents** (Executive Assistant, Finance,
+  Operations, Business Analyst, Chief of Staff) had no "deliverable
+  requiring founder approval" concept at all before this milestone — their
+  work was create-and-persist. A genuinely new table pair,
+  `agent_deliverables`/`agent_deliverable_reviews` (migration
+  `drizzle/0013_universal_founders_desk.sql`), carries a real snapshot of
+  each agent's genuine completed work (never fabricated — see each
+  `submit*` function below) through `awaiting_review` →
+  `approved`/`rejected`/`revision_requested`, via the same atomic
+  conditional-UPDATE pattern (`transitionAgentDeliverableState`) every
+  other state machine in this codebase already uses.
+
+`lib/domain/foundersDeskWorkflow.ts` is the one new adapter module:
+`listFoundersDeskInbox()` (the real unified projection — missions +
+content items + deliverables, each only ever appearing while genuinely
+pending), `reviewScoutMission`/`reviewAgentDeliverable` (Approve/Reject/
+Send-Back, honestly — "send back" never fabricates an automatic revision;
+for Scout it's recorded with an explanatory message since Scout has no
+revision workflow, for the five agents it creates a real, visible
+`agent_tasks` follow-up row instead), and five `submit*` functions (one
+per Operations Wing agent) that wrap **only genuinely existing, completed
+data** — Executive Assistant refuses an incomplete task, Finance wraps
+real budget/expense rows, Operations wraps real checklist item
+done-counts, Business Analyst wraps a real completed sourced-research
+report, and Chief of Staff **hard-refuses** consolidation while any
+subtask is still `open`/`in_progress` (the brief's own anti-fabrication
+requirement for "a consolidated result from genuine subtask outcomes,
+never fabricating completion").
+
+### UI
+
+- **Focus View**: `components/founders-desk/FoundersDeskInbox.tsx` — the
+  professional central review interface the brief's Section 6 asked for:
+  real pending items with employee, title, deliverable kind, and
+  timestamp; Approve/Reject/Send-Back for deliverables and Scout missions
+  inline; a real inspect modal showing a deliverable's actual content
+  (never just a title with no result); Content Bot items open the
+  existing, unmodified slide-over rather than a second review UI.
+  Mounted at the top of `FocusView.tsx`'s center column. Each of the five
+  agent panels (`ExecutiveAssistantTasks`, `FinanceAgentPanel`,
+  `OperationsAgentChecklists`, `BusinessAnalystPanel`,
+  `ChiefOfStaffPanel`) gained a real "Submit for review" action wired to
+  its own new endpoint — Chief of Staff's is disabled and labeled with the
+  exact unresolved-subtask count until every subtask is genuinely
+  resolved.
+- **Office View (Section 7)**: a real, global pending-review **count**
+  (`foundersDeskPendingCount` in `FoundersDeskApp.tsx`, fetched from the
+  same `GET /api/founders-desk/inbox` on mount and on the existing
+  always-on poll tick — no new interval) threaded top-down, exactly like
+  `missions`/`leadAssignments` already are, through `HQView` → `Room` →
+  the existing `MissionBoard.tsx`, which renders it as a small red
+  "N awaiting review" badge next to its "Mission board" header label.
+  **Deliberately HTML-only** — `MissionBoard.tsx` is the board's existing
+  React/CSS overlay, not Three.js geometry, so this satisfies the brief's
+  explicit "do not modify office geometry, character designs, world
+  layout or animation systems" instruction by construction: nothing under
+  `components/founders-desk/world/` was touched, and the full
+  `livingEngine`/`officeWorld`/`officeLayout`/`idleWander`/`scoutLocation`
+  test files all still pass unchanged, proving it. The count is global
+  (not room-scoped) because the five Operations Wing agents' deliverables
+  aren't workspace-bound — a per-room count would misrepresent them.
+
+### Verified, not assumed
+
+`tests/foundersDeskWorkflow.test.ts` — 14 new tests at the domain layer
+(empty inbox; a mission/deliverable listed then correctly disappearing
+after review; approving a mission never touches `missions.state`;
+reject/revise record distinct real decisions; **double-review of the
+same mission is refused** — the test that caught the real `state`-check
+bug above; each of the five `submit*` functions proven to refuse
+fabrication and to wrap genuinely real content on success; a Send-Back
+on a deliverable proven to create a real `agent_tasks` follow-up row;
+double-review of a deliverable refused).
+
+Full regression after the domain/API/UI work: `npx tsc --noEmit` clean,
+**54 files / 668 tests passing** (654 prior + 14 new, zero regressions).
+
+**Live verification against the real running dev server** (a real,
+valid session token read directly from the real `auth_session` table,
+used as a cookie against `curl` — no browser-automation tool was
+available; this is the same technique established earlier in this
+mission, not a new shortcut), exercising the real Neon Postgres database
+end-to-end, not mocks:
+
+- `GET /api/founders-desk/inbox` returned the real, pre-existing pending
+  Scout missions and Content Bot items.
+- **Executive Assistant**: created a real task → completed it → submitted
+  → approved. Verified removed from the inbox afterward.
+- **Finance**: set a real budget, logged a real expense, submitted the
+  real spend report, rejected it.
+- **Operations**: created a real checklist, submitted it, sent it back
+  with a note — **confirmed directly in the database** that a real
+  `agent_tasks` row (`task_type: "revision_follow_up"`, carrying the
+  founder's exact note) was created for `operations_agent`.
+- **Chief of Staff**: created a real goal with two delegated subtasks;
+  confirmed `submit-for-review` is refused (400) while they're
+  unresolved; completed both; submitted the real consolidated result;
+  approved it.
+- **Business Analyst**: ran one real, billed web-research call against
+  the live Anthropic API (a real `ANTHROPIC_API_KEY` is configured in
+  this environment); submitted the completed report (confirmed real
+  sources attached); inspected it via the detail endpoint; approved it.
+- **Scout**: approved one real pending mission and rejected another at
+  the Founders' Desk; confirmed **`missions.state` was unchanged**
+  (stayed `ready_for_founders_review`) before and after, on both;
+  confirmed a second review attempt on the same mission is refused (409).
+- **Genuine concurrency** (brief's Section 9 — "no race conditions, no
+  bypassed review"): fired two simultaneous review requests (one
+  approve, one reject) at the same real deliverable. Exactly one won
+  (200), the other was refused (409), and the database shows exactly one
+  review row and a single consistent final state — the atomic
+  `transitionAgentDeliverableState` guard proven under real Postgres
+  write concurrency, not just sequential calls.
+- Confirmed via the dev server's own log that every change hot-reloaded
+  with zero compile errors, and `GET /` for an authenticated founder
+  still returns 200 with the real Mission board markup present.
+
+### What is explicitly NOT done in Milestone 4
+
+- **No real browser was used** — every "live" claim above is a real HTTP
+  round-trip against the real running server and real database using a
+  real session cookie, not a simulated or mocked one, but it is not a
+  pixel-rendered, screenshot-verified browser session. The badge's actual
+  on-screen appearance (styling, layout at narrow widths, the inbox
+  modal's visual layering) has not been visually confirmed — only that
+  it compiles, renders server-side without error, and receives/returns
+  the right data.
+- The five Operations Wing agents' `submit-for-review` action is manual
+  (a founder clicks a real button once work is genuinely done) — there is
+  no automatic "submit the moment a task completes" behavior, matching
+  the brief's own "deliverable" framing (a deliverable is something
+  explicitly handed up for review, not every completed task).
+- No "Cleaner" mascot, celebration banner, or approval-triggered
+  animation exists yet — that is Milestone 7, separately scoped, and
+  this milestone's approvals are real but silent.
+
+## What is explicitly NOT done yet (Milestones 5-9)
 
 **None of the following were started this session.** Per the brief's own
 anti-fabrication rules, this is stated plainly rather than implied done:
@@ -152,19 +319,11 @@ anti-fabrication rules, this is stated plainly rather than implied done:
   action has not been verified end-to-end against a live render of
   either view removing/re-adding an agent and confirming the 3D scene
   and Focus View panels both correctly reflect it live.
-- **Milestone 4 (Founders' Desk universal review system)** — not
-  started. This is a genuinely large, separate piece of work: a real,
-  shared inbox/projection over Scout's missions, Content Bot's content
-  items, AND a new reviewable-deliverable concept for the five
-  Operations Wing agents (which currently have no "deliverable requiring
-  founder approval" concept at all — Executive Assistant/Finance/
-  Operations/Business Analyst/Chief of Staff's work is currently
-  create-and-persist, not submit-for-review). Needs real design work
-  before implementation, not just wiring.
-- **Milestone 5 (Individual agent task testing)** — not run this
-  session as a dedicated pass (though the existing real test suites for
-  each agent already cover their core real workflows — see each
-  agent's own test file).
+- **Milestone 5 (Individual agent task testing)** — the live
+  verification above covers each of the seven agents' real workflow
+  through the new review lifecycle specifically; a dedicated, separate
+  pass per agent beyond what Milestone 4 already exercised was not run
+  this session.
 - **Milestone 6 (Combined workforce testing)** — `tests/livingEngine.test.ts`
   (Milestone 8) already proves all 7 agents can be genuinely busy at
   once with no interference at the 3D-scene level; a dedicated
@@ -188,22 +347,24 @@ anti-fabrication rules, this is stated plainly rather than implied done:
 ## Exact restart point for a future session
 
 1. Confirm this doc's baseline still holds: `npm test && npx tsc
-   --noEmit` (expect 654 tests passing).
+   --noEmit` (expect **668 tests passing**).
 2. Check again whether Astra's branch now exists (`git ls-remote
    --heads origin | grep -i astra`) before touching anything
    office-related.
-3. Next real milestone, in the brief's own stated order: **Milestone 4,
-   the Founders' Desk universal review system** — start with real
-   design work (what does "a reviewable deliverable" mean for Executive
-   Assistant/Finance/Operations/Business Analyst/Chief of Staff, whose
-   current workflows have no review step at all?) before writing any
-   code. Scout/Content Bot's existing approval mechanisms must not be
-   rewritten — build a real adapter/projection over them, per the
-   brief's own explicit instruction.
-4. After Milestone 4 has a real reviewable-deliverable concept for every
-   agent, Milestone 5 (individual testing) and Milestone 6 (combined
-   testing) can exercise it honestly — they'd have nothing real to test
-   before that.
+3. Next real milestone, in the brief's own stated order: **Milestone 5/6
+   — a dedicated individual + combined agent testing pass**, beyond what
+   Milestone 4's own live verification already covered. Milestone 4 now
+   gives every agent a real, exercisable reviewable-deliverable concept
+   to test against — this was the blocking dependency noted in the prior
+   version of this doc, and it's now resolved.
+4. After that, **Milestone 7 (The Cleaner)** has what it needs to be real
+   rather than cosmetic: Milestone 4's Approve decisions are genuine
+   events a celebration trigger could honestly hook into.
+5. If visual/browser confirmation of the new Founders' Desk UI (the
+   inbox panel, the mission-board badge) becomes available in a future
+   session, that is the one verification gap this milestone explicitly
+   named as not done — see Milestone 4's own "What is explicitly NOT
+   done" list above.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
-baseline (654 tests) still holds before continuing.
+baseline (668 tests) still holds before continuing.
