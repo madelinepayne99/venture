@@ -368,3 +368,215 @@ anti-fabrication rules, this is stated plainly rather than implied done:
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (668 tests) still holds before continuing.
+
+---
+
+# Master Development Mission 5 — Product Polish, Living Workforce,
+# Multi-Agent Testing, The Cleaner & Commercial MVP Foundations
+
+A new, much larger founder brief superseding the milestone framing
+above for everything from here on. Work tracked by the brief's own
+**Phase A–I** structure (Section 17). **Branch:**
+`claude/commercial-mvp-polish`, created from `claude/wonderful-shannon-
+b9zcsj` at commit `4c0ce27` (the tip at the start of this brief — 668
+tests passing, clean `tsc`, confirmed by re-running both before
+branching, not assumed from the prior session's own report).
+
+## Phase A — Baseline and safety: DONE
+
+- Re-verified (not assumed): `npx tsc --noEmit` clean, `npx vitest run`
+  → 54 files / 668 tests passing, matching the prior session's own
+  closing report exactly.
+- `git fetch` confirmed the prior branch was already fully pushed
+  (founder had run the push manually since the last session) — no
+  unpushed work existed to protect.
+- No `astra/*` branch exists on the remote yet (checked directly via
+  `git ls-remote --heads origin`).
+- New branch `claude/commercial-mvp-polish` created from that verified
+  HEAD, per the brief's explicit instruction.
+- **Playwright installed as a real devDependency** (`package.json`) —
+  the single biggest capability change this session. Every prior
+  session's "live verification" was HTTP+database only, with no way to
+  visually confirm anything; a real Chromium browser downloads and runs
+  successfully in this environment (confirmed by actually doing it, not
+  assumed), making genuine screenshot-based verification possible for
+  the first time. Used throughout everything below.
+
+## Phase B — Employee Directory and UI polish: substantially DONE
+
+**Real portraits, not colored initials.** Investigated what asset
+options actually existed before writing any code (per the brief's own
+"prefer reusing existing approved assets... do not require expensive
+image-generation API calls" instruction): `components/founders-desk/
+world/scout.ts`'s seven `buildXxx()` character-rig functions and
+`materials.ts`'s `buildMaterials()` turned out to be fully self-
+contained (no scene/renderer dependency) — reusable as-is, with zero
+changes to either file. Built `app/dev-portrait-capture/page.tsx`, a
+genuinely temporary, auth-gated, unlinked capture harness that mounts
+one real agent rig in an isolated scene with real portrait lighting and
+a head-and-shoulders camera framing (iterated live via real Playwright
+screenshots — roughly six rounds of render→look→adjust before the
+framing was right; Scout's fedora needed extra headroom the six hatless
+"creator"-persona agents didn't). Rendered all seven real portraits
+through a headless browser against the live dev server into
+`public/employee-portraits/*.png` — literally the same approved rig
+every founder already sees in the 3D office, not fabricated art, not a
+different style, not a paid image-generation call.
+
+For the three not-yet-built future employees (no rig exists to render),
+built `ComingSoonSilhouette` — a plain, deliberately featureless rounded
+shape in the same visual family, never claiming a finished design that
+doesn't exist. This is the brief's own documented fallback path
+("implement a reliable reusable portrait component"), chosen over
+inventing a new placeholder 3D character for an agent with no approved
+design yet.
+
+**Fixed the real "covers application content" bug**, confirmed first by
+screenshot before any fix was written: expanding the directory strip
+rendered directly over whatever page content was underneath (in Focus
+View this landed on top of the live workspace-creation form's actual
+input fields) with no visual signal that it needed dismissing. Added a
+real dimmed backdrop on expand (the same pattern the profile dialog
+already used) and real bottom padding on `<main>` so the always-visible
+collapsed bar never clips the last content on the page. Re-verified
+live: a `fullPage` screenshot still shows an apparent overlap mid-page
+— confirmed via a second, non-`fullPage` screenshot taken at a real
+scroll position that this is a known Playwright artifact (`position:
+fixed` elements get composited at every stitched scroll offset in a
+full-page capture) and not real browser behavior; the real scrolled
+viewport shows the collapsed bar behaving as a normal, non-intrusive
+bottom bar.
+
+**Replaced exposed technical strings.** `requiredIntegrations:
+["ANTHROPIC_API_KEY", ...]` was being joined raw into the profile
+dialog. Added `INTEGRATION_LABELS` (plain-language descriptions) to the
+registry and a real server-side `integrationsReady` check
+(`lib/domain/employeeWorkflow.ts` — genuine `process.env` presence per
+required var, boolean only, value never leaves the server) so the UI
+now reads "Uses: AI research & writing — ready to work" instead of a
+raw variable name, and would honestly show "integration required —
+contact the administrator" in a deployment actually missing a key
+(verified structurally; this dev environment has every key configured,
+so the "missing" path couldn't be live-demonstrated here).
+
+**Layout/accessibility**: full names (no truncation), wider cards,
+"N of 7 recruited" (explicit denominator), Escape-to-close (profile
+first, then strip), real focus-on-open for the profile dialog, specific
+per-employee `aria-label`s (name + role + recruitment status) instead
+of relying on adjacent visible text.
+
+**Recruitment feedback**: a real, non-speculative confirmation (brief
+checkmark + "has joined the office" message) fires only after the
+server confirms the write, motion-safe.
+
+**Verified live, with a real browser, against the real running app** —
+not assumed: directory expand/collapse at desktop (1440px) and mobile
+(390px) width; opening Scout's profile (confirmed real portrait, real
+plain-language integration line); a real Remove-then-Recruit round trip
+for Executive Assistant, confirmed in the database both times
+(`agents.status` really flipped to `"planned"` then back to `"active"`);
+the Focus View overlap fix, at both a `fullPage` capture and a real
+scrolled-viewport capture. One tooling note recorded honestly: Playwright's
+own click-stability heuristic repeatedly timed out against this app's
+continuously-repainting WebGL canvas (GPU "ReadPixels" stalls in the
+console) even though the element was genuinely clickable — confirmed by
+using `page.mouse.click()` at the element's real coordinates instead,
+which worked immediately every time. Not an application bug; noted here
+so a future session doesn't waste time re-diagnosing it.
+
+**Not done in Phase B**: no visual QA pass across every one of the ten
+profiles individually (only Scout's was opened in a screenshot); no
+check of the "coming soon" silhouette inside the profile dialog itself
+(only the collapsed strip); horizontal-scroll behavior on the strip at
+very narrow widths wasn't specifically exercised beyond the one mobile
+screenshot taken.
+
+## Phase C — Founders' Desk polish: partially DONE
+
+**Investigated the "possible duplicate entries" question directly**,
+per the brief's explicit "do not assume this is a defect" instruction —
+queried the real database before writing anything. Finding: not a
+duplication bug. Two real, separate `content_items` rows exist under one
+mission (Content Bot's own multi-production "Produce Again" architecture
+working as designed — see the memory note on this), and
+`listFoundersDeskInbox` was correctly listing each once; the real
+problem was that both rows showed only their shared mission title with
+nothing to tell them apart. Fixed by labeling any item whose mission has
+more than one real content item with its own ordinal ("production
+attempt 2 of 2"), proven with two new tests and confirmed against the
+exact real historical data that prompted the founders' question (now
+reads "...(production attempt 7 of 7)" live). A separate, real,
+unrelated finding surfaced during the same investigation: one mission's
+title is genuinely stored as `"ind Our Next Viral Short Brief:"` (missing
+its leading "F") — reproduced-against directly (fast synthetic typing in
+the real form, focus-race scenarios) with no character loss in either
+case, and `MissionForm.tsx` has not changed since before that mission was
+created (`git log`), so this is not a reproducible code defect. Left
+untouched as a genuine historical record, per the brief's "do not delete
+legitimate historical records" instruction — editing someone else's past
+typo would misrepresent history, not fix a bug.
+
+**Not done in Phase C** (the larger part of this phase's brief): the
+review inbox's presentation of agent portrait/richer deliverable
+inspection (report content, sources, generated files, video preview,
+financial calculations, checklist contents, revision history) beyond
+what Milestone 4 already built; no additional polish pass on
+`FoundersDeskInbox.tsx` itself this session.
+
+## Phases D–I: NOT STARTED
+
+Stated plainly, not implied done:
+
+- **Phase D — complete seven-agent verification matrix.** Milestone 4's
+  own live verification (prior session) already exercised each agent's
+  real workflow through the new review lifecycle once, including one
+  genuine concurrency test, but the brief's full 12-point acceptance
+  checklist per agent, and a dedicated multi-agent concurrent-load test,
+  were not built this session.
+- **Phase E — commercial security / multi-tenancy.** Not started at all.
+  This is explicitly called out in the brief as taking priority over
+  decorative features once started — real design work (organisation/
+  membership model, migration safety, isolation proof via negative
+  tests, recruitment refactored to be organisation-scoped) is a
+  substantial, separate undertaking from everything above and has not
+  begun.
+- **Phase F — roles/permissions, usage/spending safeguards.** Not
+  started.
+- **Phase G — onboarding foundation, billing-readiness scaffolding (test
+  mode only).** Not started.
+- **Phase H — The Cleaner.** Not started (correctly — the brief orders
+  this after critical reliability/security work, not before).
+- **Phase I — final regression and release audit.** Not started as its
+  own pass; this session's own regression checks (tsc/tests/build, all
+  green) are real but scoped to what this session touched, not a full
+  launch-readiness audit.
+
+## Exact restart point for a future session
+
+1. Confirm this doc's baseline still holds:
+   `npm test && npx tsc --noEmit` (expect **670 tests passing**).
+2. Confirm still on `claude/commercial-mvp-polish`, and whether it's been
+   merged/pushed since (`git status`, `git log origin/... ` if a remote
+   tracking branch exists yet — it didn't as of this session, since this
+   branch was only just created and pushing from this sandbox requires
+   the founder's own `git push`, per the standing credential limitation
+   recorded earlier in this file's history).
+3. Check again whether Astra's branch now exists before touching
+   anything office-related (`git ls-remote --heads origin | grep -i
+   astra`).
+4. Next real work, in the brief's own Phase order: finish Phase C (the
+   richer deliverable-inspection UI), or move to Phase D's full
+   verification matrix — both are natural continuations of what's
+   already built. **Phase E (multi-tenancy) is the first large,
+   separate design effort** or the next genuinely different kind of
+   work in this mission; the brief is explicit that it preempts
+   decorative work (including the still-pending Phase H Cleaner) the
+   moment it's reached.
+5. Playwright is now a real, working devDependency — use it. The
+   WebGL-canvas click-stability caveat above (use `page.mouse.click()`
+   at real coordinates when `.click()` times out despite the element
+   being genuinely clickable) applies to any future live test of this
+   app's 3D views.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (670 tests) still holds before continuing.
