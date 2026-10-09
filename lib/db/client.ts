@@ -346,7 +346,8 @@ export async function resetDbForTests(): Promise<void> {
       activity_history, ledger_entries, costs, approvals,
       content_assets, content_versions, content_items,
       deliverables, evidence, agent_assignments, mission_stages, missions,
-      agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports, projects, agent_capabilities, agents, founders,
+      agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports,
+      agent_deliverable_reviews, agent_deliverables, projects, agent_capabilities, agents, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);

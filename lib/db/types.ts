@@ -43,6 +43,17 @@ export type Project = Omit<InferSelectModel<typeof schema.projects>, "workspace_
   workspace_type: WorkspaceType;
 };
 
+// --- Universal Founders' Desk (Commercial MVP Milestone 4) -----------
+export type AgentDeliverableState = (typeof schema.agentDeliverableStateValues)[number];
+export type AgentDeliverable<TContent = unknown> = Omit<
+  InferSelectModel<typeof schema.agentDeliverables>,
+  "state" | "content"
+> & {
+  state: AgentDeliverableState;
+  content: TContent;
+};
+export type AgentDeliverableReview = InferSelectModel<typeof schema.agentDeliverableReviews>;
+
 export const MISSION_STATES = [
   "draft",
   "awaiting_founder_approval",

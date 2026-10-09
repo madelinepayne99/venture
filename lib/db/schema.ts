@@ -197,6 +197,64 @@ export const businessAnalystReports = pgTable("business_analyst_reports", {
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 
+// --- Universal Founders' Desk (Milestone 4 of the Commercial MVP
+// mission) --- a real, reviewable deliverable for the five Operations
+// Wing agents, which have no `mission_id` to attach to the EXISTING
+// `deliverables`/`approvals` tables (both `NOT NULL` on `mission_id` —
+// deliberately left untouched; Scout/Content Bot's own review flows are
+// protected and unmodified). This is the adapter the brief itself asks
+// for: a SEPARATE, compatible table, not a forced reuse of a column that
+// was never shaped for a non-mission deliverable. Scout's own missions
+// are reviewed through the EXISTING `approvals` table (real mission_id,
+// a new decision vocabulary — see that table's own comment); Content
+// Bot's content items are reviewed through their EXISTING, fully
+// protected `/api/content-items/[id]/decision` flow, unchanged. This
+// table exists only for the five agents that had no reviewable-
+// deliverable concept at all before this milestone.
+export const agentDeliverableStateValues = ["awaiting_review", "approved", "rejected", "revision_requested"] as const;
+
+export const agentDeliverables = pgTable("agent_deliverables", {
+  id: text("id").primaryKey(),
+  agent_key: text("agent_key")
+    .notNull()
+    .references(() => agents.key),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  // Which real entity this deliverable summarizes — "agent_task" |
+  // "chief_of_staff_goal" | "checklist" | "finance_report" |
+  // "business_analyst_report". Never a free-text label: always traces
+  // back to a real row.
+  source_type: text("source_type").notNull(),
+  source_id: text("source_id").notNull(),
+  title: text("title").notNull(),
+  kind: text("kind").notNull(),
+  // The real, structured content a founder reviews — built entirely
+  // from genuine recorded values by the submitting workflow (see
+  // lib/domain/foundersDeskWorkflow.ts) — never invented here.
+  content: jsonb("content").notNull(),
+  state: text("state").notNull().default("awaiting_review"),
+  version: integer("version").notNull().default(1),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// Insert-only audit log of real founder decisions — the same "never
+// overwrite a decision, only ever add to the record" philosophy the
+// existing `approvals` table already uses.
+export const agentDeliverableReviews = pgTable("agent_deliverable_reviews", {
+  id: text("id").primaryKey(),
+  deliverable_id: text("deliverable_id")
+    .notNull()
+    .references(() => agentDeliverables.id),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  decision: text("decision").notNull(), // "approved" | "rejected" | "revision_requested"
+  note: text("note"),
+  decided_at: timestamp("decided_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 // A project IS a workspace — "commerce" (the original Etsy/KDP digital-
 // product focus) or "service_business" (client-facing local businesses
 // like hairdressers or garages). Missions don't carry their own workspace
