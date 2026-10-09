@@ -12,6 +12,7 @@ import {
   recordDeliverable,
   getAgentByKey,
 } from "@/lib/db/repositories";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 export function makeScoutReport(overrides: Partial<CommerceReport> = {}): CommerceReport {
   return {
@@ -319,9 +320,11 @@ export async function setupMissionReadyForProduction(
   founderId: string,
   overrides: { reportOverrides?: Partial<CommerceReport> } = {},
 ): Promise<{ mission: Mission; evidence: Evidence[]; report: CommerceReport }> {
-  const project = await createProject({ name: "Digital Products (test)", workspaceType: "commerce" });
+  const organization = await getActiveOrganizationForFounder(founderId);
+  const project = await createProject({ name: "Digital Products (test)", organizationId: organization.id, workspaceType: "commerce" });
   const mission = await createMission({
     founderId,
+    organizationId: organization.id,
     projectId: project.id,
     title: "Preschool counting worksheets",
     brief: "Research demand for printable counting worksheets on Etsy.",

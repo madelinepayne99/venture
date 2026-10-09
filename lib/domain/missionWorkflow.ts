@@ -28,6 +28,7 @@ import {
 } from "@/lib/db/repositories";
 import { validateMissionInput, type MissionInput } from "@/lib/domain/missionValidation";
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 import { isContentItemCancellable } from "@/lib/domain/contentItemStates";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
 import { ScoutReportSchema } from "@/lib/agents/scout/schema";
@@ -84,8 +85,10 @@ export async function createAndSubmitMission(
     throw new MissionValidationError(validation.errors);
   }
 
+  const organization = await getActiveOrganizationForFounder(input.founderId);
   const mission = await createMission({
     founderId: input.founderId,
+    organizationId: organization.id,
     projectId: input.projectId,
     title: input.title.trim(),
     brief: input.brief.trim(),

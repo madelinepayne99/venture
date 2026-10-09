@@ -26,6 +26,7 @@ import {
   FoundersDeskStateError,
 } from "@/lib/domain/foundersDeskWorkflow";
 import { setupMissionReadyForProduction, fakeAnthropicClient, fakeAnthropicMessage } from "./testUtils";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 import { requestResearch } from "@/lib/domain/businessAnalystWorkflow";
 import { submitBusinessAnalystReport } from "@/lib/domain/foundersDeskWorkflow";
 
@@ -34,13 +35,18 @@ async function seededFounderId(): Promise<string> {
   return founders[0]!.id;
 }
 
+async function seededOrganizationId(): Promise<string> {
+  return (await getActiveOrganizationForFounder(await seededFounderId())).id;
+}
+
 describe("listFoundersDeskInbox — the real unified adapter", () => {
   beforeEach(async () => {
     await resetDbForTests();
   });
 
   it("is empty with no real pending work anywhere", async () => {
-    const inbox = await listFoundersDeskInbox();
+    const organizationId = await seededOrganizationId();
+    const inbox = await listFoundersDeskInbox(organizationId);
     expect(inbox).toEqual([]);
   });
 
@@ -48,12 +54,13 @@ describe("listFoundersDeskInbox — the real unified adapter", () => {
     const founderId = await seededFounderId();
     const { mission } = await setupMissionReadyForProduction(founderId);
 
-    const before = await listFoundersDeskInbox();
+    const organizationId = await seededOrganizationId();
+    const before = await listFoundersDeskInbox(organizationId);
     expect(before.some((i) => i.source === "scout_mission" && i.referenceId === mission.id)).toBe(true);
 
     await reviewScoutMission(mission.id, founderId, "approve");
 
-    const after = await listFoundersDeskInbox();
+    const after = await listFoundersDeskInbox(organizationId);
     expect(after.some((i) => i.source === "scout_mission" && i.referenceId === mission.id)).toBe(false);
   });
 
@@ -63,12 +70,13 @@ describe("listFoundersDeskInbox — the real unified adapter", () => {
     await completeFounderTask(founderId, task.id);
     const deliverable = await submitExecutiveAssistantSummary(founderId, task.id);
 
-    const before = await listFoundersDeskInbox();
+    const organizationId = await seededOrganizationId();
+    const before = await listFoundersDeskInbox(organizationId);
     expect(before.some((i) => i.source === "agent_deliverable" && i.referenceId === deliverable.id)).toBe(true);
 
     await reviewAgentDeliverable(deliverable.id, founderId, "approve");
 
-    const after = await listFoundersDeskInbox();
+    const after = await listFoundersDeskInbox(organizationId);
     expect(after.some((i) => i.referenceId === deliverable.id)).toBe(false);
   });
 
@@ -95,7 +103,8 @@ describe("listFoundersDeskInbox — the real unified adapter", () => {
     await transitionContentItemState(item.id, ["planning"], "generating");
     await transitionContentItemState(item.id, ["generating"], "awaiting_review");
 
-    const inbox = await listFoundersDeskInbox();
+    const organizationId = await seededOrganizationId();
+    const inbox = await listFoundersDeskInbox(organizationId);
     const row = inbox.find((i) => i.source === "content_bot_item" && i.referenceId === item.id);
     expect(row?.title).toBe(mission.title);
   });
@@ -127,7 +136,8 @@ describe("listFoundersDeskInbox — the real unified adapter", () => {
     await transitionContentItemState(second.id, ["planning"], "generating");
     await transitionContentItemState(second.id, ["generating"], "awaiting_review");
 
-    const inbox = await listFoundersDeskInbox();
+    const organizationId = await seededOrganizationId();
+    const inbox = await listFoundersDeskInbox(organizationId);
     const row = inbox.find((i) => i.source === "content_bot_item" && i.referenceId === second.id);
     // Real, honest disambiguation — never a deduplication that would hide
     // the genuinely separate first attempt's own historical record.
@@ -199,8 +209,9 @@ describe("Finance Agent — submitFinanceReport", () => {
 
   it("wraps genuine recorded budget/expense data, never invented totals", async () => {
     const founderId = await seededFounderId();
-    await setCategoryBudget({ category: "software", amount: 30, currency: "GBP" });
-    await logExpense({ category: "software", description: "Subscription", amount: 12, currency: "GBP" });
+    const organizationId = await seededOrganizationId();
+    await setCategoryBudget(organizationId, { category: "software", amount: 30, currency: "GBP" });
+    await logExpense(organizationId, { category: "software", description: "Subscription", amount: 12, currency: "GBP" });
 
     const deliverable = await submitFinanceReport(founderId, "software");
     const content = deliverable.content as { remaining: number; spentInBudgetCurrency: number };

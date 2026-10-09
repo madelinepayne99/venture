@@ -7,6 +7,16 @@ import type * as schema from "./schema";
 
 export type Founder = InferSelectModel<typeof schema.founders>;
 
+export type Organization = InferSelectModel<typeof schema.organizations>;
+export type OrganizationMemberRole = (typeof schema.organizationMemberRoleValues)[number];
+export type OrganizationMember = Omit<InferSelectModel<typeof schema.organizationMembers>, "role"> & {
+  role: OrganizationMemberRole;
+};
+export type OrganizationAgentStatus = (typeof schema.organizationAgentStatusValues)[number];
+export type OrganizationAgent = Omit<InferSelectModel<typeof schema.organizationAgents>, "status"> & {
+  status: OrganizationAgentStatus;
+};
+
 export type AgentStatus = (typeof schema.agentStatusValues)[number];
 export type Agent = InferSelectModel<typeof schema.agents>;
 export type AgentCapability = InferSelectModel<typeof schema.agentCapabilities>;

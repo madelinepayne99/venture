@@ -42,12 +42,19 @@ function validateExpenseInput(input: RecordExpenseInput): string[] {
   return errors;
 }
 
-/** Finance Agent's real capability: a genuine expense, explicit currency, never guessed. */
-export async function logExpense(input: RecordExpenseInput): Promise<Expense> {
+/**
+ * Finance Agent's real capability: a genuine expense, explicit currency,
+ * never guessed. `organizationId` is real, server-resolved tenant scope
+ * (Master Development Mission 6, Phase E) — expenses/budgets had NO
+ * ownership column at all before this migration; every caller must now
+ * pass the real organization this expense belongs to.
+ */
+export async function logExpense(organizationId: string, input: RecordExpenseInput): Promise<Expense> {
   const errors = validateExpenseInput(input);
   if (errors.length) throw new FinanceValidationError(errors);
 
   return recordExpense({
+    organizationId,
     category: input.category!.trim(),
     description: input.description!.trim(),
     amount: input.amount!,
@@ -78,11 +85,12 @@ function validateBudgetInput(input: SetBudgetInput): string[] {
   return errors;
 }
 
-export async function setCategoryBudget(input: SetBudgetInput): Promise<Budget> {
+export async function setCategoryBudget(organizationId: string, input: SetBudgetInput): Promise<Budget> {
   const errors = validateBudgetInput(input);
   if (errors.length) throw new FinanceValidationError(errors);
 
   return upsertBudget({
+    organizationId,
     category: input.category!.trim(),
     amount: input.amount!,
     currency: input.currency!.toUpperCase(),
@@ -104,10 +112,14 @@ export interface BudgetStatus {
   excludedOtherCurrencyTotals: Array<{ currency: string; total: number }>;
 }
 
-/** The actual "£30 budget, £12 spent, £18 remaining" calculation — currency-honest. */
-export async function getBudgetStatus(category: string, period: BudgetPeriod = "monthly"): Promise<BudgetStatus> {
-  const budget = (await getBudgetByCategory(category, period)) ?? null;
-  const sums = await sumExpensesByCategoryAndCurrency(category);
+/** The actual "£30 budget, £12 spent, £18 remaining" calculation — currency-honest, and now organization-honest too. */
+export async function getBudgetStatus(
+  organizationId: string,
+  category: string,
+  period: BudgetPeriod = "monthly",
+): Promise<BudgetStatus> {
+  const budget = (await getBudgetByCategory(organizationId, category, period)) ?? null;
+  const sums = await sumExpensesByCategoryAndCurrency(organizationId, category);
 
   if (!budget) {
     return {
@@ -132,6 +144,6 @@ export async function getBudgetStatus(category: string, period: BudgetPeriod = "
   };
 }
 
-export async function listAllExpenses(category?: string): Promise<Expense[]> {
-  return listExpenses(category ? { category } : undefined);
+export async function listAllExpenses(organizationId: string, category?: string): Promise<Expense[]> {
+  return listExpenses(organizationId, category ? { category } : undefined);
 }

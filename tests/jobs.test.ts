@@ -14,6 +14,7 @@ import {
   listActivity,
 } from "@/lib/db/repositories";
 import { reapStaleResearchingMissions } from "@/lib/jobs/stuckMissionWatchdog";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 vi.mock("@/lib/inngest/client", () => ({
   // stuckMissionWatchdog.ts calls inngest.createFunction(...) at module
@@ -43,8 +44,10 @@ describe("stuck-mission watchdog", () => {
 
   it("reaps a mission that has been researching for over 10 minutes with no progress", async () => {
     const scout = (await getAgentByKey("scout"))!;
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Stuck mission",
       brief: "A mission whose research job crashed and never finished.",
@@ -72,8 +75,10 @@ describe("stuck-mission watchdog", () => {
 
   it("leaves a mission alone if it's researching but still within the timeout window", async () => {
     const scout = (await getAgentByKey("scout"))!;
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Still working",
       brief: "A mission whose research just started — not stuck yet.",
@@ -94,8 +99,10 @@ describe("stuck-mission watchdog", () => {
 
   it("does not touch a mission that already settled on its own", async () => {
     const scout = (await getAgentByKey("scout"))!;
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Already done",
       brief: "A mission that finished normally before the watchdog ran.",
@@ -123,8 +130,10 @@ describe("stuck-mission watchdog", () => {
     // "scout_research" stage name, which would have silently never
     // matched a crashed pass 2 (stage_name "scout_followup_research").
     const scout = (await getAgentByKey("scout"))!;
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Stuck on the follow-up pass",
       brief: "A mission whose second research pass crashed and never finished.",
@@ -161,8 +170,10 @@ describe("follow-up dispatch self-healing watchdog", () => {
   }
 
   async function makeAwaitingEvidenceMission(passCount: number) {
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Stuck awaiting evidence",
       brief: "A mission whose follow-up dispatch event send is presumed to have failed.",

@@ -12,6 +12,7 @@ import type { BusinessAnalystReportRecord } from "@/lib/db/types";
 import { runBusinessAnalystResearch, BusinessAnalystResearchError } from "@/lib/agents/businessAnalyst";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import type { BusinessAnalystReport } from "@/lib/agents/businessAnalyst/schema";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 /**
  * Business Analyst's one real, tested capability: standalone sourced
@@ -62,6 +63,7 @@ export async function requestResearch(
   if (trimmed && trimmed.length > 1000) errors.push("Keep the research question to 1000 characters or fewer.");
   if (errors.length) throw new BusinessAnalystValidationError(errors);
 
+  const organization = await getActiveOrganizationForFounder(founderId);
   const agent = await getAgentByKey("business_analyst");
 
   try {
@@ -69,6 +71,7 @@ export async function requestResearch(
 
     const saved = await saveBusinessAnalystReport({
       founderId,
+      organizationId: organization.id,
       query: trimmed!,
       state: "completed",
       report: outcome.report,
@@ -101,6 +104,7 @@ export async function requestResearch(
 
       const saved = await saveBusinessAnalystReport({
         founderId,
+        organizationId: organization.id,
         query: trimmed!,
         state: "failed",
         report: null,

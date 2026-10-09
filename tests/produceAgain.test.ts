@@ -596,9 +596,12 @@ describe("produceAgainFromMission — one Scout mission, many independent produc
 
   it("refuses a mission whose research never completed (e.g. still researching)", async () => {
     const { createProject, createMission } = await import("@/lib/db/repositories");
-    const project = await createProject({ name: "Not yet researched", workspaceType: "commerce" });
+    const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+    const organization = await getActiveOrganizationForFounder(founderId);
+    const project = await createProject({ name: "Not yet researched", organizationId: organization.id, workspaceType: "commerce" });
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: project.id,
       title: "Still researching",
       brief: "Not done yet.",

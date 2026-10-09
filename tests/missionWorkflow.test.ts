@@ -15,6 +15,7 @@ import {
   transitionMissionState,
 } from "@/lib/db/repositories";
 import { makeScoutReport, makeServiceBusinessReport, makeProductionRecommendation } from "./testUtils";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 vi.mock("@/lib/agents/scout", () => {
   return {
@@ -311,8 +312,10 @@ describe("mission workflow", () => {
     // Simulate a mission whose first attempt got as far as "researching"
     // plus the assignment/stage rows, then the process died before
     // calling Scout — exactly the state a real crash would leave behind.
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Crashed mid-flight",
       brief: "A mission whose first research attempt crashed before finishing.",
@@ -408,8 +411,10 @@ describe("mission workflow", () => {
     const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
     const scoutModule = await import("@/lib/agents/scout");
 
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Never approved",
       brief: "A mission the research job somehow runs for before it was ever approved.",
@@ -478,8 +483,10 @@ describe("mission workflow", () => {
     const { approveMission } = await import("@/lib/domain/missionWorkflow");
     const { IllegalMissionTransitionError } = await import("@/lib/domain/missionStates");
 
+    const orgForDraft = await getActiveOrganizationForFounder(founderId);
     const draftMission = await createMission({
       founderId,
+      organizationId: orgForDraft.id,
       projectId: null,
       title: "Skips the gate",
       brief: "An attempt to approve a mission that never asked the founders.",
@@ -566,8 +573,10 @@ describe("mission workflow", () => {
       evidence: [],
     });
 
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Race to research",
       brief: "Two job triggers for the same freshly-queued mission at once.",
@@ -594,8 +603,10 @@ describe("mission workflow", () => {
   });
 
   it("transitionMissionState lets only one of two racing conditional updates for the same fromState succeed", async () => {
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Race target",
       brief: "Used to test the atomic transition guard directly, independent of higher-level timing.",
@@ -651,7 +662,8 @@ describe("mission workflow", () => {
       evidence: [],
     });
 
-    const project = await createProject({ name: "Hair & Beauty Clients", workspaceType: "service_business" });
+    const orgForProject = await getActiveOrganizationForFounder(founderId);
+    const project = await createProject({ name: "Hair & Beauty Clients", organizationId: orgForProject.id, workspaceType: "service_business" });
 
     const created = await createAndSubmitMission({
       founderId,

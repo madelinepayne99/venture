@@ -8,6 +8,7 @@ import {
   setChecklistItemDone,
 } from "@/lib/db/repositories";
 import type { Checklist, ChecklistWithItems } from "@/lib/db/types";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 /**
  * Operations Agent's one real, tested capability: checklists (acceptance
@@ -63,8 +64,10 @@ export async function createFounderChecklist(
   const errors = validateCreateChecklistInput(input);
   if (errors.length) throw new ChecklistValidationError(errors);
 
+  const organization = await getActiveOrganizationForFounder(founderId);
   return createChecklist({
     founderId,
+    organizationId: organization.id,
     title: input.title!.trim(),
     itemLabels: (input.items ?? []).map((item) => item.trim()).filter(Boolean),
   });

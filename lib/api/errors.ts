@@ -49,6 +49,11 @@ import {
   FoundersDeskNotFoundError,
   FoundersDeskStateError,
 } from "@/lib/domain/foundersDeskWorkflow";
+import {
+  OrganizationNotFoundError,
+  OrganizationMembershipError,
+  OrganizationValidationError,
+} from "@/lib/domain/organizationWorkflow";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -167,6 +172,19 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof FoundersDeskStateError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof OrganizationNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof OrganizationMembershipError) {
+    // Deliberately the same generic message regardless of whether the
+    // organization genuinely doesn't exist or the founder just isn't a
+    // member of it — never confirm or deny another organization's
+    // existence to someone who isn't in it.
+    return NextResponse.json({ error: "You do not have access to that organization." }, { status: 403 });
+  }
+  if (error instanceof OrganizationValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }
   if (error instanceof Error && error.message.includes("not found")) {
     return NextResponse.json({ error: error.message }, { status: 404 });

@@ -10,6 +10,7 @@ import {
 } from "@/lib/db/repositories";
 import type { ChiefOfStaffGoal, ChiefOfStaffGoalWithSubtasks, AgentTask } from "@/lib/db/types";
 import { requestResearch, type RequestResearchDeps } from "@/lib/domain/businessAnalystWorkflow";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 /**
  * Chief of Staff's one real, tested capability: breaking a founder's goal
@@ -129,12 +130,14 @@ export async function createGoalWithDelegatedSubtasks(
   const errors = await validateCreateGoalInput(input);
   if (errors.length) throw new ChiefOfStaffValidationError(errors);
 
-  const goal = await createChiefOfStaffGoal({ founderId, title: input.title!.trim() });
+  const organization = await getActiveOrganizationForFounder(founderId);
+  const goal = await createChiefOfStaffGoal({ founderId, organizationId: organization.id, title: input.title!.trim() });
 
   for (const subtask of input.subtasks!) {
     await createAgentTask({
       agentKey: subtask.agentKey!,
       founderId,
+      organizationId: organization.id,
       taskType: "delegated_subtask",
       title: subtask.title!.trim(),
       detail: subtask.detail?.trim() || null,

@@ -7,6 +7,7 @@ import {
   getAgentByKey,
 } from "@/lib/db/repositories";
 import type { AgentTask } from "@/lib/db/types";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 const AGENT_KEY = "executive_assistant";
 
@@ -66,9 +67,11 @@ export async function createFounderTask(founderId: string, input: CreateTaskInpu
     throw new Error(`Agent "${AGENT_KEY}" is not registered — run seedAgents().`);
   }
 
+  const organization = await getActiveOrganizationForFounder(founderId);
   return createAgentTask({
     agentKey: AGENT_KEY,
     founderId,
+    organizationId: organization.id,
     taskType: "reminder",
     title: input.title!.trim(),
     detail: input.detail ?? null,
