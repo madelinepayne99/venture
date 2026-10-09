@@ -34,6 +34,94 @@ export const founders = pgTable("founders", {
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 
+// --- Multi-tenancy (Master Development Mission 6) -------------------------
+//
+// An `organization` is one customer's private Venture HQ — the real tenant
+// boundary. `founders` stays exactly what it already was (a real, GitHub-
+// authenticated person allowed to sign in — see CLAUDE.md's Authentication
+// section); it is deliberately NOT renamed or repurposed to mean "business",
+// since a future person may belong to more than one organization (an
+// accountant helping two separate real clients, for instance). The two are
+// linked by `organization_members`, a real many-to-many: supporting multiple
+// members per organization AND multiple organizations per founder from day
+// one, even though this milestone's own supported customer experience keeps
+// a signed-in founder on one active organization at a time (a client-side
+// preference, not a schema limitation — see `lib/domain/organizationWorkflow.ts`).
+//
+// `owner_founder_id` is denormalized from `organization_members` (where a
+// membership's own `role` would already say "owner") specifically so
+// "who owns this organization" is a single indexed lookup, not a query over
+// every member row — the same reasoning `missions.founder_id` already uses
+// instead of forcing every read through a join.
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  owner_founder_id: text("owner_founder_id")
+    .notNull()
+    .references(() => founders.id),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+export const organizationMemberRoleValues = ["owner", "admin", "member"] as const;
+
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    id: text("id").primaryKey(),
+    organization_id: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    founder_id: text("founder_id")
+      .notNull()
+      .references(() => founders.id),
+    role: text("role").notNull().default("member"),
+    created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  },
+  (table) => ({
+    oneMembershipPerFounderPerOrg: uniqueIndex("organization_members_org_founder_unique").on(
+      table.organization_id,
+      table.founder_id,
+    ),
+  }),
+);
+
+// Per-organization workforce (Section 7) — replaces the global
+// `agents.status` as the real "is this agent recruited" signal.
+// Deliberately a separate table, not a new column on `agents`: `agents`
+// stays the one shared, global CATALOG of what agent types exist at all
+// (seeded once, read by every organization alike — see `lib/db/client.ts`'s
+// `seedAgents()`, unchanged) — exactly the same "don't force-fit a column
+// that was never shaped for this" call already made for
+// `agent_deliverables` vs. the mission-scoped `deliverables`/`approvals`.
+// `agents.status` itself is intentionally left alone by this migration —
+// see the accompanying backfill in `lib/db/client.ts` for why repurposing
+// it would have silently broken existing world-rendering/seed-upgrade code
+// that already reads it for a different real purpose (whether an agent
+// type is implemented at all, not whether any particular customer has it).
+export const organizationAgentStatusValues = ["active", "planned"] as const;
+
+export const organizationAgents = pgTable(
+  "organization_agents",
+  {
+    id: text("id").primaryKey(),
+    organization_id: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agent_key: text("agent_key")
+      .notNull()
+      .references(() => agents.key),
+    status: text("status").notNull().default("planned"),
+    created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+  },
+  (table) => ({
+    oneRowPerAgentPerOrg: uniqueIndex("organization_agents_org_agent_unique").on(
+      table.organization_id,
+      table.agent_key,
+    ),
+  }),
+);
+
 export const agentStatusValues = ["active", "planned"] as const;
 
 export const agents = pgTable("agents", {
@@ -64,6 +152,13 @@ export const chiefOfStaffGoals = pgTable("chief_of_staff_goals", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  // Nullable for this migration only — see the multi-tenancy backfill in
+  // lib/db/client.ts's ensureDefaultOrganization(). Every row, including
+  // every pre-existing one, is backfilled to a real organization at
+  // startup; a future migration tightens this to NOT NULL once that's
+  // verified. Never read as "global" when null — see
+  // lib/domain/organizationWorkflow.ts's own doc comment.
+  organization_id: text("organization_id").references(() => organizations.id),
   title: text("title").notNull(),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
@@ -90,6 +185,9 @@ export const agentTasks = pgTable("agent_tasks", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  // Nullable for this migration — see chief_of_staff_goals's own comment
+  // above; the same backfill covers this table.
+  organization_id: text("organization_id").references(() => organizations.id),
   task_type: text("task_type").notNull(),
   title: text("title").notNull(),
   detail: text("detail"),
@@ -118,6 +216,11 @@ export const agentTasks = pgTable("agent_tasks", {
 // additive, not a migration of existing data.
 export const expenses = pgTable("expenses", {
   id: text("id").primaryKey(),
+  // The most urgent real gap this migration closes: expenses previously
+  // had NO ownership column at all — a genuinely global, shared table
+  // regardless of which business logged what. Nullable here only for the
+  // same safe-backfill reason as every other table in this migration.
+  organization_id: text("organization_id").references(() => organizations.id),
   category: text("category").notNull(),
   description: text("description").notNull(),
   amount: real("amount").notNull(),
@@ -134,6 +237,8 @@ export const budgetPeriodValues = ["monthly", "one_off"] as const;
 
 export const budgets = pgTable("budgets", {
   id: text("id").primaryKey(),
+  // Same real gap as expenses above — previously no ownership at all.
+  organization_id: text("organization_id").references(() => organizations.id),
   category: text("category").notNull(),
   amount: real("amount").notNull(),
   currency: text("currency").notNull(),
@@ -154,6 +259,7 @@ export const checklists = pgTable("checklists", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   title: text("title").notNull(),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
@@ -186,6 +292,7 @@ export const businessAnalystReports = pgTable("business_analyst_reports", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   query: text("query").notNull(),
   state: text("state").notNull(),
   report: jsonb("report"),
@@ -221,6 +328,7 @@ export const agentDeliverables = pgTable("agent_deliverables", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   // Which real entity this deliverable summarizes — "agent_task" |
   // "chief_of_staff_goal" | "checklist" | "finance_report" |
   // "business_analyst_report". Never a free-text label: always traces
@@ -250,6 +358,7 @@ export const agentDeliverableReviews = pgTable("agent_deliverable_reviews", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   decision: text("decision").notNull(), // "approved" | "rejected" | "revision_requested"
   note: text("note"),
   decided_at: timestamp("decided_at", { mode: "string" }).notNull().defaultNow(),
@@ -269,6 +378,11 @@ export const workspaceTypeValues = ["commerce", "service_business"] as const;
 
 export const projects = pgTable("projects", {
   id: text("id").primaryKey(),
+  // Another real gap this migration closes: a workspace previously had
+  // NO ownership at all — any founder/organization could see and create
+  // missions under any workspace. Nullable only for the same safe-
+  // backfill reason as every table in this migration.
+  organization_id: text("organization_id").references(() => organizations.id),
   name: text("name").notNull(),
   description: text("description"),
   platform_focus: text("platform_focus"),
@@ -282,6 +396,7 @@ export const missions = pgTable("missions", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   title: text("title").notNull(),
   brief: text("brief").notNull(),
   interpreted_mission: text("interpreted_mission"),

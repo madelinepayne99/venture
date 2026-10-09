@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { drizzle, type PostgresJsDatabase } from "drizzle-orm/postgres-js";
-import { eq, sql } from "drizzle-orm";
+import { eq, isNull, sql } from "drizzle-orm";
 import * as schema from "./schema";
 
 export type Db = PostgresJsDatabase<typeof schema>;
@@ -286,6 +286,112 @@ export async function seedAgents(instance: Db): Promise<void> {
   }
 }
 
+// Multi-tenancy (Master Development Mission 6). Every table that gained a
+// real `organization_id` column in this migration keeps it NULLABLE at
+// the schema level specifically so this function can backfill safely —
+// never a destructive reset, never a guess at which organization
+// ambiguous data belongs to (there IS no ambiguity here: every row that
+// predates organizations existing at all genuinely belongs to the one
+// real business this app has ever served). Idempotent and safe to call
+// on every request that seeds the database (same contract as
+// `seedAgents` above): a database that's already fully backfilled does
+// zero writes beyond the one-time organization/membership creation
+// check.
+//
+// Exported for the same reason `seedAgents` is — directly testable
+// against a real Postgres instance without a full truncate-and-reseed.
+export async function ensureDefaultOrganization(instance: Db): Promise<string> {
+  const founders = await instance.select({ id: schema.founders.id }).from(schema.founders);
+  if (founders.length === 0) {
+    // Called before founders exist (shouldn't happen via seed()'s own
+    // ordering) — fail loudly rather than creating an orphaned org.
+    throw new Error("ensureDefaultOrganization requires at least one founder to exist first.");
+  }
+
+  const existingOrg = await instance.select({ id: schema.organizations.id }).from(schema.organizations).limit(1);
+  let organizationId: string;
+  if (existingOrg.length > 0) {
+    organizationId = existingOrg[0]!.id;
+  } else {
+    organizationId = randomUUID();
+    await instance.insert(schema.organizations).values({
+      id: organizationId,
+      // Real, honest name for what this actually is — the founders' own
+      // original business, not a placeholder. A founder can rename it
+      // later; nothing here invents a customer-facing brand.
+      name: "Founders' HQ",
+      owner_founder_id: founders[0]!.id,
+    });
+  }
+
+  // Every real founder is a real member — both are founders of the one
+  // real business this app served before organizations existed, so
+  // both are genuinely owners of it, not just the first one seeded.
+  const existingMembers = await instance
+    .select({ founder_id: schema.organizationMembers.founder_id })
+    .from(schema.organizationMembers)
+    .where(eq(schema.organizationMembers.organization_id, organizationId));
+  const memberFounderIds = new Set(existingMembers.map((m) => m.founder_id));
+  for (const founder of founders) {
+    if (!memberFounderIds.has(founder.id)) {
+      await instance.insert(schema.organizationMembers).values({
+        id: randomUUID(),
+        organization_id: organizationId,
+        founder_id: founder.id,
+        role: "owner",
+      });
+    }
+  }
+
+  // Backfill every real table this migration touched — WHERE ... IS NULL
+  // means a second call does zero writes, and a row some future code
+  // already scoped correctly is never overwritten.
+  const tablesToBackfill = [
+    schema.projects,
+    schema.missions,
+    schema.chiefOfStaffGoals,
+    schema.agentTasks,
+    schema.checklists,
+    schema.businessAnalystReports,
+    schema.agentDeliverables,
+    schema.agentDeliverableReviews,
+    schema.expenses,
+    schema.budgets,
+  ] as const;
+  for (const table of tablesToBackfill) {
+    await instance
+      .update(table)
+      .set({ organization_id: organizationId })
+      .where(isNull(table.organization_id));
+  }
+
+  // Per-organization workforce (Section 7) — backfilled from the real,
+  // existing global `agents.status`, so "which agents are recruited"
+  // reads exactly the same immediately after this migration as it did
+  // the moment before it, just expressed per-organization now.
+  const activeAgents = await instance
+    .select({ key: schema.agents.key })
+    .from(schema.agents)
+    .where(eq(schema.agents.status, "active"));
+  const existingOrgAgents = await instance
+    .select({ agent_key: schema.organizationAgents.agent_key })
+    .from(schema.organizationAgents)
+    .where(eq(schema.organizationAgents.organization_id, organizationId));
+  const orgAgentKeys = new Set(existingOrgAgents.map((a) => a.agent_key));
+  for (const agent of activeAgents) {
+    if (!orgAgentKeys.has(agent.key)) {
+      await instance.insert(schema.organizationAgents).values({
+        id: randomUUID(),
+        organization_id: organizationId,
+        agent_key: agent.key,
+        status: "active",
+      });
+    }
+  }
+
+  return organizationId;
+}
+
 async function seed(instance: Db) {
   const founderCount = await countRows(instance, schema.founders);
   if (founderCount === 0) {
@@ -312,6 +418,11 @@ async function seed(instance: Db) {
       workspace_type: "commerce",
     });
   }
+
+  // Must run after both founders and projects/agents exist — it backfills
+  // organization_id on whatever was just seeded above (a fresh database)
+  // and on every pre-existing row (a real, already-populated database).
+  await ensureDefaultOrganization(instance);
 }
 
 /**
@@ -347,7 +458,8 @@ export async function resetDbForTests(): Promise<void> {
       content_assets, content_versions, content_items,
       deliverables, evidence, agent_assignments, mission_stages, missions,
       agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports,
-      agent_deliverable_reviews, agent_deliverables, projects, agent_capabilities, agents, founders,
+      agent_deliverable_reviews, agent_deliverables, projects, agent_capabilities, agents,
+      organization_agents, organization_members, organizations, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE
   `);
