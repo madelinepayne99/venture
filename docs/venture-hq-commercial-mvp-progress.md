@@ -580,3 +580,251 @@ Stated plainly, not implied done:
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (670 tests) still holds before continuing.
+
+---
+
+# Master Development Mission 6 — From Working AI Headquarters to
+# Secure, Multi-Customer SaaS Platform
+
+**Branch:** `claude/commercial-mvp-polish` (continued — already pushed,
+`branch.ab +0/-0` confirmed at session start). **Latest commit:**
+`b575480`. Phases followed: the brief's own **Phase D** (baseline/
+ownership audit), plus an explicit founder-priority addendum ("prove
+the seven agents genuinely work, especially Chief of Staff coordination,
+before onboarding/billing — continue multi-tenancy in parallel"), plus
+real progress into **Phase E** (multi-tenant foundation).
+
+## Phase D — Baseline and ownership audit: DONE
+
+Re-verified, not assumed: `npx tsc --noEmit` clean, `npx vitest run` →
+54 files / 670 tests (exactly the prior session's own closing count),
+branch already pushed, no `astra/*` branch yet, dev server starts
+clean.
+
+**The real ownership map** (ahead of any schema change):
+
+- **Had a real, direct `founder_id`:** `missions`, `chief_of_staff_goals`,
+  `agent_tasks`, `checklists`, `business_analyst_reports`,
+  `agent_deliverables`, `agent_deliverable_reviews`, `approvals`.
+- **Scoped transitively via `mission_id → missions.founder_id`:**
+  `mission_stages`, `agent_assignments`, `evidence`, `deliverables`,
+  `content_items`, `content_versions`, `content_assets`.
+- **Scoped transitively via `checklist_id → checklists.founder_id`:**
+  `checklist_items`.
+- **Genuinely global catalogs (correctly so — not customer data):**
+  `agents`, `agent_capabilities` (the shared Employee Capability
+  Registry's DB half; unchanged by this mission). A legacy set of 7
+  "planned" agent rows (`inventor`, `inspector`, `merchant`, etc. — an
+  older, pre-Employee-Registry concept from Milestone 1, never cleaned
+  up, not part of the 10-profile Employee Directory) also lives here,
+  harmlessly global, not touched this session.
+- **Had NO ownership column at all — the real, concrete gaps:**
+  `expenses` and `budgets` (genuinely shared/global regardless of which
+  business logged what — confirmed by reading their own doc comments,
+  which say so explicitly: "No founder_id... a shared business ledger"),
+  and `projects`/workspaces (any founder could see/use any workspace).
+  `costs`/`ledger_entries`/`activity_history` have a *nullable*
+  `mission_id` and no `founder_id` at all — when `mission_id` is null
+  (e.g. a Business Analyst cost), there was and is no way to attribute
+  that spend to an organization yet; flagged as real follow-up work,
+  not fixed this session (see "Not done" below).
+- **Recruitment ownership:** `agents.status` ("active"/"planned") was
+  the sole signal for "is this agent recruited" — fully global. This is
+  the literal scenario Section 7's Bakery HQ / Landscaping HQ example
+  warns about: recruiting or removing an agent currently affects every
+  organization at once, because there is no organization yet.
+
+Every API route under `app/api/**` currently derives the acting founder
+from `requireFounderId()` (never trusts the client) but, for the gap
+tables above, has nothing to additionally scope BY — this is the
+concrete blocker Phase E's schema work below exists to close.
+
+## Phase (addendum) — prove the seven agents genuinely work: DONE,
+## with a real gap found and fixed
+
+The founders' own explicit priority for this session, ahead of
+onboarding/billing: verify Chief of Staff's multi-agent coordination is
+real, not simulated, and fix it if it isn't.
+
+**Investigated before claiming anything.** `completeFounderTask`/
+`cancelFounderTask` (the functions a delegated subtask is actually
+completed through) had zero agent-specific branching — completing a
+subtask "delegated to Finance Agent" was the exact same generic
+`agent_tasks` state flip as completing one delegated to Business
+Analyst, or an Executive Assistant reminder. For Executive Assistant/
+Finance/Operations that's honest (none has any autonomous AI
+execution — they're founder-driven tools by design, same as Executive
+Assistant's own "internal reminders only" is already documented to be).
+**It was not honest for Business Analyst**, which does have a real
+autonomous capability (`requestResearch`, a genuine billed Claude call
+with web search) — a subtask delegated to it was being closed out as a
+bare manual checkbox, with that real capability never actually
+dispatched. Chief of Staff was coordinating a to-do list for that one
+delegate, not genuinely sending it real work.
+
+**Fixed**: `lib/domain/chiefOfStaffWorkflow.ts`'s new
+`runDelegatedResearch(founderId, taskId)` reuses `requestResearch`
+verbatim, uses the subtask's own title/detail as the real question, and
+marks the subtask "completed" — atomically, with the real report's id
+recorded in its own `result` field — **only** when that real research
+genuinely finished successfully. A failed run leaves the subtask
+exactly where it was and throws a new `ChiefOfStaffResearchError`
+carrying the real failed report's id — never a fabricated completion.
+New route: `POST /api/chief-of-staff/subtasks/[id]/run-research`.
+`ChiefOfStaffPanel.tsx`'s UI shows "Run real research" instead of the
+generic "Done" button for a Business-Analyst-delegated subtask. 6 new
+tests (20 total in `tests/chiefOfStaff.test.ts`).
+
+**Verified live, with real money spent, not mocked**: a genuine 4-agent
+goal ("Launch a small print-on-demand sticker shop", one subtask each
+to Business Analyst/Operations/Finance/Executive Assistant) run start
+to finish through the real running app and real database:
+- The first real research attempt **genuinely failed** — Business
+  Analyst's own guardrail correctly rejected a report for using
+  "guaranteed" language — and the subtask was confirmed, directly in
+  the database, to remain `open` with **zero** fabricated completion,
+  while the real $0.144 cost of that failed attempt was still recorded
+  (consistent with the existing "never drop real cost" discipline).
+- A retry **genuinely succeeded**, the subtask transitioned to
+  `completed` with a real report id attached.
+- All 4 subtasks were then completed, the consolidated result
+  submitted, confirmed present in the real Founders' Desk inbox, and
+  approved — the complete real multi-agent coordination loop, start to
+  finish, with real evidence at every step.
+
+**Other six agents — status, not re-verified from scratch this
+session** (to respect Section 13's "do not run repeated paid calls
+solely to populate a dashboard"): Scout and Content Bot were already
+real-verified live earlier in this same branch's own work (a real
+Scout mission approved/rejected at the Founders' Desk with
+`missions.state` proven untouched; Content Bot's real multi-production
+history is the very data this branch's own duplicate-title fix was
+verified against). Executive Assistant/Finance/Operations/Business
+Analyst were each real-verified live in that same earlier session (real
+task completion, real budget/expense recording, real checklist
+completion, one real billed research call) — see this doc's own
+Milestone 4 section above for the full account. Nothing here re-claims
+those without that evidence; this session's own new live evidence is
+specifically the Chief-of-Staff-coordinated run above.
+
+## Phase E — Multi-tenant foundation: real, verified progress (not complete)
+
+**Schema and safe migration — DONE.** New tables: `organizations`,
+`organization_members` (real many-to-many, a role per membership),
+`organization_agents` (replaces global `agents.status` as the real
+per-organization recruitment signal — deliberately a new table, not a
+new column on `agents`, which stays the one shared, global agent-type
+catalog, unchanged). `organization_id` (nullable, FK'd) added to every
+table the audit above found needed real ownership: `projects`,
+`missions`, `chief_of_staff_goals`, `agent_tasks`, `checklists`,
+`business_analyst_reports`, `agent_deliverables`,
+`agent_deliverable_reviews`, `expenses`, `budgets`. Migration
+`drizzle/0014_black_nicolaos.sql` — entirely additive (new tables, new
+nullable columns only; nothing dropped, nothing tightened yet).
+
+**Safe backfill — DONE and verified live.** `lib/db/client.ts`'s new
+`ensureDefaultOrganization()` (same exported, idempotent,
+directly-testable pattern as the existing `seedAgents()`) creates one
+real "Founders' HQ" organization, adds **both** real founders as real
+owner members, backfills `organization_id` on every existing row across
+all ten tables (`WHERE ... IS NULL` — a second call does zero writes),
+and backfills `organization_agents` from the real, existing
+`agents.status = 'active'` rows. No row was ever ambiguous enough to
+need stopping the migration — every pre-existing row genuinely belongs
+to the one real business this app has ever served (confirmed, not
+assumed, by the audit above). **Verified directly against the real dev
+database after running it**: one organization, both founders as owners,
+all 7 real agents correctly present in `organization_agents`, and all
+48 real pre-existing rows across all 9 scoped tables confirmed at
+**zero** remaining NULLs. Applied to both the real dev Postgres and the
+local test Postgres.
+
+**676 tests passing** (670 prior + 6 Chief-of-Staff tests), one real
+regression found and fixed along the way (`tests/agentSeeding.test.ts`
+deleted an `agents` row directly to simulate a gap — now also deletes
+the real `organization_agents` row referencing it first, the same real
+FK discipline it already applied to `agent_capabilities`). `npx tsc
+--noEmit` clean, production build clean (verified via the safe stop/
+rebuild/restart procedure — dev server confirmed healthy both before
+and after), a live smoke test of `/api/missions`, `/api/employees`,
+`/api/founders-desk/inbox`, `/api/projects`, and
+`/api/finance/expenses` all returned real 200s against the migrated
+database.
+
+### What Phase E explicitly does NOT yet cover — stated plainly
+
+This is a real foundation, not a finished tenant boundary. Concretely
+still open:
+
+- **No route or domain function actually reads or filters by
+  `organization_id` yet.** Every API route still behaves exactly as
+  before — single-tenant, reading/writing without any organization
+  scope. The column exists and is correctly populated; nothing enforces
+  it yet. This is the large, separate "isolation hardening" effort
+  Phase F names, not started.
+- **Recruitment still reads the old global `agents.status`,** not the
+  new `organization_agents` table — `lib/domain/employeeWorkflow.ts`
+  was not touched this session. `organization_agents` is correctly
+  backfilled and ready to become the real source of truth, but nothing
+  reads from it yet.
+- **No organization-switcher or "current organization" concept exists
+  in the UI or session** — `FoundersDeskApp.tsx` has no
+  `activeOrganizationId` the way it already has `activeProjectId`.
+- **No security-negative tests exist yet** — Section 10's explicit
+  two-fictional-organizations isolation-attack test suite (direct URL
+  manipulation, cross-org recruitment mutation, missing organization
+  context, etc.) was not written this session, because there is no
+  enforcement yet for it to test.
+- **`costs`/`ledger_entries`/`activity_history`'s nullable-`mission_id`
+  attribution gap** (see the audit above) was identified but not
+  closed.
+- **Inngest background jobs** (`scoutResearchJob.ts`,
+  `contentProductionJob.ts`, the watchdogs) were not inspected or
+  changed for tenant-context safety this session.
+- **No role/permission model beyond what the schema can now express**
+  (`organization_members.role`) — no route checks it yet.
+- `budgets`' real "one ceiling per category+period" semantics (per its
+  own doc comment) should become per-organization once scoping is
+  enforced — flagged, not yet re-verified against the new column.
+
+## What remains (Mission 6's own Phases F–L): NOT STARTED
+
+Stated plainly: Phase F (complete isolation hardening + negative
+tests), Phase G (seven-agent acceptance testing under tenant-aware
+ownership — distinct from the addendum work above, which proved Chief
+of Staff's coordination is real but not yet under organization scoping),
+Phase H (usage/spending controls), Phase I (customer onboarding), Phase
+J (billing foundations), Phase K (browser QA/release audit beyond what
+was done this session), Phase L (Cleaner).
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **676 tests
+   passing**).
+2. Re-verify the real dev database backfill still holds (the
+   verification script used this session queried `organizations`,
+   `organization_members`, `organization_agents`, and every scoped
+   table's remaining NULL count directly — repeat that check rather
+   than assuming no regression).
+3. **The next real engineering action**: wire ONE real route through
+   the new ownership model end to end, as a proof the foundation
+   actually works under enforcement, before touching every route at
+   once. The brief's own suggested order (Section 7's own worked
+   example) makes per-organization recruitment the natural first slice:
+   build `lib/domain/organizationWorkflow.ts` (a `requireActiveOrganization
+   (founderId)` resolver every other scoped function will need), switch
+   `lib/domain/employeeWorkflow.ts`'s recruit/remove/list functions to
+   read and write `organization_agents` instead of the global
+   `agents.status`, thread an `activeOrganizationId` through
+   `FoundersDeskApp.tsx` the same way `activeProjectId` already works,
+   and write the real Section 10 security-negative tests for exactly
+   this one slice (two fictional organizations, prove org A cannot
+   recruit/remove/see org B's workforce). Only once that one slice is
+   real and tested does repeating the pattern for missions/finance/
+   checklists/etc. become mechanical rather than risky.
+4. Astra's branch still doesn't exist — check again
+   (`git ls-remote --heads origin | grep -i astra`) before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (676 tests) still holds before continuing.
