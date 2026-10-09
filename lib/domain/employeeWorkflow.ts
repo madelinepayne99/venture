@@ -48,6 +48,22 @@ export interface EmployeeProfile {
   /** null only for the three not-yet-built future employees, which have no `agents` row at all. */
   agent: Agent | null;
   recruited: boolean;
+  /**
+   * Whether every real integration this employee's capability depends on
+   * is actually configured right now (Master Development Mission 5,
+   * Section 4 — "Do not pretend customers can self-connect a provider if
+   * that workflow does not exist" cuts both ways: don't show "Ready to
+   * work" when it genuinely isn't, either). Computed server-side from
+   * real `process.env` presence — the boolean crosses into client code,
+   * never a key's value. `true` for every employee with no required
+   * integrations at all (nothing to wait on).
+   */
+  integrationsReady: boolean;
+}
+
+/** Real presence check only — never reads or forwards an env var's actual value. */
+function hasRealIntegration(envVarName: string): boolean {
+  return Boolean(process.env[envVarName] && process.env[envVarName]!.length > 0);
 }
 
 export async function listEmployeeDirectory(): Promise<EmployeeProfile[]> {
@@ -55,7 +71,12 @@ export async function listEmployeeDirectory(): Promise<EmployeeProfile[]> {
   const byKey = new Map(agents.map((a) => [a.key, a]));
   return EMPLOYEE_REGISTRY.map((definition) => {
     const agent = byKey.get(definition.key) ?? null;
-    return { definition, agent, recruited: agent?.status === "active" };
+    return {
+      definition,
+      agent,
+      recruited: agent?.status === "active",
+      integrationsReady: definition.requiredIntegrations.every(hasRealIntegration),
+    };
   });
 }
 
