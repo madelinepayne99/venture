@@ -9,6 +9,9 @@ import type {
   AgentStatus,
   AgentTask,
   AgentTaskState,
+  AgentDeliverable,
+  AgentDeliverableState,
+  AgentDeliverableReview,
   ChiefOfStaffGoal,
   ChiefOfStaffGoalWithSubtasks,
   Budget,
@@ -927,7 +930,17 @@ export async function recordApproval(entry: {
     | "approve_content"
     | "reject_content"
     | "request_revision"
-    | "publish";
+    | "publish"
+    // Universal Founders' Desk (Commercial MVP Milestone 4) — a real,
+    // audit-only acknowledgment of a Scout mission at
+    // ready_for_founders_review, recorded here (real mission_id already
+    // exists) rather than inventing a parallel review table for Scout.
+    // Deliberately does NOT change `missions.state` — Scout's own
+    // protected state machine is untouched; this is purely a founder
+    // decision record layered on top of it.
+    | "founders_desk_approved"
+    | "founders_desk_rejected"
+    | "founders_desk_revision_requested";
   note?: string;
   contentItemId?: string;
   contentVersionId?: string;
@@ -1521,4 +1534,102 @@ export async function listContentAssets(contentVersionId: string): Promise<Conte
     .where(eq(schema.contentAssets.content_version_id, contentVersionId))
     .orderBy(schema.contentAssets.created_at);
   return rows as ContentAsset[];
+}
+
+// --- Universal Founders' Desk (Commercial MVP Milestone 4) ---------------
+// A real, reviewable deliverable for the five Operations Wing agents —
+// see schema.ts's own doc comment on agentDeliverables for why this is a
+// separate table rather than a forced reuse of the mission-scoped
+// deliverables/approvals tables.
+
+export async function createAgentDeliverable(input: {
+  agentKey: string;
+  founderId: string;
+  sourceType: string;
+  sourceId: string;
+  title: string;
+  kind: string;
+  content: unknown;
+}): Promise<AgentDeliverable> {
+  const db = await getDb();
+  const id = randomUUID();
+  const timestamp = now();
+  await db.insert(schema.agentDeliverables).values({
+    id,
+    agent_key: input.agentKey,
+    founder_id: input.founderId,
+    source_type: input.sourceType,
+    source_id: input.sourceId,
+    title: input.title,
+    kind: input.kind,
+    content: input.content,
+    state: "awaiting_review",
+    version: 1,
+    created_at: timestamp,
+    updated_at: timestamp,
+  });
+  const [row] = await db.select().from(schema.agentDeliverables).where(eq(schema.agentDeliverables.id, id));
+  return row as unknown as AgentDeliverable;
+}
+
+export async function getAgentDeliverable(id: string): Promise<AgentDeliverable | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.agentDeliverables).where(eq(schema.agentDeliverables.id, id));
+  return row as unknown as AgentDeliverable | undefined;
+}
+
+export async function listAgentDeliverables(opts?: { state?: AgentDeliverableState; agentKey?: string }): Promise<AgentDeliverable[]> {
+  const db = await getDb();
+  const conditions = [];
+  if (opts?.state) conditions.push(eq(schema.agentDeliverables.state, opts.state));
+  if (opts?.agentKey) conditions.push(eq(schema.agentDeliverables.agent_key, opts.agentKey));
+  const rows = conditions.length
+    ? await db.select().from(schema.agentDeliverables).where(and(...conditions)).orderBy(desc(schema.agentDeliverables.created_at))
+    : await db.select().from(schema.agentDeliverables).orderBy(desc(schema.agentDeliverables.created_at));
+  return rows as unknown as AgentDeliverable[];
+}
+
+/** Atomic conditional update, same pattern as transitionMissionState — a decision can never double-apply to a stale state. */
+export async function transitionAgentDeliverableState(
+  id: string,
+  fromStates: AgentDeliverableState[],
+  toState: AgentDeliverableState,
+): Promise<boolean> {
+  const db = await getDb();
+  const result = await db
+    .update(schema.agentDeliverables)
+    .set({ state: toState, updated_at: now() })
+    .where(and(eq(schema.agentDeliverables.id, id), inArray(schema.agentDeliverables.state, fromStates)))
+    .returning({ id: schema.agentDeliverables.id });
+  return result.length > 0;
+}
+
+export async function recordAgentDeliverableReview(entry: {
+  deliverableId: string;
+  founderId: string;
+  decision: "approved" | "rejected" | "revision_requested";
+  note?: string | null;
+}): Promise<AgentDeliverableReview> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.agentDeliverableReviews)
+    .values({
+      id: randomUUID(),
+      deliverable_id: entry.deliverableId,
+      founder_id: entry.founderId,
+      decision: entry.decision,
+      note: entry.note ?? null,
+    })
+    .returning();
+  return row!;
+}
+
+export async function listAgentDeliverableReviews(deliverableId: string): Promise<AgentDeliverableReview[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.agentDeliverableReviews)
+    .where(eq(schema.agentDeliverableReviews.deliverable_id, deliverableId))
+    .orderBy(schema.agentDeliverableReviews.decided_at);
+  return rows;
 }
