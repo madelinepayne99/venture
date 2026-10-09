@@ -975,3 +975,149 @@ page errors.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (693 tests) still holds before continuing.
+
+---
+
+# Mission 6 continued — tenant isolation substantially complete
+
+Same session, same branch. Responding to the founder's explicit
+follow-up: close the remaining tenant-security gaps named in the prior
+update before proceeding to workforce verification/spending/onboarding.
+**Latest commit: `de1a873`.**
+
+## What closed this round
+
+**Content Bot's complete workflow — audited and secured.** Every
+founder-facing function (`approveMission`, `cancelMission`,
+`approveForProduction`, `commissionPilotAnyway`,
+`produceAgainFromMission`, `approveContentVersion`, `rejectContentItem`,
+`requestContentRevision`, `retryProductionAfterTechnicalFailure`,
+`cancelContentItem`) had the exact gap Phase E already closed for
+Founders' Desk: a `founderId` parameter accepted but never checked
+against the resource. Fixed, with a generic "not found" on any
+organization mismatch. `getMissionDetail`/`getContentItemDetail` now
+require a real `organizationId` and return `null` across organizations.
+The real asset-streaming route (`/api/content/assets/[assetId]/stream`)
+— the single most sensitive surface Content Bot has, since it serves
+real generated video/audio/image bytes directly — had **no ownership
+check at all** before this; new `getOwnedContentAsset` resolves the real
+chain (asset → version → item → mission → organization) and is what the
+route now calls. 6 new cross-organization tests
+(`tests/contentBotOrganizationIsolation.test.ts`).
+
+**Background jobs — audited, found safe by construction.** Read all 9
+real `inngest.send()` call sites directly. Every one sends only real
+resource ids, never a founderId/organizationId/role claim; every job
+handler re-resolves everything from the authoritative database by that
+id. The two cron watchdogs are legitimately global system maintenance
+(correct to reap stale work across every organization uniformly — not a
+gap). New `tests/backgroundJobTenantSafety.test.ts` is a structural
+regression guard, not just a one-time claim: it parses every real
+`inngest.send()` call and fails if a future one ever smuggles in a
+trusted claim instead of a plain id.
+
+**Real organization roles and permissions (Section 9).** New
+`requireOrganizationRole` — genuine membership checked first, then the
+real persisted role against an explicit per-call-site allow-list.
+Applied to every sensitive action Section 9 named: employee recruit/
+remove, workspace creation, Founders' Desk review decisions. Ordinary
+work (tasks, checklists, missions, submitting for review) stays open to
+any real member. 7 new tests prove a genuine member is refused for each
+gated action while a real owner/admin succeeds, the member-vs-
+non-member error distinction is correct, and a plain member retains full
+access to ordinary work.
+
+**`leadAssignments`/`agentTaskSignals` — organization-scoped.** The two
+real signals driving the shared 3D office scene were still global — a
+genuine future leak once a second organization has real recruited
+agents. Fixed as a pure data-scoping change (new
+`listLeadAssignmentsForOrganization`/
+`listAgentTaskWorldSignalsForOrganization`, wired into `/api/missions`
+and `app/page.tsx`); **zero changes to
+`components/founders-desk/world/*`** — Astra's own design, untouched.
+`tests/livingEngine.test.ts` (the real 3D-engine suite) passes
+completely unchanged; a live screenshot after this change is
+pixel-identical to before it. 2 new tests prove the isolation directly.
+
+## Verified, not assumed
+
+**708 tests passing** (693 prior + 15 new across this round). `npx tsc
+--noEmit` clean. Production build clean (safe stop/rebuild/restart).
+Live, with a real browser and the real founder session: every route
+smoke-tested including a genuine 404 for a nonexistent content item (no
+500, no leak), real data counts confirmed non-zero and correctly scoped
+(21 missions, 17 lead assignments, 13 agent-task signals), zero page
+errors, and a real screenshot pixel-identical to before this round's
+changes.
+
+## Tenant isolation: substantially complete for the real, built surface
+
+Every real capability this app currently has — missions, Content Bot's
+full production/review/asset lifecycle, Founders' Desk, finance,
+recruitment/workforce, tasks, checklists, Chief of Staff goals, roles,
+background jobs, and the shared 3D world's own data feed — now enforces
+real, server-side, tested organization boundaries. What remains is
+either genuinely lower-severity technical debt or explicitly belongs to
+a later phase, not a live cross-tenant data leak in the built product:
+
+1. **`costs`/`ledger_entries`/`activity_history`'s nullable-`mission_id`
+   attribution gap** (named in the original Phase D audit) is still
+   open — a cost with no mission has no direct organization attribution
+   on the `costs` row itself. Does not leak data across organizations
+   today (nothing reads these cross-tenant); it just means a future
+   "total spend per organization" report can't be built from `costs`
+   alone yet for mission-less spend.
+2. **`setCategoryBudget`'s "one budget per category+period" uniqueness**
+   still has no DB-level constraint, organization-scoped or otherwise —
+   the same pre-existing non-atomic-upsert caveat, now at least
+   organization-scoped so two organizations' real races can't collide
+   with each other.
+3. **No organization-switcher UI, no onboarding path to create a second
+   real organization for an actual new customer.** `createOrganizationWithOwner`
+   is real, tested, and used by `tests/organizationIsolation.test.ts`'s
+   own fixtures, but only reachable from server-side code — this is
+   Phase I's own job (customer onboarding), not a tenant-isolation gap.
+4. **No negative test specifically drives a cross-organization attempt
+   through the real HTTP routes** (every test calls domain functions
+   directly, this codebase's established pattern) — the routes
+   themselves were read and updated to call the now-fixed domain
+   functions/resolvers, and a live HTTP smoke test confirmed the real
+   running app behaves correctly end to end, but there's no permanent
+   route-level integration test in the suite.
+
+## Next: workforce verification, AI spending controls, onboarding
+
+Per the founder's own explicit instruction, tenant isolation being
+substantially complete is what unblocks the remaining Mission 6
+milestones — none of the following were started this round:
+
+- **Complete workforce verification matrix** (Mission 6's own Section 12)
+  — the addendum work earlier in this mission proved Chief of Staff's
+  real multi-agent coordination; a full, dedicated pass per agent
+  through the now-organization-scoped review lifecycle (Section 12's own
+  12-point checklist) has not been run as its own exercise.
+- **AI spending controls** (Section 13) — real per-organization usage
+  limits, budget reservation before costly work, concurrency caps. Not
+  started; the `costs` table records real spend but nothing yet enforces
+  a ceiling per organization.
+- **Customer onboarding** (Section 14) — not started; blocked on exactly
+  nothing now except being the next piece of work.
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **708 tests
+   passing**).
+2. Re-verify the real dev database directly if picking this up fresh
+   (same technique as before — query `organizations`/
+   `organization_members`/`organization_agents` and a few scoped tables'
+   real rows).
+3. **Next real engineering action**: Section 12's full seven-agent
+   verification matrix, now meaningfully exercisable under real
+   organization scoping for the first time — then Section 13's spending
+   controls (the natural prerequisite for onboarding real paying
+   customers), then Section 14's onboarding flow itself.
+4. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (708 tests) still holds before continuing.
