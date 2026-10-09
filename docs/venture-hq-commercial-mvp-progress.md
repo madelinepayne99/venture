@@ -828,3 +828,150 @@ was done this session), Phase L (Cleaner).
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (676 tests) still holds before continuing.
+
+---
+
+# Mission 6 continued — Phase E completed: real, enforced, tested tenant isolation
+
+Direct continuation of the same session, same branch
+(`claude/commercial-mvp-polish`), responding to the founder's explicit
+follow-up: "Your immediate priority is completing Phase E ... Use two
+isolated fictional businesses (Bakery HQ and Landscaping HQ) to prove
+... Enforce organisation membership and permissions server-side."
+**Latest commit: `938703d`.**
+
+## What's now real (not just schema) — every path listed actually enforces it
+
+`lib/domain/organizationWorkflow.ts` is the new enforcement core:
+`requireOrganizationMembership` (throws for a genuine non-member),
+`getActiveOrganizationForFounder` (the real, server-resolved "which
+organization" — never accepted from a client), `createOrganizationWithOwner`.
+
+Organization-scoped for real, with every call site updated (not left
+half-migrated):
+
+- **Recruitment** (Section 7's own worked example) — `organization_agents`
+  is now the real per-org "recruited" signal; `employeeWorkflow.ts`'s
+  recruit/remove/list and the active-work safety check (missions/content
+  items/agent_tasks, all newly org-filtered) are fully real.
+- **Missions** — creation, the real mission list (`/api/missions`,
+  `app/page.tsx`), and `getDefaultProject` (a genuine cross-tenant leak
+  before this — the single oldest project across *every* organization).
+- **Finance** — `expenses`/`budgets` had **no ownership column at all**
+  before this; every read/write path is now real, server-side
+  WHERE-clause scoped, and "one budget per category+period" is real
+  per-organization uniqueness now, not global.
+- **Chief of Staff goals, checklists, Business Analyst reports, agent
+  deliverables** — creation and every read path.
+- **Founders' Desk** (Section 8's explicit example) — the inbox and
+  every review/submit function now verify the real resource's
+  `organization_id` against the acting founder's own organization,
+  with a deliberately generic "not found" (never confirming or denying
+  another organization's data exists) on mismatch.
+- **Projects/workspaces** — creation and listing.
+
+## Real security-negative tests — `tests/organizationIsolation.test.ts` (17 new)
+
+Two genuinely separate real organizations (Bakery HQ, Landscaping HQ),
+two genuinely separate real founders (`createFounder`, a new repository
+function — not used by `seed()`, which still hardcodes Ellis/Maddie's
+own two rows unchanged). Proven, against a real database: a brand-new
+organization starts with **nothing** recruited; recruit/remove/
+re-recruit are fully independent between organizations; missions and
+Founders' Desk items never cross organizations (both via the inbox
+listing and via a direct cross-organization review/submit attempt using
+the real resource id); finance with the *same category name* in two
+organizations never collides or leaks; tasks/checklists/goals are
+isolated; the membership primitive itself refuses a genuine non-member
+in both directions; and Ellis/Maddie's own real "Founders' HQ" data is
+completely unaffected by creating the two new test organizations.
+
+## Verified, not assumed
+
+**693 tests passing** (676 prior + 17 new). `npx tsc --noEmit` clean.
+Production build clean (safe stop → `npm run build` → `rm -rf .next` →
+restart). Live, with a real browser and the real founder session: every
+real API route smoke-tested (200s), real data spot-checked directly
+against Postgres (21 real missions, 7-of-7 recruited agents, both real
+projects, real expense rows — all correctly carrying the real "Founders'
+HQ" `organization_id` from the earlier backfill), and a real screenshot
+confirming the HQ view renders identically to before this refactor, zero
+page errors.
+
+## Remaining vulnerabilities / explicitly not yet covered — stated plainly
+
+1. **`leadAssignments` and `agentTaskSignals` stay global.** They drive
+   the one shared 3D office scene (Astra's own design — this session
+   deliberately did not touch `components/founders-desk/world/*` or the
+   geometry it renders, per the brief's own explicit instruction). Once
+   a second organization with its own recruited agents genuinely exists,
+   this *would* leak that organization's agent positions/activity into
+   every other organization's Office View. Real, named, not closed.
+2. **Content Bot's own tables** (`content_items`, `content_versions`,
+   `content_assets`) were not independently audited or given a direct
+   `organization_id` this session — they inherit real scoping
+   transitively through `mission_id → missions.organization_id` (and
+   missions are now correctly scoped), but no test specifically proves
+   Content Bot's own API routes (`/api/content-items/*`,
+   `/api/content/assets/*/stream`) refuse a cross-organization request.
+   This is the natural next slice — same pattern as Founders' Desk's own
+   review functions, not yet applied here.
+3. **Inngest background jobs** (`scoutResearchJob.ts`,
+   `contentProductionJob.ts`, `stuckMissionWatchdog.ts`,
+   `followupDispatchWatchdog`/`revisionDispatchWatchdog`) were not
+   inspected for tenant-context safety this session. They operate on
+   real mission/content-item ids already resolved server-side (not
+   client-supplied), so the immediate injection risk is low, but no
+   test proves a background job can't act across organizations, and
+   Section 11's own checklist (idempotency, scoped DB access, no
+   cross-tenant result delivery) was not run against them.
+4. **`costs`/`ledger_entries`/`activity_history`'s nullable-`mission_id`
+   attribution gap** (named in the Phase D audit above) is still open —
+   a cost with no mission (e.g. Business Analyst's own spend, which *is*
+   now organization-attributable via the report it's tied to, but the
+   `costs` row itself still isn't) has no direct organization
+   attribution.
+5. **No role/permission distinctions enforced yet beyond membership
+   itself.** `organization_members.role` ("owner"/"admin"/"member") is
+   real and returned by `requireOrganizationMembership`, but no route
+   yet checks it — every member is currently treated identically to an
+   owner for every action. Section 9's full model is schema-ready, not
+   enforced.
+6. **No organization-switcher UI, no onboarding path to create a second
+   real organization for an actual new customer** — `createOrganizationWithOwner`
+   is real and tested, but only reachable from server-side code (tests,
+   future onboarding), not from any route or UI yet.
+7. **`setCategoryBudget`'s "one budget per category+period" uniqueness
+   has no DB-level constraint**, organization-scoped or otherwise — only
+   the function's own select-then-branch guards it, the same
+   non-atomic-upsert caveat that already existed before this migration
+   (now scoped, but not hardened).
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **693 tests
+   passing**).
+2. Re-verify the real dev database directly (same technique used this
+   session: query `organizations`/`organization_members`/
+   `organization_agents` and spot-check a few scoped tables' real rows)
+   rather than assuming no regression.
+3. **Next real engineering action, in the order the remaining
+   vulnerabilities above suggest**: Content Bot's own routes next (the
+   same "verify the real resource's organization_id, generic not-found
+   on mismatch" pattern already proven for Founders' Desk — extend
+   `tests/organizationIsolation.test.ts` or a sibling file with the
+   equivalent Bakery-vs-Landscaping content-item tests), then the
+   Inngest background-job audit (Section 11's own checklist), then
+   decide deliberately whether `leadAssignments`/`agentTaskSignals`
+   need a real per-organization 3D-world story *before* a second
+   organization with real recruited agents can safely go live — that
+   decision affects Astra's own design and should not be made
+   unilaterally.
+4. Still do not proceed to public onboarding or billing (Phases I/J)
+   until the above is closed — consistent with the founder's own
+   explicit instruction this session.
+5. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (693 tests) still holds before continuing.
