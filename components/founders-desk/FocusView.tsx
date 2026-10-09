@@ -4,6 +4,7 @@ import { MissionForm } from "./MissionForm";
 import { MissionDetail, type MissionDetailData } from "./MissionDetail";
 import { ProductionActions } from "./ProductionActions";
 import { AgentRoster } from "./AgentRoster";
+import { FoundersDeskInbox } from "./FoundersDeskInbox";
 import { ExecutiveAssistantTasks } from "./ExecutiveAssistantTasks";
 import { FinanceAgentPanel } from "./FinanceAgentPanel";
 import { OperationsAgentChecklists } from "./OperationsAgentChecklists";
@@ -72,6 +73,8 @@ export function FocusView({
       </aside>
 
       <section className="space-y-6">
+        <FoundersDeskInbox onSelectMission={onSelectMission} onOpenContentItem={onOpenContentReview} />
+
         <WorkspacePanel projects={projects} onCreate={onCreateWorkspace} />
 
         <div className="rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">

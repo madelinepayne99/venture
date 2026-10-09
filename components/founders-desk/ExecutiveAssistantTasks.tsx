@@ -18,6 +18,7 @@ export function ExecutiveAssistantTasks() {
   const [dueAt, setDueAt] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [submittedIds, setSubmittedIds] = useState<Set<string>>(new Set());
 
   async function refresh() {
     const res = await fetch("/api/agent-tasks");
@@ -59,6 +60,20 @@ export function ExecutiveAssistantTasks() {
         body: JSON.stringify({ action }),
       });
       if (res.ok) await refresh();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  // Founders' Desk (Commercial MVP Milestone 4) — a real, reviewable
+  // summary of a genuinely completed task. Never submitted automatically
+  // on completion — a deliberate founder action, same as every other
+  // agent's own "submit for review" trigger.
+  async function handleSubmitForReview(id: string) {
+    setBusyId(id);
+    try {
+      const res = await fetch(`/api/agent-tasks/${id}/submit-for-review`, { method: "POST" });
+      if (res.ok) setSubmittedIds((prev) => new Set(prev).add(id));
     } finally {
       setBusyId(null);
     }
@@ -140,8 +155,17 @@ export function ExecutiveAssistantTasks() {
               </summary>
               <ul className="mt-2 space-y-1">
                 {settled.map((task) => (
-                  <li key={task.id} className="text-xs text-hq-slate/70 line-through">
-                    {task.title}
+                  <li key={task.id} className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-hq-slate/70 line-through">{task.title}</span>
+                    {task.state === "completed" && (
+                      <button
+                        disabled={busyId === task.id || submittedIds.has(task.id)}
+                        onClick={() => handleSubmitForReview(task.id)}
+                        className="shrink-0 rounded-md border border-hq-brass/30 px-2 py-0.5 text-[10px] font-semibold text-hq-teal no-underline disabled:opacity-50"
+                      >
+                        {submittedIds.has(task.id) ? "Sent to Founders' Desk" : "Submit for review"}
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>

@@ -25,6 +25,8 @@ export function FinanceAgentPanel() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [reportBusy, setReportBusy] = useState(false);
+  const [reportMessage, setReportMessage] = useState<string | null>(null);
 
   async function refresh(forCategory: string) {
     const [statusRes, expensesRes] = await Promise.all([
@@ -179,6 +181,33 @@ export function FinanceAgentPanel() {
             </div>
           </form>
           {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
+
+          {/* Founders' Desk (Commercial MVP Milestone 4) — a real spend
+              report from this category's genuine recorded data, submitted
+              for founder review. Never automatic. */}
+          <button
+            type="button"
+            disabled={reportBusy}
+            onClick={async () => {
+              setReportBusy(true);
+              setReportMessage(null);
+              try {
+                const res = await fetch("/api/finance/reports", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ category }),
+                });
+                const body = await res.json().catch(() => ({}));
+                setReportMessage(res.ok ? "Report sent to the Founders' Desk." : body.error ?? "Could not submit a report.");
+              } finally {
+                setReportBusy(false);
+              }
+            }}
+            className="mt-3 rounded-md border border-hq-brass/30 px-3 py-1.5 text-xs font-semibold text-hq-teal disabled:opacity-50"
+          >
+            Submit spend report for review
+          </button>
+          {reportMessage && <p className="mt-1 text-xs text-hq-slate">{reportMessage}</p>}
 
           <ul className="mt-4 space-y-1">
             {expenses.length === 0 && <li className="text-sm text-hq-slate">No expenses logged in this category yet.</li>}

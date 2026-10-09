@@ -18,6 +18,8 @@ export function OperationsAgentChecklists() {
   const [itemsText, setItemsText] = useState("");
   const [newItemLabel, setNewItemLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [reportMessage, setReportMessage] = useState<string | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function refreshList() {
@@ -115,7 +117,30 @@ export function OperationsAgentChecklists() {
           <button onClick={() => setSelected(null)} className="text-xs font-medium text-hq-teal">
             ← Back to checklists
           </button>
-          <h3 className="mt-2 text-sm font-semibold text-hq-ink">{selected.title}</h3>
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <h3 className="text-sm font-semibold text-hq-ink">{selected.title}</h3>
+            {/* Founders' Desk (Commercial MVP Milestone 4) — a real
+                snapshot of this checklist's genuine item states. */}
+            <button
+              type="button"
+              disabled={reportBusy}
+              onClick={async () => {
+                setReportBusy(true);
+                setReportMessage(null);
+                try {
+                  const res = await fetch(`/api/checklists/${selected.id}/submit-for-review`, { method: "POST" });
+                  const body = await res.json().catch(() => ({}));
+                  setReportMessage(res.ok ? "Sent to the Founders' Desk." : body.error ?? "Could not submit for review.");
+                } finally {
+                  setReportBusy(false);
+                }
+              }}
+              className="shrink-0 rounded-md border border-hq-brass/30 px-2 py-1 text-[10px] font-semibold text-hq-teal disabled:opacity-50"
+            >
+              Submit for review
+            </button>
+          </div>
+          {reportMessage && <p className="text-xs text-hq-slate">{reportMessage}</p>}
           <ul className="mt-2 space-y-1">
             {selected.items.length === 0 && <li className="text-sm text-hq-slate">No items yet.</li>}
             {selected.items.map((item) => (

@@ -34,12 +34,19 @@ export function MissionBoard({
   onSelectMission,
   onAssignWork,
   focusable = true,
+  pendingReviewCount = 0,
 }: {
   missions: Mission[];
   selectedMissionId: string | null;
   onSelectMission: (missionId: string) => void;
   onAssignWork?: () => void;
   focusable?: boolean;
+  /** Real, global Founders' Desk pending-review count (Commercial MVP
+   * Milestone 4) — rendered as a plain notification badge on this
+   * existing HTML board, never a change to the 3D scene itself. 0 (the
+   * default) renders no badge at all, so a mission-less test render
+   * (e.g. this component's existing tests) is unaffected. */
+  pendingReviewCount?: number;
 }) {
   return (
     <div className="relative z-10 mx-6 mb-6 rounded-2xl border border-hq-brass/30 bg-night-panel p-4 shadow-desk">
@@ -53,6 +60,15 @@ export function MissionBoard({
           <p className="font-display text-xs font-semibold uppercase tracking-widest text-hq-brass">
             Mission board
           </p>
+          {pendingReviewCount > 0 && (
+            <span
+              role="status"
+              className="ml-1 rounded-full bg-status-danger px-2 py-0.5 text-[10px] font-semibold text-white"
+              title="Real items genuinely awaiting review at the Founders' Desk"
+            >
+              {pendingReviewCount} awaiting review
+            </span>
+          )}
         </div>
         {onAssignWork && (
           <button

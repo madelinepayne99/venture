@@ -35,6 +35,8 @@ export function ChiefOfStaffPanel() {
   const [subtasks, setSubtasks] = useState<DraftSubtask[]>([{ agentKey: DELEGATABLE_AGENTS[0]!.key, title: "" }]);
   const [error, setError] = useState<string | null>(null);
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [consolidateBusy, setConsolidateBusy] = useState(false);
+  const [consolidateMessage, setConsolidateMessage] = useState<string | null>(null);
 
   async function refreshList() {
     const res = await fetch("/api/chief-of-staff/goals");
@@ -149,6 +151,37 @@ export function ChiefOfStaffPanel() {
               );
             })}
           </ul>
+          {/* Founders' Desk (Commercial MVP Milestone 4) — a consolidated
+              result from genuine subtask outcomes. Disabled while any
+              subtask is still genuinely open/in-progress, so this can
+              never fabricate completion for delegated work that isn't
+              actually done. */}
+          {(() => {
+            const unresolved = selected.subtasks.filter((t) => t.state === "open" || t.state === "in_progress");
+            return (
+              <div className="mt-3">
+                <button
+                  type="button"
+                  disabled={unresolved.length > 0 || consolidateBusy}
+                  onClick={async () => {
+                    setConsolidateBusy(true);
+                    setConsolidateMessage(null);
+                    try {
+                      const res = await fetch(`/api/chief-of-staff/goals/${selected.id}/submit-for-review`, { method: "POST" });
+                      const body = await res.json().catch(() => ({}));
+                      setConsolidateMessage(res.ok ? "Consolidated result sent to the Founders' Desk." : body.error ?? "Could not submit for review.");
+                    } finally {
+                      setConsolidateBusy(false);
+                    }
+                  }}
+                  className="rounded-md border border-hq-brass/30 px-3 py-1.5 text-xs font-semibold text-hq-teal disabled:opacity-50"
+                >
+                  {unresolved.length > 0 ? `${unresolved.length} subtask(s) still unresolved` : "Submit consolidated result for review"}
+                </button>
+                {consolidateMessage && <p className="mt-1 text-xs text-hq-slate">{consolidateMessage}</p>}
+              </div>
+            );
+          })()}
         </div>
       ) : (
         <>

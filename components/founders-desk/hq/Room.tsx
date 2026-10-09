@@ -65,6 +65,7 @@ export function Room({
   onAssignWork,
   onOpenContentItem,
   onOpenAgentPanel,
+  pendingReviewCount,
   interactive,
 }: {
   project: Project;
@@ -79,6 +80,8 @@ export function Room({
   onAssignWork: () => void;
   onOpenContentItem: (contentItemId: string) => void;
   onOpenAgentPanel: (agentKey: string) => void;
+  /** See HQView.tsx's own doc comment — a real, global, non-room-scoped count. */
+  pendingReviewCount: number;
   interactive: boolean;
 }) {
   const boardRef = useRef<HTMLDivElement>(null);
@@ -167,6 +170,7 @@ export function Room({
           onSelectMission={onSelectMission}
           onAssignWork={onAssignWork}
           focusable={interactive}
+          pendingReviewCount={pendingReviewCount}
         />
       </div>
     </div>

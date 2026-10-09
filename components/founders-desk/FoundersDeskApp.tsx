@@ -135,6 +135,14 @@ export function FoundersDeskApp({
   const [selectedContentItemId, setSelectedContentItemId] = useState<string | null>(null);
   const [contentItemDetail, setContentItemDetail] = useState<ContentItemDetailData | null>(null);
   const [busyContentItemId, setBusyContentItemId] = useState<string | null>(null);
+  // Universal Founders' Desk (Commercial MVP Milestone 4) — a real count
+  // of everything genuinely awaiting review across all seven agents right
+  // now, surfaced in HQ View as a notification badge on the existing
+  // mission board (see MissionBoard.tsx). This is deliberately just a
+  // count threaded top-down like every other piece of HQ View's data —
+  // no new fetching inside Room.tsx/MissionBoard.tsx, and no change to
+  // the 3D scene itself.
+  const [foundersDeskPendingCount, setFoundersDeskPendingCount] = useState(0);
 
   // View mode and the active workspace are presentation/navigation state
   // only — never persisted server-side, never affecting what data is
@@ -157,6 +165,15 @@ export function FoundersDeskApp({
     }
     // Only ever run once, right after mount — this restores a saved
     // preference; it must not re-run and fight later user choices.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    // One real fetch right away so the badge reflects actual pending work
+    // from first render, rather than waiting for the first poll tick.
+    refreshFoundersDeskInboxCount().catch((mountError) => {
+      console.error("Initial Founders' Desk inbox count fetch failed.", mountError);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -201,6 +218,13 @@ export function FoundersDeskApp({
   function closeContentItemPanel() {
     setSelectedContentItemId(null);
     setContentItemDetail(null);
+  }
+
+  async function refreshFoundersDeskInboxCount() {
+    const res = await fetch("/api/founders-desk/inbox");
+    if (!res.ok) return;
+    const data = await res.json();
+    setFoundersDeskPendingCount((data.items ?? []).length);
   }
 
   async function refreshLedger() {
@@ -319,6 +343,12 @@ export function FoundersDeskApp({
     () => {
       refreshMissions().catch((pollError) => {
         console.error("Agent-task world-sync poll failed — will retry on the next tick.", pollError);
+      });
+      // Same cadence is plenty for a notification badge — real pending
+      // work doesn't need faster-than-this visibility, and this avoids a
+      // second dedicated interval just for one count.
+      refreshFoundersDeskInboxCount().catch((pollError) => {
+        console.error("Founders' Desk inbox count poll failed — will retry on the next tick.", pollError);
       });
     },
     AGENT_TASK_POLL_INTERVAL_MS,
@@ -642,6 +672,7 @@ export function FoundersDeskApp({
             onAssignWork={() => setAssignWorkOpen(true)}
             onOpenContentItem={loadContentItemDetail}
             onOpenAgentPanel={openAgentPanel}
+            pendingReviewCount={foundersDeskPendingCount}
           />
           <AgentDetailSlideOver agentKey={selectedAgentPanelKey} onClose={closeAgentPanel} />
           <MissionSlideOver

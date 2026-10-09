@@ -38,6 +38,7 @@ export function HQView({
   onAssignWork,
   onOpenContentItem,
   onOpenAgentPanel,
+  pendingReviewCount,
 }: {
   projects: Project[];
   activeProjectId: string | null;
@@ -51,6 +52,12 @@ export function HQView({
   onAssignWork: () => void;
   onOpenContentItem: (contentItemId: string) => void;
   onOpenAgentPanel: (agentKey: string) => void;
+  /** Real count of items genuinely awaiting Founders' Desk review across
+   * all seven agents right now (Commercial MVP Milestone 4) — surfaced as
+   * a notification badge on the existing mission board. Not room-scoped:
+   * the five Operations Wing agents' deliverables aren't workspace-bound,
+   * so this is one real, honest total, not a per-room figure. */
+  pendingReviewCount: number;
 }) {
   const available = REAL_WORKSPACE_TYPES.map(({ type }) => mostRecentProjectOfType(projects, type))
     .filter((project): project is Project => project !== null);
@@ -82,6 +89,7 @@ export function HQView({
         onAssignWork={onAssignWork}
         onOpenContentItem={onOpenContentItem}
         onOpenAgentPanel={onOpenAgentPanel}
+        pendingReviewCount={pendingReviewCount}
         interactive
       />
       <p aria-live="polite" className="sr-only">

@@ -21,6 +21,8 @@ export function BusinessAnalystPanel() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [submittedIds, setSubmittedIds] = useState<Set<string>>(new Set());
+  const [reportBusy, setReportBusy] = useState<string | null>(null);
 
   async function refresh() {
     const res = await fetch("/api/business-analyst/research");
@@ -145,6 +147,25 @@ export function BusinessAnalystPanel() {
                           </ul>
                         </div>
                       )}
+                      {/* Founders' Desk (Commercial MVP Milestone 4) — the
+                          genuine completed report, with its real sources
+                          and cost, sent for founder review. */}
+                      <button
+                        type="button"
+                        disabled={reportBusy === r.id || submittedIds.has(r.id)}
+                        onClick={async () => {
+                          setReportBusy(r.id);
+                          try {
+                            const res = await fetch(`/api/business-analyst/research/${r.id}/submit-for-review`, { method: "POST" });
+                            if (res.ok) setSubmittedIds((prev) => new Set(prev).add(r.id));
+                          } finally {
+                            setReportBusy(null);
+                          }
+                        }}
+                        className="rounded-md border border-hq-brass/30 px-2 py-1 text-xs font-semibold text-hq-teal disabled:opacity-50"
+                      >
+                        {submittedIds.has(r.id) ? "Sent to Founders' Desk" : "Submit for review"}
+                      </button>
                     </>
                   ) : null}
                 </div>
