@@ -114,13 +114,39 @@ export async function listFoundersDeskInbox(): Promise<ReviewItem[]> {
 
   const contentItems = await listContentItemsForMissions(missions.map((m) => m.id));
   const awaitingReview = contentItems.filter((c) => c.state === "awaiting_review");
+  // Master Development Mission 5, Section 5 — a real founder test saw two
+  // Content Bot inbox entries with near-identical, truncated titles and
+  // asked whether that's a genuine duplication bug. Investigated: it
+  // isn't — Content Bot's multi-production architecture (see
+  // lib/domain/contentWorkflow.ts's `produceAgainFromMission`) lets one
+  // Scout mission genuinely own several independent content_items
+  // (separate "Produce Again" attempts), and this inbox correctly listed
+  // each of them once. The real problem was presentation: both rows
+  // showed only the shared mission title, with nothing to tell a founder
+  // they're two distinct, real pieces of work. Fixed here, not by
+  // deduplicating (that would hide a real, legitimate second deliverable)
+  // — every content item for a mission with more than one is labeled
+  // with its own real ordinal among that mission's real items, ordered
+  // by creation, so "attempt 2 of 2" (etc.) is visible at a glance.
+  const itemsByMission = new Map<string, typeof contentItems>();
+  for (const item of contentItems) {
+    const list = itemsByMission.get(item.mission_id) ?? [];
+    list.push(item);
+    itemsByMission.set(item.mission_id, list);
+  }
+  for (const list of itemsByMission.values()) list.sort((a, b) => a.created_at.localeCompare(b.created_at));
+
   const contentBotItems: ReviewItem[] = awaitingReview.map((c) => {
     const mission = missions.find((m) => m.id === c.mission_id);
+    const siblings = itemsByMission.get(c.mission_id) ?? [c];
+    const ordinal = siblings.findIndex((s) => s.id === c.id) + 1;
+    const baseTitle = mission?.title ?? "Produced content";
+    const title = siblings.length > 1 ? `${baseTitle} (production attempt ${ordinal} of ${siblings.length})` : baseTitle;
     return {
       id: `content_bot:${c.id}`,
       source: "content_bot_item",
       agentKey: "content_bot",
-      title: mission?.title ?? "Produced content",
+      title,
       kind: "produced_content",
       createdAt: c.updated_at,
       referenceId: c.id,

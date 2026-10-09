@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
-import { listFounders, getAgentTask, listApprovals, getMission } from "@/lib/db/repositories";
+import {
+  listFounders,
+  getAgentTask,
+  listApprovals,
+  getMission,
+  getAgentByKey,
+  createContentItem,
+  transitionContentItemState,
+} from "@/lib/db/repositories";
 import { createFounderTask, completeFounderTask } from "@/lib/domain/executiveAssistantWorkflow";
 import { setCategoryBudget, logExpense } from "@/lib/domain/financeWorkflow";
 import { createFounderChecklist, setItemDone } from "@/lib/domain/operationsWorkflow";
@@ -62,6 +70,68 @@ describe("listFoundersDeskInbox — the real unified adapter", () => {
 
     const after = await listFoundersDeskInbox();
     expect(after.some((i) => i.referenceId === deliverable.id)).toBe(false);
+  });
+
+  // Master Development Mission 5, Section 5 — a real founder test saw two
+  // Content Bot inbox entries with near-identical, truncated titles and
+  // asked whether this is a genuine duplication bug. It isn't: Content
+  // Bot's multi-production architecture genuinely lets one mission own
+  // several independent content_items (separate "Produce Again"
+  // attempts), each a real, distinct piece of work the inbox correctly
+  // lists once. The real bug was presentation — both rows showed only
+  // the shared mission title with no way to tell them apart. These two
+  // tests prove the fix without touching Content Bot's own review flow.
+  it("labels a mission's single content item with no ordinal suffix (the common case, unchanged)", async () => {
+    const founderId = await seededFounderId();
+    const { mission } = await setupMissionReadyForProduction(founderId);
+    const contentBot = await getAgentByKey("content_bot");
+    const item = await createContentItem({
+      missionId: mission.id,
+      agentId: contentBot!.id,
+      sourceDeliverableId: null,
+      brief: {},
+      audienceContext: {},
+    });
+    await transitionContentItemState(item.id, ["planning"], "generating");
+    await transitionContentItemState(item.id, ["generating"], "awaiting_review");
+
+    const inbox = await listFoundersDeskInbox();
+    const row = inbox.find((i) => i.source === "content_bot_item" && i.referenceId === item.id);
+    expect(row?.title).toBe(mission.title);
+  });
+
+  it("labels two genuine, separate content items for the same mission with a real, distinguishing ordinal", async () => {
+    const founderId = await seededFounderId();
+    const { mission } = await setupMissionReadyForProduction(founderId);
+    const contentBot = await getAgentByKey("content_bot");
+
+    // A real first production attempt that didn't pan out — settles to a
+    // terminal state, same as a genuine cancelled/failed production would.
+    const first = await createContentItem({
+      missionId: mission.id,
+      agentId: contentBot!.id,
+      sourceDeliverableId: null,
+      brief: {},
+      audienceContext: {},
+    });
+    await transitionContentItemState(first.id, ["planning"], "cancelled");
+
+    // A real second, independent attempt — the one actually awaiting review.
+    const second = await createContentItem({
+      missionId: mission.id,
+      agentId: contentBot!.id,
+      sourceDeliverableId: null,
+      brief: {},
+      audienceContext: {},
+    });
+    await transitionContentItemState(second.id, ["planning"], "generating");
+    await transitionContentItemState(second.id, ["generating"], "awaiting_review");
+
+    const inbox = await listFoundersDeskInbox();
+    const row = inbox.find((i) => i.source === "content_bot_item" && i.referenceId === second.id);
+    // Real, honest disambiguation — never a deduplication that would hide
+    // the genuinely separate first attempt's own historical record.
+    expect(row?.title).toBe(`${mission.title} (production attempt 2 of 2)`);
   });
 });
 
