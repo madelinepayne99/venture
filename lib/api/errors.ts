@@ -36,6 +36,8 @@ import {
 import {
   ChiefOfStaffValidationError,
   ChiefOfStaffGoalNotFoundError,
+  ChiefOfStaffTaskNotFoundError,
+  ChiefOfStaffResearchError,
 } from "@/lib/domain/chiefOfStaffWorkflow";
 import {
   EmployeeNotFoundError,
@@ -142,8 +144,11 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   if (error instanceof ChiefOfStaffValidationError) {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }
-  if (error instanceof ChiefOfStaffGoalNotFoundError) {
+  if (error instanceof ChiefOfStaffGoalNotFoundError || error instanceof ChiefOfStaffTaskNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof ChiefOfStaffResearchError) {
+    return NextResponse.json({ error: error.message, reportId: error.reportId }, { status: 409 });
   }
   if (error instanceof EmployeeNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });

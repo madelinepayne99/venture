@@ -1,15 +1,31 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
-import { listFounders, getAgentByKey } from "@/lib/db/repositories";
+import { listFounders, getAgentByKey, getAgentTask } from "@/lib/db/repositories";
 import { completeFounderTask, cancelFounderTask } from "@/lib/domain/executiveAssistantWorkflow";
 import {
   createGoalWithDelegatedSubtasks,
   listFounderGoals,
   getFounderGoal,
+  runDelegatedResearch,
   ChiefOfStaffValidationError,
   ChiefOfStaffGoalNotFoundError,
+  ChiefOfStaffTaskNotFoundError,
+  ChiefOfStaffResearchError,
   DELEGATABLE_AGENT_KEYS,
 } from "@/lib/domain/chiefOfStaffWorkflow";
+import { fakeAnthropicClient, fakeAnthropicMessage } from "./testUtils";
+import type { BusinessAnalystReport } from "@/lib/agents/businessAnalyst/schema";
+
+function makeReport(overrides: Partial<BusinessAnalystReport> = {}): BusinessAnalystReport {
+  return {
+    query: "How saturated is the printable planner niche on Etsy?",
+    summary: "Demand signals are mixed; the niche shows real search volume but heavy existing supply.",
+    opportunities: ["A few sub-niches (ADHD planners) show lower competition with real search volume."],
+    risks: ["Saturation is high in the general planner category."],
+    sources: [{ url: "https://www.etsy.com/example", title: "Etsy seller forum thread", published_date: "2026-01-01" }],
+    ...overrides,
+  };
+}
 
 async function seededFounderId(): Promise<string> {
   const founders = await listFounders();
@@ -200,5 +216,110 @@ describe("a delegated subtask is a real agent_task — completable via the EXIST
 
     const cancelled = await cancelFounderTask(founderId, subtaskId);
     expect(cancelled.state).toBe("cancelled");
+  });
+});
+
+// Master Development Mission 6 — the real gap this closes: completing a
+// subtask delegated to Business Analyst used to be the exact same manual
+// checkbox as any other agent's subtask, even though Business Analyst
+// has a genuine autonomous capability (real, billed research) the other
+// three delegates don't. These tests prove the subtask is only ever
+// marked complete once that real capability genuinely ran and succeeded
+// — never a fabricated or simulated completion.
+describe("runDelegatedResearch — Business Analyst subtasks actually run real research", () => {
+  beforeEach(async () => {
+    await resetDbForTests();
+  });
+
+  it("runs the real research capability and only completes the subtask once it genuinely succeeds", async () => {
+    const founderId = await seededFounderId();
+    const goal = await createGoalWithDelegatedSubtasks(founderId, {
+      title: "Launch our first YouTube channel",
+      subtasks: [{ agentKey: "business_analyst", title: "How saturated is the printable planner niche on Etsy?" }],
+    });
+    const subtaskId = goal.subtasks[0]!.id;
+    expect(subtaskId).toBeTruthy();
+
+    const report = makeReport();
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const completed = await runDelegatedResearch(founderId, subtaskId, { client });
+    expect(completed.state).toBe("completed");
+    const result = completed.result as { businessAnalystReportId: string };
+    expect(result.businessAnalystReportId).toBeTruthy();
+
+    // Genuinely persisted, not just returned from the call.
+    const reread = await getAgentTask(subtaskId);
+    expect(reread?.state).toBe("completed");
+    expect((reread?.result as { businessAnalystReportId: string }).businessAnalystReportId).toBe(
+      result.businessAnalystReportId,
+    );
+  });
+
+  it("leaves the subtask open and throws a real, distinct error when research genuinely fails — never a fabricated completion", async () => {
+    const founderId = await seededFounderId();
+    const goal = await createGoalWithDelegatedSubtasks(founderId, {
+      title: "Goal",
+      subtasks: [{ agentKey: "business_analyst", title: "Research something real" }],
+    });
+    const subtaskId = goal.subtasks[0]!.id;
+
+    // A response that isn't valid JSON at all — a genuine research failure.
+    const client = fakeAnthropicClient([
+      fakeAnthropicMessage(null, { content: [{ type: "text", text: "Sorry, I can't help with that.", citations: null }] }),
+    ]);
+
+    await expect(runDelegatedResearch(founderId, subtaskId, { client })).rejects.toBeInstanceOf(ChiefOfStaffResearchError);
+
+    const reread = await getAgentTask(subtaskId);
+    expect(reread?.state).toBe("open");
+  });
+
+  it("refuses to run research for a subtask delegated to a different agent", async () => {
+    const founderId = await seededFounderId();
+    const goal = await createGoalWithDelegatedSubtasks(founderId, {
+      title: "Goal",
+      subtasks: [{ agentKey: "operations_agent", title: "Build a checklist" }],
+    });
+    const subtaskId = goal.subtasks[0]!.id;
+
+    await expect(runDelegatedResearch(founderId, subtaskId)).rejects.toBeInstanceOf(ChiefOfStaffValidationError);
+  });
+
+  it("refuses to run research twice for the same, already-completed subtask", async () => {
+    const founderId = await seededFounderId();
+    const goal = await createGoalWithDelegatedSubtasks(founderId, {
+      title: "Goal",
+      subtasks: [{ agentKey: "business_analyst", title: "Research it" }],
+    });
+    const subtaskId = goal.subtasks[0]!.id;
+
+    const client1 = fakeAnthropicClient([fakeAnthropicMessage(makeReport())]);
+    await runDelegatedResearch(founderId, subtaskId, { client: client1 });
+
+    const client2 = fakeAnthropicClient([fakeAnthropicMessage(makeReport())]);
+    await expect(runDelegatedResearch(founderId, subtaskId, { client: client2 })).rejects.toBeInstanceOf(
+      ChiefOfStaffValidationError,
+    );
+  });
+
+  it("refuses a nonexistent subtask id", async () => {
+    const founderId = await seededFounderId();
+    await expect(runDelegatedResearch(founderId, "does-not-exist")).rejects.toBeInstanceOf(ChiefOfStaffTaskNotFoundError);
+  });
+
+  it("refuses a subtask owned by a different founder", async () => {
+    const founders = await listFounders();
+    const owner = founders[0]!.id;
+    const goal = await createGoalWithDelegatedSubtasks(owner, {
+      title: "Not yours",
+      subtasks: [{ agentKey: "business_analyst", title: "x" }],
+    });
+    const otherFounder = founders.find((f) => f.id !== owner);
+    if (!otherFounder) return;
+
+    await expect(runDelegatedResearch(otherFounder.id, goal.subtasks[0]!.id)).rejects.toBeInstanceOf(
+      ChiefOfStaffTaskNotFoundError,
+    );
   });
 });
