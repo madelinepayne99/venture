@@ -13,6 +13,7 @@ import {
   NotRecoverableFailureError,
   ProduceAgainValidationError,
   MissionNotReadyForProductionError,
+  ContentAssetNotFoundError,
 } from "@/lib/domain/contentWorkflow";
 import { NoProductionRecommendationError, FounderCommissionValidationError } from "@/lib/domain/contentHandoff";
 import { ProductionGenuinelyStartedError } from "@/lib/domain/missionWorkflow";
@@ -185,6 +186,9 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof OrganizationValidationError) {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof ContentAssetNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
   }
   if (error instanceof Error && error.message.includes("not found")) {
     return NextResponse.json({ error: error.message }, { status: 404 });

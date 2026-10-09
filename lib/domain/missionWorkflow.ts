@@ -158,7 +158,15 @@ export async function approveMission(
   opts: { auto?: boolean } = {},
 ): Promise<Mission> {
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  // Deliberately the same generic "not found" whether the mission truly
+  // doesn't exist or belongs to a different organization — Master
+  // Development Mission 6, Section 8 ("Missions ... must not leak across
+  // organizations"), extended to the real approval/cancel actions, not
+  // just the Founders' Desk's own read-only listing.
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   // Idempotent no-op: this mission was already approved and dispatched by
   // an earlier call (a delayed retry, a duplicate webhook, or a stale
@@ -436,7 +444,10 @@ export async function recoverStrandedProduction(missionId: string): Promise<Miss
  */
 export async function cancelMission(missionId: string, founderId: string, note?: string): Promise<Mission> {
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
   if (!isCancellable(mission.state)) {
     throw new Error(`Mission ${missionId} cannot be cancelled from state "${mission.state}".`);
   }

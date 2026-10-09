@@ -30,6 +30,7 @@ import {
   listContentAssets,
   recordContentAsset,
   updateContentAsset,
+  getContentAsset,
   listApprovalsForContentItem,
   startStage,
   getOpenStage,
@@ -87,6 +88,31 @@ import {
   CONTENT_PRODUCTION_REQUESTED_EVENT,
   CONTENT_REVISION_REQUESTED_EVENT,
 } from "@/lib/inngest/client";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+
+/**
+ * The real tenant-ownership check for every founder-facing Content Bot
+ * action (Master Development Mission 6 — Content Bot's own routes had
+ * the exact same gap Phase E found and fixed for Founders' Desk: a
+ * founderId parameter that was never actually checked against the
+ * resource being acted on). `content_items` has no direct
+ * `organization_id` column of its own — it's scoped transitively through
+ * `mission_id → missions.organization_id`, the same real chain
+ * `listContentItemsForMissions` already relies on — so this resolves the
+ * owning mission and compares there, deliberately throwing the exact
+ * same "not found" a missing resource would, never confirming or
+ * denying that a piece of content exists in a different organization.
+ */
+async function assertContentItemInFoundersOrganization(
+  missionId: string,
+  founderId: string,
+  notFoundMessage: string,
+): Promise<void> {
+  const [mission, organization] = await Promise.all([getMission(missionId), getActiveOrganizationForFounder(founderId)]);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(notFoundMessage);
+  }
+}
 
 export class ProductionApprovalValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -172,7 +198,10 @@ export async function approveForProduction(
   }
 
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   if (mission.state === "in_production") {
     return resolveAlreadyInProduction(missionId);
@@ -389,7 +418,10 @@ export async function commissionPilotAnyway(
   }
 
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   if (mission.state === "in_production") {
     return resolveAlreadyInProduction(missionId);
@@ -631,7 +663,10 @@ export async function produceAgainFromMission(
   }
 
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   if (!PRODUCIBLE_MISSION_STATES.includes(mission.state)) {
     throw new MissionNotReadyForProductionError(missionId, mission.state);
@@ -827,6 +862,7 @@ export async function approveContentVersion(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   await assertIsLatestVersion(item, input.contentVersionId);
 
   assertContentItemTransition(item.state, "ready_to_publish");
@@ -869,6 +905,7 @@ export async function rejectContentItem(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   await assertIsLatestVersion(item, input.contentVersionId);
 
   assertContentItemTransition(item.state, "rejected");
@@ -922,6 +959,7 @@ export async function requestContentRevision(
 
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   await assertIsLatestVersion(item, input.contentVersionId);
 
   if (item.version_count >= MAX_VERSIONS_PER_ITEM) {
@@ -1019,6 +1057,7 @@ export async function retryProductionAfterTechnicalFailure(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
 
   if (!isRecoverableFailureCategory(item.failure_category)) {
     throw new NotRecoverableFailureError(contentItemId, item.failure_category);
@@ -1172,6 +1211,34 @@ export async function retryProductionAfterTechnicalFailure(
   return toGenerating.item;
 }
 
+export class ContentAssetNotFoundError extends Error {
+  constructor(assetId: string) {
+    super(`Content asset ${assetId} not found.`);
+    this.name = "ContentAssetNotFoundError";
+  }
+}
+
+/**
+ * The real ownership chain for one generated file — asset -> version ->
+ * item -> mission -> organization — resolved and checked here rather
+ * than inline in the streaming route, so it's directly testable the same
+ * way every other tenant-boundary check in this codebase is (Master
+ * Development Mission 6). Real generated media is the single most
+ * sensitive thing Content Bot produces; this previously had no ownership
+ * check at all.
+ */
+export async function getOwnedContentAsset(assetId: string, founderId: string): Promise<ContentAsset> {
+  const asset = await getContentAsset(assetId);
+  const version = asset ? await getContentVersion(asset.content_version_id) : undefined;
+  const item = version ? await getContentItem(version.content_item_id) : undefined;
+  const mission = item ? await getMission(item.mission_id) : undefined;
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!asset || !version || !item || !mission || mission.organization_id !== organization.id) {
+    throw new ContentAssetNotFoundError(assetId);
+  }
+  return asset;
+}
+
 /**
  * A founder cancelling production directly, without cancelling the whole
  * mission (see missionWorkflow.ts's cancelMission for the reverse
@@ -1188,6 +1255,7 @@ export async function cancelContentItem(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   if (!isContentItemCancellable(item.state)) {
     throw new Error(`Content item ${contentItemId} cannot be cancelled from state "${item.state}".`);
   }
