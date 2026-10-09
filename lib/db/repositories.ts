@@ -363,6 +363,30 @@ export async function listAgentTaskWorldSignals(): Promise<
   return rows as Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>;
 }
 
+/**
+ * The real organization-scoped version — same pure data-scoping change
+ * and same rationale as listLeadAssignmentsForOrganization above. The
+ * returned shape is identical (never title/detail/payload — see this
+ * function's un-scoped sibling's own doc comment for why), so
+ * world/layout.ts's agentDestination/agentBusy logic needs zero changes;
+ * it just now only ever sees one real organization's own agent_tasks
+ * rows.
+ */
+export async function listAgentTaskWorldSignalsForOrganization(
+  organizationId: string,
+): Promise<Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>> {
+  const db = await getDb();
+  const rows = await db
+    .select({
+      agent_key: schema.agentTasks.agent_key,
+      state: schema.agentTasks.state,
+      goal_id: schema.agentTasks.goal_id,
+    })
+    .from(schema.agentTasks)
+    .where(eq(schema.agentTasks.organization_id, organizationId));
+  return rows as Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>;
+}
+
 // --- Chief of Staff (Operations Wing) ---------------------------------------
 // A goal is an immutable grouping container; its real delegated work lives
 // in agent_tasks rows carrying this goal's id (see schema.ts's doc comment
@@ -1066,6 +1090,30 @@ export async function listLeadAssignments(): Promise<MissionLeadAssignment[]> {
     .from(schema.agentAssignments)
     .innerJoin(schema.agents, eq(schema.agentAssignments.agent_id, schema.agents.id))
     .where(eq(schema.agentAssignments.role, "lead"));
+  return rows;
+}
+
+/**
+ * The real organization-scoped version (Master Development Mission 6 —
+ * "Address global leadAssignments ... Keep the business/task state
+ * organisation-scoped"). Deliberately a pure data-scoping change: the 3D
+ * world components this feeds (components/founders-desk/world/*) are
+ * completely untouched — they still receive a plain
+ * MissionLeadAssignment[] in the exact same shape, just correctly scoped
+ * to one real organization's own missions (via the real
+ * mission_id -> missions.organization_id chain) instead of every
+ * organization's at once. `listLeadAssignments()` above stays available
+ * for any caller that genuinely needs the global view (none currently
+ * do outside this function's own callers, which have all been updated).
+ */
+export async function listLeadAssignmentsForOrganization(organizationId: string): Promise<MissionLeadAssignment[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ mission_id: schema.agentAssignments.mission_id, agent_key: schema.agents.key })
+    .from(schema.agentAssignments)
+    .innerJoin(schema.agents, eq(schema.agentAssignments.agent_id, schema.agents.id))
+    .innerJoin(schema.missions, eq(schema.agentAssignments.mission_id, schema.missions.id))
+    .where(and(eq(schema.agentAssignments.role, "lead"), eq(schema.missions.organization_id, organizationId)));
   return rows;
 }
 

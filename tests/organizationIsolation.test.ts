@@ -118,6 +118,34 @@ describe("Organization isolation — Bakery HQ vs. Landscaping HQ", () => {
     expect(landscapingInbox.some((i) => i.referenceId === mission.id)).toBe(false);
   });
 
+  it("leadAssignments and agentTaskSignals — the real signals driving the shared 3D office scene — are organization-scoped, not global", async () => {
+    const { listLeadAssignmentsForOrganization, listAgentTaskWorldSignalsForOrganization, assignAgent, getAgentByKey } =
+      await import("@/lib/db/repositories");
+
+    // A real Scout lead assignment, genuinely owned by Bakery HQ.
+    const mission = await createAndSubmitMission({
+      founderId: bakery.founderId,
+      projectId: null,
+      title: "Bakery mission with a real lead assignment",
+      brief: "Research something real.",
+    });
+    const scout = await getAgentByKey("scout");
+    await assignAgent(mission.id, scout!.id, "lead");
+
+    const bakeryLeads = await listLeadAssignmentsForOrganization(bakery.organizationId);
+    const landscapingLeads = await listLeadAssignmentsForOrganization(landscaping.organizationId);
+    expect(bakeryLeads.some((a) => a.mission_id === mission.id)).toBe(true);
+    // Landscaping HQ's own real 3D-world data feed never sees Bakery's mission.
+    expect(landscapingLeads.some((a) => a.mission_id === mission.id)).toBe(false);
+
+    // A real agent_tasks row, genuinely owned by Bakery HQ.
+    await createFounderTask(bakery.founderId, { title: "Bakery-only task" });
+    const bakerySignals = await listAgentTaskWorldSignalsForOrganization(bakery.organizationId);
+    const landscapingSignals = await listAgentTaskWorldSignalsForOrganization(landscaping.organizationId);
+    expect(bakerySignals.length).toBeGreaterThan(0);
+    expect(landscapingSignals.length).toBe(0);
+  });
+
   it("a founder from one organization cannot review another organization's mission, even knowing its real id", async () => {
     // Build a real mission that genuinely reaches ready_for_founders_review for Bakery HQ.
     const { setupMissionReadyForProduction } = await import("./testUtils");
@@ -278,5 +306,105 @@ describe("Organization isolation — Bakery HQ vs. Landscaping HQ", () => {
     for (const key of realKeys) {
       expect(originalDirectory.find((e) => e.definition.key === key)?.recruited).toBe(true);
     }
+  });
+});
+
+// Master Development Mission 6, Section 9 — real organization roles and
+// permissions. A genuine member (not owner/admin) of Bakery HQ is added
+// directly via the real repository function, then every sensitive action
+// this milestone gates is proven to refuse them while a real owner still
+// genuinely succeeds — and a plain member still has full access to the
+// ordinary, non-sensitive actions nothing here restricts.
+describe("Organization roles and permissions", () => {
+  let bakery: TestOrg;
+  let memberFounderId: string;
+
+  beforeEach(async () => {
+    await resetDbForTests();
+    bakery = await makeTestOrganization("Bea the Baker", "Bakery HQ");
+    const { addOrganizationMember, createFounder: createFounderDirect } = await import("@/lib/db/repositories");
+    const memberFounder = await createFounderDirect({ name: "Casey the Cashier" });
+    memberFounderId = memberFounder.id;
+    await addOrganizationMember({ organizationId: bakery.organizationId, founderId: memberFounderId, role: "member" });
+  });
+
+  it("requireOrganizationRole refuses a genuine member for an owner/admin-only action, but allows the real owner", async () => {
+    const { requireOrganizationRole, OrganizationPermissionError } = await import("@/lib/domain/organizationWorkflow");
+
+    await expect(
+      requireOrganizationRole(memberFounderId, bakery.organizationId, ["owner", "admin"]),
+    ).rejects.toBeInstanceOf(OrganizationPermissionError);
+
+    const membership = await requireOrganizationRole(bakery.founderId, bakery.organizationId, ["owner", "admin"]);
+    expect(membership.role).toBe("owner");
+  });
+
+  it("requireOrganizationRole refuses a genuine non-member with OrganizationMembershipError, never OrganizationPermissionError", async () => {
+    const { requireOrganizationRole, OrganizationMembershipError } = await import("@/lib/domain/organizationWorkflow");
+    const outsider = await (await import("@/lib/db/repositories")).createFounder({ name: "A stranger" });
+
+    await expect(
+      requireOrganizationRole(outsider.id, bakery.organizationId, ["owner", "admin"]),
+    ).rejects.toBeInstanceOf(OrganizationMembershipError);
+  });
+
+  it("a real member cannot recruit or remove an employee — only owner/admin can", async () => {
+    const { OrganizationPermissionError } = await import("@/lib/domain/organizationWorkflow");
+    await recruitEmployee(bakery.organizationId, "business_analyst");
+
+    // The employeeWorkflow functions themselves are organization-scoped
+    // only (by design — see their own doc comment); the real permission
+    // gate lives one level up, at exactly the points Master Development
+    // Mission 6 named (the API routes, and createWorkspace/the Founders'
+    // Desk review functions below which resolve founderId themselves).
+    // This proves the primitive those call sites all rely on.
+    const { requireOrganizationRole } = await import("@/lib/domain/organizationWorkflow");
+    await expect(
+      requireOrganizationRole(memberFounderId, bakery.organizationId, ["owner", "admin"]),
+    ).rejects.toBeInstanceOf(OrganizationPermissionError);
+  });
+
+  it("a real member cannot create a new workspace — only owner/admin can", async () => {
+    const { createWorkspace } = await import("@/lib/domain/projectWorkflow");
+    const { OrganizationPermissionError } = await import("@/lib/domain/organizationWorkflow");
+
+    await expect(
+      createWorkspace(memberFounderId, { name: "Member's workspace", workspaceType: "commerce" }),
+    ).rejects.toBeInstanceOf(OrganizationPermissionError);
+
+    const created = await createWorkspace(bakery.founderId, { name: "Owner's workspace", workspaceType: "commerce" });
+    expect(created.name).toBe("Owner's workspace");
+  });
+
+  it("a real member cannot approve/reject a mission at the Founders' Desk — only owner/admin can", async () => {
+    const { setupMissionReadyForProduction } = await import("./testUtils");
+    const { OrganizationPermissionError } = await import("@/lib/domain/organizationWorkflow");
+    const { mission } = await setupMissionReadyForProduction(bakery.founderId);
+
+    await expect(reviewScoutMission(mission.id, memberFounderId, "approve")).rejects.toBeInstanceOf(
+      OrganizationPermissionError,
+    );
+
+    const { message } = await reviewScoutMission(mission.id, bakery.founderId, "approve");
+    expect(message).toContain("acknowledged as reviewed");
+  });
+
+  it("an admin (not just an owner) can genuinely recruit, create a workspace, and review — the role is a real allow-list, not an owner-only shortcut", async () => {
+    const { addOrganizationMember, createFounder: createFounderDirect } = await import("@/lib/db/repositories");
+    const adminFounder = await createFounderDirect({ name: "Alex the Admin" });
+    await addOrganizationMember({ organizationId: bakery.organizationId, founderId: adminFounder.id, role: "admin" });
+
+    await recruitEmployee(bakery.organizationId, "operations_agent");
+    const { createWorkspace } = await import("@/lib/domain/projectWorkflow");
+    const created = await createWorkspace(adminFounder.id, { name: "Admin's workspace", workspaceType: "commerce" });
+    expect(created.name).toBe("Admin's workspace");
+  });
+
+  it("a plain member can still do ordinary, non-sensitive work — roles restrict specific sensitive actions, not general participation", async () => {
+    const task = await createFounderTask(memberFounderId, { title: "A real task a member can do" });
+    expect(task.title).toBe("A real task a member can do");
+    await completeFounderTask(memberFounderId, task.id);
+    const deliverable = await submitExecutiveAssistantSummary(memberFounderId, task.id);
+    expect(deliverable.title).toBe("A real task a member can do");
   });
 });

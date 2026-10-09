@@ -6,7 +6,7 @@ import {
   listOrganizationMembershipsForFounder,
   getOrganizationMembership,
 } from "@/lib/db/repositories";
-import type { Organization, OrganizationMember } from "@/lib/db/types";
+import type { Organization, OrganizationMember, OrganizationMemberRole } from "@/lib/db/types";
 
 /**
  * The real tenant-boundary enforcement layer (Master Development Mission
@@ -50,6 +50,26 @@ export class OrganizationValidationError extends Error {
 }
 
 /**
+ * A genuine member of the organization, but not one authorized for the
+ * specific action attempted — distinct from `OrganizationMembershipError`
+ * (not a member at all) so a route can tell "you're not even in this
+ * organization" from "you're in it, but not allowed to do this" without
+ * parsing a message string. Deliberately never reveals which roles WOULD
+ * have been allowed in the thrown message — that's for the caller (which
+ * already knows what it asked for) to decide whether to surface.
+ */
+export class OrganizationPermissionError extends Error {
+  constructor(
+    readonly organizationId: string,
+    readonly founderId: string,
+    readonly role: OrganizationMemberRole,
+  ) {
+    super(`Founder ${founderId}'s role ("${role}") in organization ${organizationId} does not permit this action.`);
+    this.name = "OrganizationPermissionError";
+  }
+}
+
+/**
  * Throws unless `founderId` is a genuine, persisted member of
  * `organizationId` — the real server-side check. Returns the real
  * membership row (carrying its real `role`) so a caller can make a
@@ -62,6 +82,30 @@ export async function requireOrganizationMembership(
 ): Promise<OrganizationMember> {
   const membership = await getOrganizationMembership(organizationId, founderId);
   if (!membership) throw new OrganizationMembershipError(organizationId, founderId);
+  return membership;
+}
+
+/**
+ * Real role enforcement (Master Development Mission 6, Section 9 —
+ * "Organisation Owner / Administrator / Member"). Checks genuine
+ * membership first (so a non-member gets the correct
+ * `OrganizationMembershipError`, never a confusing permission error for
+ * an organization they're not even in), then the real persisted `role`
+ * against an explicit allow-list the caller names — there is no implicit
+ * "admin can do everything a member can plus more" ladder encoded here;
+ * every call site states exactly which roles it accepts, so the
+ * allow-list is visible at the point of use, not buried in a hierarchy
+ * that has to be reverse-engineered later.
+ */
+export async function requireOrganizationRole(
+  founderId: string,
+  organizationId: string,
+  allowedRoles: readonly OrganizationMemberRole[],
+): Promise<OrganizationMember> {
+  const membership = await requireOrganizationMembership(founderId, organizationId);
+  if (!allowedRoles.includes(membership.role)) {
+    throw new OrganizationPermissionError(organizationId, founderId, membership.role);
+  }
   return membership;
 }
 

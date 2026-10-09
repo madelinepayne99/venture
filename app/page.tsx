@@ -1,12 +1,12 @@
 import {
   listAgents,
   listMissionsForOrganization,
-  listLeadAssignments,
+  listLeadAssignmentsForOrganization,
   listLedgerEntries,
   ledgerTotalUsd,
   listProjects,
   listFounders,
-  listAgentTaskWorldSignals,
+  listAgentTaskWorldSignalsForOrganization,
 } from "@/lib/db/repositories";
 import { auth } from "@/auth";
 import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
@@ -22,25 +22,24 @@ export default async function HomePage() {
   // component ever renders — session is present by the time we get here.
   const signedInFounderName = session?.founderName ?? "Unknown founder";
 
-  // Organization-scoped since Master Development Mission 6, Phase E —
-  // resolved server-side from the real signed-in founder's own real
-  // membership, never from client input. Missions/projects are real,
-  // organization-owned data; leadAssignments/agentTaskSignals stay
-  // deliberately global for now (they drive the one shared 3D office
-  // scene — see app/api/missions/route.ts's own comment for why that's a
-  // real, named, not-yet-closed gap rather than an oversight here).
+  // Organization-scoped since Master Development Mission 6 — resolved
+  // server-side from the real signed-in founder's own real membership,
+  // never from client input. leadAssignments/agentTaskSignals are now
+  // organization-scoped too (Phase F): a pure data-scoping change, zero
+  // changes to the 3D world itself (Astra's own design) — see
+  // listLeadAssignmentsForOrganization's own doc comment.
   const organization = await getActiveOrganizationForFounder(session!.founderId!);
 
   const [agents, missions, leadAssignments, ledgerEntries, ledgerTotal, projects, founders, agentTaskSignals] =
     await Promise.all([
       listAgents(),
       listMissionsForOrganization(organization.id),
-      listLeadAssignments(),
+      listLeadAssignmentsForOrganization(organization.id),
       listLedgerEntries(),
       ledgerTotalUsd(),
       listProjects(organization.id),
       listFounders(),
-      listAgentTaskWorldSignals(),
+      listAgentTaskWorldSignalsForOrganization(organization.id),
     ]);
 
   return (

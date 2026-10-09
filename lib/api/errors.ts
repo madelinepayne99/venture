@@ -54,6 +54,7 @@ import {
   OrganizationNotFoundError,
   OrganizationMembershipError,
   OrganizationValidationError,
+  OrganizationPermissionError,
 } from "@/lib/domain/organizationWorkflow";
 
 /**
@@ -183,6 +184,9 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     // member of it — never confirm or deny another organization's
     // existence to someone who isn't in it.
     return NextResponse.json({ error: "You do not have access to that organization." }, { status: 403 });
+  }
+  if (error instanceof OrganizationPermissionError) {
+    return NextResponse.json({ error: "Your role in this organization doesn't permit that action." }, { status: 403 });
   }
   if (error instanceof OrganizationValidationError) {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   listMissionsForOrganization,
-  listLeadAssignments,
+  listLeadAssignmentsForOrganization,
   listContentItemsForMissions,
-  listAgentTaskWorldSignals,
+  listAgentTaskWorldSignalsForOrganization,
   getDefaultProject,
 } from "@/lib/db/repositories";
 import { createAndSubmitMission } from "@/lib/domain/missionWorkflow";
@@ -15,19 +15,18 @@ export async function GET() {
   try {
     const founderId = await requireFounderId();
     const organization = await getActiveOrganizationForFounder(founderId);
-    // Missions themselves are real, organization-owned customer data
-    // (Master Development Mission 6, Section 8 — "Scout missions ... must
-    // not leak across organizations") and are scoped here. leadAssignments
-    // and agentTaskSignals stay deliberately global for now — they drive
-    // the one shared 3D office scene (Astra's own design, untouched by
-    // this work), which this phase does not yet make per-organization;
-    // see the progress doc's own "what Phase E does not yet cover" for
-    // why that's a real, named, not-yet-closed gap rather than an
-    // oversight.
+    // Missions, leadAssignments, and agentTaskSignals are all real,
+    // organization-owned data (Master Development Mission 6, Section 8 —
+    // "Scout missions ... must not leak across organizations" — and the
+    // same reasoning extended to what drives the shared 3D office scene).
+    // This is a pure data-scoping change: components/founders-desk/world/*
+    // is completely untouched — Astra's own design — it just now only
+    // ever receives one real organization's own real assignments/signals,
+    // in the exact same shape as before.
     const [missions, leadAssignments, agentTaskSignals] = await Promise.all([
       listMissionsForOrganization(organization.id),
-      listLeadAssignments(),
-      listAgentTaskWorldSignals(),
+      listLeadAssignmentsForOrganization(organization.id),
+      listAgentTaskWorldSignalsForOrganization(organization.id),
     ]);
     const contentItems = await listContentItemsForMissions(missions.map((m) => m.id));
     return NextResponse.json({ missions, leadAssignments, contentItems, agentTaskSignals });

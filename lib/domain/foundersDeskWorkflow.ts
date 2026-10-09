@@ -20,7 +20,7 @@ import {
 import { getBudgetStatus, listAllExpenses } from "@/lib/domain/financeWorkflow";
 import type { AgentDeliverable, Mission, Expense } from "@/lib/db/types";
 import type { BusinessAnalystReport } from "@/lib/agents/businessAnalyst/schema";
-import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { getActiveOrganizationForFounder, requireOrganizationRole } from "@/lib/domain/organizationWorkflow";
 
 /**
  * The Universal Founders' Desk (Commercial MVP Milestone 4) — a real
@@ -184,6 +184,12 @@ export async function reviewScoutMission(
   note?: string,
 ): Promise<{ mission: Mission; message: string }> {
   const organization = await getActiveOrganizationForFounder(founderId);
+  // Reviewing/approving work is a real sensitive action (Section 9's own
+  // example) — restricted to owner/admin. Checked before existence, same
+  // ordering as every other permission check in this codebase: a
+  // non-owner/admin member learns they lack permission, not whether a
+  // mission with this id even exists.
+  await requireOrganizationRole(founderId, organization.id, ["owner", "admin"]);
   const mission = await getMission(missionId);
   // Deliberately the same "not found" error whether the mission genuinely
   // doesn't exist or belongs to a different organization — never confirm
@@ -236,6 +242,7 @@ export async function reviewAgentDeliverable(
   note?: string,
 ): Promise<{ deliverable: AgentDeliverable; message: string }> {
   const organization = await getActiveOrganizationForFounder(founderId);
+  await requireOrganizationRole(founderId, organization.id, ["owner", "admin"]);
   const deliverable = await getAgentDeliverable(deliverableId);
   // Same real cross-tenant boundary as reviewScoutMission above — a
   // generic "not found" regardless of why, never a signal that a
