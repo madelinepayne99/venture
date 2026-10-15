@@ -127,6 +127,13 @@
       "when": 1792077045104,
       "tag": "0017_thick_turbo",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792091087699,
+      "tag": "0018_luxuriant_squirrel_girl",
+      "breakpoints": true
     }
   ]
 }

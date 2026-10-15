@@ -32,6 +32,16 @@ export const founders = pgTable("founders", {
   name: text("name").notNull(),
   email: text("email").unique(),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  // Real account deletion (Mission 10). Null for every real, active
+  // founder. Set (alongside name -> "Deleted Founder" and email -> null)
+  // by deleteFounderAccount — never a hard DELETE of this row, so every
+  // real mission/cost/deliverable that references this founder_id keeps
+  // working and keeps its real history, consistent with this schema's
+  // own insert-only/never-fabricate philosophy. email is nulled (not
+  // just left as-is) specifically so the same real GitHub account can
+  // genuinely sign up again later as a brand-new account, per
+  // ensureFounderAccount's own "find by email" lookup.
+  deleted_at: timestamp("deleted_at", { mode: "string" }),
 });
 
 // --- Multi-tenancy (Master Development Mission 6) -------------------------
@@ -76,6 +86,15 @@ export const organizations = pgTable("organizations", {
   // to invent.
   venture_stage: text("venture_stage"),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  // Real account deletion (Mission 10) — set only when a sole owner with
+  // no other real members closes their account (deleteFounderAccount).
+  // Never a hard DELETE: every real mission/cost/deliverable this
+  // organization ever produced keeps its real history for audit/
+  // financial retention, consistent with this schema's own insert-only
+  // philosophy. A closed organization is excluded from
+  // getActiveOrganizationForFounder and every other real access path —
+  // closed, not just hidden.
+  closed_at: timestamp("closed_at", { mode: "string" }),
 });
 
 export const organizationMemberRoleValues = ["owner", "admin", "member"] as const;
@@ -308,6 +327,29 @@ export const billingWebhookEvents = pgTable("billing_webhook_events", {
   id: text("id").primaryKey(), // the real Stripe event id, e.g. "evt_..."
   type: text("type").notNull(),
   processed_at: timestamp("processed_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// --- Customer support (Mission 10) ---------------------------------------
+//
+// A real, server-side-persisted support ticket — the actual mechanism
+// behind "Create an accessible Help & Support section... a genuine
+// server-side persistence mechanism" (not a contact form that silently
+// does nothing, and not a claim of real email delivery this app can't
+// back up — no email provider is configured in this environment; see
+// lib/domain/supportWorkflow.ts's own doc comment).
+export const supportRequestStatusValues = ["open", "in_progress", "resolved"] as const;
+
+export const supportRequests = pgTable("support_requests", {
+  id: text("id").primaryKey(),
+  organization_id: text("organization_id").references(() => organizations.id),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  subject: text("subject").notNull(),
+  message: text("message").notNull(),
+  status: text("status").notNull().default("open"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });
 
 export const agentStatusValues = ["active", "planned"] as const;

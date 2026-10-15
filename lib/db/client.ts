@@ -625,7 +625,7 @@ export async function resetDbForTests(): Promise<void> {
       agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports,
       agent_deliverable_reviews, agent_deliverables, projects, agent_capabilities, agents,
       budget_reservations, organization_budgets,
-      billing_webhook_events, organization_subscriptions, subscription_plans,
+      support_requests, billing_webhook_events, organization_subscriptions, subscription_plans,
       organization_agents, organization_members, organizations, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE

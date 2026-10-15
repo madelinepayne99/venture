@@ -126,6 +126,12 @@ export type OrganizationSubscription = Omit<InferSelectModel<typeof schema.organ
 };
 export type BillingWebhookEvent = InferSelectModel<typeof schema.billingWebhookEvents>;
 
+// --- Customer support (Mission 10) ---------------------------------------
+export type SupportRequestStatus = (typeof schema.supportRequestStatusValues)[number];
+export type SupportRequest = Omit<InferSelectModel<typeof schema.supportRequests>, "status"> & {
+  status: SupportRequestStatus;
+};
+
 // --- Content Bot production (Milestone C1) ---------------------------------
 
 export type ContentItemState = (typeof schema.contentItemStateValues)[number];
