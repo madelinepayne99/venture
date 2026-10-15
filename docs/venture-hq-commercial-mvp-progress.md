@@ -2014,26 +2014,156 @@ in these two specific functions, not a systemic pattern — but worth
 re-checking after any future repository function is added without an
 explicit organization parameter.
 
+## Mission 10 — Customer Trust & Launch Blockers: DONE
+
+Built on top of the critical leak fix above (same mission, same session).
+5 commits total for Mission 10 (schema prep, the leak fix, the feature
+build, the crash fix, this doc update). Every item from the brief is
+addressed; nothing was left as "write a proposal only."
+
+### 1. Account and data management
+
+`lib/domain/accountWorkflow.ts` — real, tested, never exercised against
+Ellis/Maddie's actual rows:
+
+- **`deleteFounderAccount(founderId, confirmationText)`** — requires the
+  exact server-checked phrase `"DELETE MY ACCOUNT"` (the client-side
+  input match is just UX; the server re-checks regardless of what's
+  sent). A sole owner with no other real members: cancels any real
+  outstanding Stripe subscription immediately
+  (`cancelSubscriptionImmediately`, best-effort — a transient Stripe
+  failure never blocks the rest of deletion), closes the organization
+  (`closed_at`), and anonymizes the founder row (`name` → "Deleted
+  Founder", `email` → null, `deleted_at` set) — never a hard delete, so
+  every real mission/cost/deliverable stays intact for audit. Deletes the
+  matching `auth_user` row (linked by email, not a direct FK — see
+  `auth.ts`'s `resolveFounderIdentity`), which cascades away every real
+  session/account row.
+- **"Never delete an entire organisation merely because one member closes
+  their account"** is enforced, not just stated: refuses outright
+  (`AccountDeletionBlockedError`) if the deleting founder owns an
+  organization with other real members present, checked for *every*
+  owned organization before any mutation happens — a founder who owns
+  one safe-to-close org and one blocked org is never left partially
+  deleted. There's no ownership-transfer UI yet (a real, named gap, not
+  hidden) — the safe behavior is to refuse and let the founder resolve
+  membership first, not guess on their behalf.
+- **`exportFounderData(founderId)`** — a real, scoped export (profile,
+  every organization genuinely belonged to with its projects/missions/
+  ledger, own support requests — never another founder's or
+  organization's data) via `GET /api/account/export`, downloaded as a
+  real JSON file.
+- `getActiveOrganizationForFounder` now also excludes any closed
+  organization from being selected as active — the exclusion
+  `schema.ts`'s own `closed_at` doc comment had promised but nothing
+  enforced yet. `app/page.tsx` falls back to onboarding rather than
+  crashing if a founder's only membership turns out closed.
+- New Focus View "Account" card (Settings → "Your data & account") — a
+  real export-download button and a real, double-confirmed deletion flow.
+
+### 2. Customer support
+
+`lib/domain/supportWorkflow.ts`, `support_requests` table — real,
+server-persisted tickets via `POST`/`GET /api/support`, a real server-
+side rate limit (5 per rolling hour per founder), and a new Focus View
+"Support" tab with a contact form and genuine tracked status. Deliberately
+never claims an email confirmation was sent — `isEmailDeliveryConfigured()`
+is always `false` until a real email-provider key exists (none does).
+`getSupportContactAddress()` reads a real, founder-configurable
+`SUPPORT_CONTACT_EMAIL` — never a fabricated address.
+
+### 3. Subscription transparency
+
+`BillingSection.tsx` now shows plan, real AI budget used/remaining (a
+progress bar, from the existing `GET /api/budget`), the plan's real
+separate video allowance, explicit cancellation guidance, and a support
+contact block — all in one place, as the brief asked. No change to the
+underlying budget/subscription enforcement itself.
+
+### 4. Final usability checks — real Playwright verification
+
+Real fictional accounts provisioned directly against the dev database
+(no GitHub OAuth available in this sandbox — same established technique
+as every prior live-verification round this session), real session
+cookies, real browser automation at desktop (1440px) and mobile (390px):
+onboarding, Settings (billing transparency), Support (submit + see
+tracked status), and a genuine end-to-end account-deletion run (download
+export → delete → land on `/login`).
+
+**One real, genuine bug found and fixed** (not a proposal — the actual
+crash, root-caused and fixed in the same round): approving account
+deletion correctly deletes the founder's real session, but
+`FoundersDeskApp.tsx`'s background polling (`refreshMissions`/
+`refreshLedger`/`refreshProjects`) went straight from `await res.json()`
+to `setX(data.x)` with no check that the request had actually succeeded
+— a 401's `{error: ...}` body set `missions` to `undefined`, and the next
+render crashed the whole app (`missions.filter is not a function`),
+reproduced live with a full stack trace. Not unique to account deletion —
+any genuine session loss while a tab is open would have hit the same
+crash; deletion is simply the first real mechanism that can trigger it.
+Fixed via a new `components/founders-desk/sessionGuard.ts` (its own
+small, dependency-free module — `FoundersDeskApp.tsx` transitively
+imports `next-auth` and can't be unit-tested directly, the same reason
+`lib/auth/routeGate.ts` is split from `middleware.ts`): a real 401 now
+redirects to `/login` instead of ever touching state with a failed
+response. `tests/sessionLossHandling.test.ts` covers it directly. Re-
+verified live after the fix across multiple real runs — zero console/page
+errors, clean redirect to `/login`.
+
+One apparent visual bug (the fixed Employee Directory bar appearing to
+overlap Settings content in a mobile `fullPage` screenshot) was
+investigated and confirmed to be the same known Playwright
+`fullPage`-compositing artifact with `position: fixed` elements already
+documented earlier in this file (search "known Playwright artifact") —
+confirmed via a real, non-`fullPage` viewport screenshot showing normal,
+non-intrusive behavior. Not a real defect; no fix needed.
+
+All fictional Playwright test data (8 founders across the whole round,
+7 organizations, their memberships/subscriptions/support requests, and
+auth rows) was created directly in the real dev database and fully
+removed afterward — confirmed by direct query that Ellis's and Maddie's
+real founder rows and "Founders' HQ" were completely untouched throughout.
+
+### 5. Launch safeguards — maintained, verified
+
+`ALLOW_NEW_CUSTOMER_SIGNUP`/`STRIPE_SECRET_KEY` confirmed still unset for
+any real deployment (only the pre-existing local `.env.local` founder-
+testing toggle, unchanged by this session). Zero diffs this entire
+mission to `components/founders-desk/world/` (Astra's project),
+`docs/legal/`, or `lib/agents/` — confirmed via `git diff --stat` against
+the mission's starting commit. No destructive operations on real data at
+any point (every test/verification round used isolated fictional records,
+all cleaned up afterward). All 7 agents and their `planned`/`wired`
+status in the `agents` table untouched.
+
+### Remaining founder-action blockers (unchanged from Mission 9, still real)
+
+- A real Stripe test-mode account — the single external dependency
+  blocking genuine end-to-end billing/checkout verification (test-mode
+  product/price creation, `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`).
+- A real GitHub OAuth App for a real deployment.
+- Final, founder-approved subscription prices (still explicitly
+  provisional) and a refund policy (none approved).
+- Qualified legal/data-protection review of the four draft documents in
+  `docs/legal/` — still unpublished pending that review.
+- A real email provider, if founders want support-request confirmation
+  emails to actually send (`SUPPORT_EMAIL_PROVIDER_API_KEY` — currently
+  unset by design; the support form already works without it, it just
+  doesn't claim to send email).
+
 ## Exact restart point for a future session
 
-1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **777 tests
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **799 tests
    passing**).
-2. Mission 10's remaining scope, in order: account deletion domain logic
-   (`deleteFounderAccount`), self-service data export, the support-ticket
-   feature (schema already in place — `support_requests`, migration
-   `0018` — routes/UI not yet built), subscription-transparency UI
-   review, then the deferred Playwright verification (onboarding, billing
-   Settings, support, account management, data privacy — desktop +
-   mobile).
-3. Per the founders' own priority order (security/data integrity above
-   cosmetic work), the real product gaps named in
-   `docs/legal/launch-legal-audit.md` (data export, account deletion, a
-   contact/support surface) are still the highest-value remaining items —
-   these block a real pilot regardless of document review status.
-4. A real Stripe test-mode account is the single external dependency
+2. Account management, support, and billing transparency are now real
+   and complete — the next natural founder-facing work is either (a)
+   genuinely connecting the real Stripe test-mode account to unblock
+   checkout verification, or (b) whatever the founders name as the next
+   mission.
+3. A real Stripe test-mode account is the single external dependency
    blocking genuine end-to-end billing verification.
-5. Astra's branch still doesn't exist — check again before touching
+4. Astra's branch still doesn't exist — check again before touching
    anything office-related.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
-baseline (777 tests) still holds before continuing.
+baseline (799 tests) still holds before continuing.
