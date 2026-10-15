@@ -1959,19 +1959,81 @@ round:
   round (ProductionApprovalDialog, AssignWorkModal, ContentReviewSlideOver
   beyond the one real click-through already proven in Mission 8).
 
+## Mission 10: critical cross-tenant leak found and fixed
+
+While designing Mission 10's account-deletion schema, two real, live
+cross-tenant data leaks were found and fixed — not theoretical, confirmed
+against the real dev database with a fresh fictional customer and a real
+session token:
+
+- **`GET /api/founders`** (and `app/page.tsx`'s own server-rendered data)
+  called the globally unscoped `listFounders()` — any authenticated
+  founder, from any organization, received every founder in the entire
+  system, including Ellis's real name and real email, and Maddie's real
+  name.
+- **`GET /api/ledger`** (and `app/page.tsx`) called the equally unscoped
+  `listLedgerEntries()`/`ledgerTotalUsd()`. `ledger_entries` had no
+  organization attribution at all (only a nullable `mission_id`), so this
+  would have exposed every organization's real financial ledger and
+  spend total to every other organization.
+
+**Fix:** added `ledger_entries.organization_id` (migration `0019`,
+mirroring `costs.organization_id` from Master Development Mission 7),
+wrote it at insert time from `recordCost`'s already-resolved organization
+id, backfilled all 184 pre-existing real ledger rows (180 via their
+mission's organization, the remaining 4 standalone Business Analyst rows
+via an exact `usd_cost` + timestamp match against their real `costs`
+row — zero ambiguity, confirmed one unique match each), and switched all
+three real call sites (`app/api/founders/route.ts`,
+`app/api/ledger/route.ts`, `app/page.tsx`) to new organization-scoped
+repository functions (`listFoundersForOrganization`,
+`listLedgerEntriesForOrganization`, `ledgerTotalUsdForOrganization`). The
+three old global functions are kept only because tests reference them
+for seed-data assertions — marked `@deprecated` with a doc comment
+explaining no real route/page may call them.
+
+Verified live, post-fix, with the same unrelated fictional customer two
+ways: with no organization (correctly refused), and with their own
+isolated test organization (correctly received only their own data,
+nothing of Ellis/Maddie's). New regression file:
+`tests/crossTenantDataLeakPrevention.test.ts` — two independent real
+organizations proven isolated, plus a static source scan (mirroring
+`fabricationPrevention.test.ts`) that fails if any of the three real
+call sites ever reverts to the unscoped functions. All fictional test
+data deleted from the real database afterward; Ellis/Maddie's real data
+and all 184 real ledger entries confirmed untouched throughout. Full
+suite (63 files / **777 tests**), typecheck, and production build all
+pass. Committed as two dedicated commits (schema prep, then the fix
+itself) separate from the rest of Mission 10's work.
+
+**Audited for the same pattern and found clean:** every other
+organization-aware repository function already takes an
+`organizationId` parameter; no other API route or server component calls
+an unscoped equivalent. This appears to have been an isolated oversight
+in these two specific functions, not a systemic pattern — but worth
+re-checking after any future repository function is added without an
+explicit organization parameter.
+
 ## Exact restart point for a future session
 
-1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **774 tests
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **777 tests
    passing**).
-2. Per the founders' own priority order (security/data integrity above
-   cosmetic work), the highest-value remaining items are the real
-   product gaps named in `docs/legal/launch-legal-audit.md` (data
-   export, account deletion, a contact/support surface) — these block
-   a real pilot regardless of document review status.
-3. A real Stripe test-mode account is the single external dependency
+2. Mission 10's remaining scope, in order: account deletion domain logic
+   (`deleteFounderAccount`), self-service data export, the support-ticket
+   feature (schema already in place — `support_requests`, migration
+   `0018` — routes/UI not yet built), subscription-transparency UI
+   review, then the deferred Playwright verification (onboarding, billing
+   Settings, support, account management, data privacy — desktop +
+   mobile).
+3. Per the founders' own priority order (security/data integrity above
+   cosmetic work), the real product gaps named in
+   `docs/legal/launch-legal-audit.md` (data export, account deletion, a
+   contact/support surface) are still the highest-value remaining items —
+   these block a real pilot regardless of document review status.
+4. A real Stripe test-mode account is the single external dependency
    blocking genuine end-to-end billing verification.
-4. Astra's branch still doesn't exist — check again before touching
+5. Astra's branch still doesn't exist — check again before touching
    anything office-related.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
-baseline (774 tests) still holds before continuing.
+baseline (777 tests) still holds before continuing.
