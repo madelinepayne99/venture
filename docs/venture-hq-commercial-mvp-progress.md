@@ -1345,3 +1345,103 @@ solely to populate a status artifact. The one piece of live evidence
 this table leans on (Chief of Staff's real 4-agent coordination run) was
 already produced and recorded in an earlier session, cited here rather
 than repeated.
+
+## Milestone D — Focus View redesign (Section 8) & Founders' Desk polish (Section 9): DONE for the first pass
+
+Chosen direction: **Refined Emerald & Ivory** (founder-approved, no
+internal comparison needed). Replaces the flat three-column "developer
+dashboard" with seven real sections behind real navigation (Overview,
+Employees, Tasks, Founders' Desk, Finance, Reports, Settings).
+
+**Baseline established first** — real Playwright screenshots of the
+actual running app at desktop/tablet/mobile before any change, per the
+brief's own instruction. Confirmed the problem described in the brief
+was real: a single ~3700px-tall three-column stack on desktop, an
+~8000px single-column stack on mobile, no navigation at all.
+
+**What changed**: `tailwind.config.ts` gained a new, additive `focus.*`
+token namespace (warm ivory, deep emerald, restrained gold) — does
+**not** touch `hq.*` (HQ View's own 2D chrome) or `night.*`/
+`ROOM_PALETTES` (the 3D scene). Seven new section components under
+`components/founders-desk/focus/`, a new `FocusNav` tab strip, shared
+`FocusPrimitives` (card/heading/empty/error/loading/stat) for one
+consistent design language, and one new read-only endpoint
+(`GET /api/budget`) that finally surfaces `getBudgetStatusForOrganization`
+(built in Mission 7 Phase 4, never shown to a founder until now) to the
+Overview and Finance sections. `FocusView.tsx` itself keeps the exact
+same props interface `FoundersDeskApp.tsx` already passed it — zero
+changes to what's fetched or what a founder can do, only how it's shown.
+`EmployeePortrait` was extracted from `EmployeeDirectory.tsx` into its
+own shared file (behavior-preserving refactor) so the new, spacious
+Employees section and the existing compact overlay bar render identical
+real portraits from one place.
+
+**A real bug found and fixed during verification, not assumed away**:
+three section wrappers (Founders' Desk, Reports, Settings) each added
+their own heading on top of a component that already rendered its own —
+a literal duplicate heading, caught only because the actual screenshots
+were inspected rather than trusting the code was correct.
+
+**Verified, with evidence**:
+- Real Playwright screenshots of every one of the 7 sections, at desktop
+  (1440px), tablet (768px), and mobile (390px) widths.
+- The real Founders' Desk review slide-over (a real Content Bot
+  deliverable, "The Glasswing Stalker") opens from the new layout and
+  shows real assets, a real $0.5520-of-$8.00 budget figure across 21
+  real provider calls, and working Approve/Reject/Send-Back/Cancel
+  actions — confirmed via a real click-through, not assumed from markup.
+- Keyboard-only navigation (Tab to a nav button, confirmed
+  `document.activeElement`, then Enter) reaches and activates a section.
+- **HQ View's screenshot is pixel-identical before and after this
+  milestone** — Astra's 3D scene and the shared `hq.*`-token 2D chrome
+  around it were not touched.
+- Full suite: 729/729 passing (no new tests were needed — this is a pure
+  presentation-layer change over already-tested data/handlers).
+  `npx tsc --noEmit` clean. Production build clean (safe stop/rebuild/
+  restart).
+
+**Known, pre-existing, not a regression**: the global `EmployeeDirectory`
+overlay bar (fixed to the viewport bottom) grazes the bottom edge of the
+last Employees-section card at some scroll positions. This bar was
+already fixed-position and already did this against whatever content
+was at the bottom of a tall page before this redesign (visible in the
+very first baseline screenshot too) — not something this milestone
+introduced, and out of scope to fix here (it's shared, protected
+infrastructure from Mission 5, not Focus-View-specific).
+
+**Explicitly not done in this pass** (named rather than silently
+skipped):
+- The Tasks section's mission list is still one long flat list for a
+  workspace with many missions (19, in the real seeded data) — real
+  data, much better card styling and a real detail sidebar, but no
+  pagination or filtering yet.
+- No accessibility audit beyond the keyboard-navigation spot-check
+  above (no screen-reader pass, no automated contrast-ratio check).
+- Section 8's own "founder-only theme preview" (comparing design
+  candidates side-by-side) was skipped — the founders already named
+  Refined Emerald & Ivory as the direction in their approval message,
+  so no comparison tooling was built.
+- Section 9's fuller "review history" and "source links" asks for the
+  Founders' Desk weren't addressed — `FoundersDeskInbox`'s own internal
+  behavior was deliberately left untouched this pass (only its
+  surrounding presentation changed); any further polish to the inbox
+  component itself is separate, real work for a future milestone.
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **729 tests
+   passing**).
+2. Natural next steps for Focus View, in rough priority order: (a)
+   paginate or filter the Tasks section's mission list, (b) a real
+   accessibility pass (contrast ratios, screen-reader labels beyond the
+   spot-check done here), (c) Section 9's remaining Founders' Desk asks
+   (review history, source links) if the founders want the inbox
+   component itself improved, not just its container.
+3. Per Section 23's own milestone order, the next *new* milestone after
+   Focus View polish is Section 11/12 (customer sign-in/account
+   management, customer onboarding) — still fully unstarted.
+4. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (729 tests) still holds before continuing.
