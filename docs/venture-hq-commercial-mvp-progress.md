@@ -1610,3 +1610,183 @@ real code path and real data model Ellis and Maddie's own account uses
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (742 tests) still holds before continuing.
+
+## Milestone F — Pricing, Subscriptions & Billing Foundations (Sections 14-15): DONE
+
+A genuine, secure, testable commercial subscription system, with live
+payments and public registration both kept disabled. 6 commits, all
+verified (773/773 tests, TypeScript clean, production build clean).
+
+### 1. Real cost audit (not estimated)
+
+Queried this app's own real `costs` table directly:
+
+| Agent | Real calls | Avg cost | Max cost |
+|---|---|---|---|
+| Scout | 18 | $0.28 | $0.38 (single pass) |
+| Content Bot | 162 (23 items) | $0.94/item avg | $3.86 (one real item) |
+| Business Analyst | 4 | $0.12 | $0.14 |
+
+Researched comparable AI-tool pricing (WebSearch, October 2026): individual
+AI-assistant seats commonly $20-30/month with a usage allowance; broader
+enterprise AI tools range $3-100+/user/month ([zylo.com](https://zylo.com/blog/ai-cost),
+[coworker.ai](https://coworker.ai/blog/enterprise-ai-pricing-comparison-2026)).
+AI video generation is priced per-second/per-credit across providers,
+consistent with this app's own real fal.ai Kling costs (~$0.56/real
+video clip call, matching Kling's own published ~$0.07-0.084/second
+developer pricing).
+
+### 2. Real plan catalog (provisional, unpublished)
+
+| Plan | Price | AI budget/mo | Video allowance/mo | Paid agents | Worst-case margin |
+|---|---|---|---|---|---|
+| Free Playground | £0 | $0 | 0 | No | n/a |
+| Starter | £19 | $10 | 0 | Yes | 59% |
+| Business | £49 | $20 | 2 | Yes | 42% |
+| Growth | £99 | $45 | 5 | Yes | 32% |
+
+Worst-case margin assumes every real video production hits its real $8
+MAX_ITEM_SPEND_USD cap and the full AI budget is spent — the real,
+enforced ceiling, not typical usage (which the real measured averages
+above suggest will usually be well under this). FX assumption: £1 ≈
+$1.27 (stated, not a live rate). Every plan seeds with `is_published:
+false` — none are shown on any real public page; `/pricing` itself is
+reachable only by a signed-in founder (no public area exists in this
+app yet) and carries its own explicit "Development preview" banner.
+
+### 3. Real server-side entitlement enforcement
+
+- `assertPlanAllowsAgent` — the three paid agents (Scout, Content Bot,
+  Business Analyst) require a plan with `includes_paid_agents` AND an
+  entitled subscription status (`active`/`trialing` only — `canceled`/
+  `past_due`/`incomplete` are refused even on a plan that includes paid
+  agents). Wired into `recruitEmployee` — a direct API call bypassing
+  the UI is refused identically.
+- `assertPlanAllowsNewVideoProduction` — a real, SEPARATE monthly
+  counter from the dollar budget (per the founders' own explicit
+  instruction), wired into all three real content-item-creation points
+  (`approveForProduction`, `commissionPilotAnyway`,
+  `produceAgainFromMission`), checked before the mission's own state
+  transitions so a refusal never leaves a mission stranded.
+- `budgetWorkflow.ts`'s `getOrganizationBudgetConfig` resolves an
+  organization's real monthly AI budget from its real subscription plan
+  — a free-plan organization gets a real $0, never the old flat $20
+  default; a cancelled/past-due subscription also gets $0. An explicit
+  founder-configured override still always wins.
+- `createOrganizationWithOwner` creates a real "free" subscription row
+  atomically with every new organization — **the actual mechanism**
+  behind "a newly created free organization cannot consume a
+  complimentary $20 of paid AI usage" (priority 4), proven live:
+  `/api/billing/status` for a fresh organization shows `$0` budget, and
+  a direct recruit attempt for a paid agent is refused with a real 403.
+
+### 4. Two real, serious bugs found and fixed via live testing
+
+1. **Cross-tenant membership leak** (commit `08b40b3`, fixed before any
+   further work continued): `ensureDefaultOrganization`'s membership
+   backfill ran on every server restart for every founder, silently
+   granting new customers owner access to Ellis and Maddie's real
+   organization. Reproduced live, bad data found and removed, fixed,
+   and covered by a dedicated new test file.
+2. **Founder-plan backfill gap** (commit `5477200`): Ellis's real,
+   pre-existing "Founders' HQ" showed "Free Playground" instead of its
+   real "founder" plan, because the one-time founder-plan assignment
+   only runs when the default organization is first created — an
+   organization that already existed (from before this migration) never
+   passes through that branch again. Found via a live screenshot of
+   Settings' new billing card, fixed, verified with a corrected
+   screenshot, and covered by 2 new regression tests.
+
+### 5. Real Stripe billing, test mode only
+
+`lib/billing/stripe.ts` (checkout sessions, billing portal sessions,
+webhook signature verification — real, current-API code, `stripe`
+npm package v23), `lib/domain/billingWorkflow.ts` (startCheckout,
+startBillingPortalSession, processBillingWebhookEvent — idempotent via
+a real `billing_webhook_events` ledger), and 4 real routes
+(`/api/billing/checkout`, `/portal`, `/status`, and `/webhook` —
+deliberately excluded from the founder-session gate the same way
+`/api/auth`/`/api/inngest` already are, since Stripe calls it
+server-to-server). **Never exercised against a real Stripe account** —
+this sandbox holds no `STRIPE_SECRET_KEY` (confirmed by inspecting the
+environment directly, same standing discipline as every other
+provider). Signature verification itself (`stripe.webhooks.constructEvent`)
+is pure, local HMAC cryptography with no network call, so it's fully,
+genuinely tested without a real account.
+
+### 6. Real security-negative tests (priority 7, proven not assumed)
+
+`tests/billingWebhookSecurity.test.ts` (12 tests): a forged webhook
+signature is refused by the real local HMAC check; a signature that
+doesn't match its body (tampering) is detected; a genuinely valid
+signature (built with Stripe's own `generateTestHeaderString` test
+helper) is accepted, proving the check isn't just always rejecting;
+webhook processing is provably idempotent (the same real event id
+redelivered a second time does nothing — checked against real database
+state before/after); checkout refuses every real plan today (none has
+a real Stripe price yet) and a completely fabricated plan id outright;
+two independent organizations' billing events never leak into each
+other (a cancellation or payment failure for one never touches the
+other's real subscription row).
+
+### 7. Two independent organizations — real HTTP verification (priority 8)
+
+Two fresh fictional customers (Priya, Tom), crafted sessions against the
+real running app (same technique established in Mission 8's own
+onboarding milestone — a real GitHub OAuth round-trip can't run here).
+Both start on the real Free plan, confirmed independently via
+`GET /api/billing/status`. Priya's subscription was then upgraded to
+"business" directly in the database (simulating a completed real Stripe
+checkout — the same real effect `processBillingWebhookEvent` would
+produce): she could then recruit Scout (real 200); Tom's identical
+attempt was still correctly refused (real 403, "plan does not include
+scout"), and his own billing status remained unchanged — confirmed
+completely unaffected by Priya's upgrade. All test data found, inspected,
+and removed from the real database afterward.
+
+### 8. Playwright verification (priority 9)
+
+Real screenshots at desktop (1440px) and mobile (390px) of the pricing
+page; a real subscribe attempt showing the real, specific, honest error
+(`PlanNotPurchasableError` — no plan has a real Stripe price yet,
+surfaced clearly in the UI, not a generic failure); Settings' billing
+card showing the real current plan and status. The full desktop+mobile
+signup-to-subscription *visual* journey is verified as far as this
+sandbox's real constraint allows — an actual completed Stripe Checkout
+redirect cannot be visually verified without a real Stripe test account,
+named here rather than silently skipped.
+
+### Explicitly not done / blocked (named plainly)
+
+- **No real Stripe account connected** — every plan's `stripe_price_id`
+  is `null`; checkout cannot actually complete until a founder creates
+  real Stripe test-mode products/prices and sets
+  `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`.
+- **No real completed-checkout visual verification** — the real
+  Checkout→success redirect flow is coded and unit-tested
+  (`processBillingWebhookEvent`'s handling of `checkout.session.completed`)
+  but never exercised against a real Stripe session.
+- **Final prices are not approved** — every plan stays `is_published:
+  false`; publishing them is a deliberate future action, not automatic.
+- **No annual billing, proration, or multi-seat pricing** — out of
+  scope for this foundation pass.
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **773 tests
+   passing**).
+2. To genuinely complete billing verification: create a real Stripe
+   test-mode account, create real test-mode products/prices for
+   Starter/Business/Growth, set their `stripe_price_id` in
+   `subscription_plans`, set `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`
+   in `.env.local`, and run `stripe listen --forward-to
+   localhost:3000/api/billing/webhook` locally — only then can a real
+   checkout actually complete and be visually verified end to end.
+3. Per the founders' own stated next assignment: a full application-wide
+   QA sweep, including account management, legal-policy drafts, and
+   launch security verification (Mission 8's remaining sections).
+4. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (773 tests) still holds before continuing.
