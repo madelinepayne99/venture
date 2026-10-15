@@ -1790,3 +1790,188 @@ named here rather than silently skipped.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (773 tests) still holds before continuing.
+
+## Mission 9 — Complete Product QA & Launch-Blocker Audit: DONE (scoped honestly)
+
+Given the mission's own enormous scope (10 major sections), this round
+prioritized per the brief's own explicit instruction — security, data
+integrity, payment correctness, and financial exposure over cosmetic
+issues — rather than attempting shallow coverage of every bullet. 4
+commits, all verified (774/774 tests, TypeScript clean, production
+build clean).
+
+### 1. Two known cross-tenant bugs — re-verified across 3 real restarts
+
+Not just re-running the existing unit tests: a fresh fictional customer
+was provisioned against the real running app, the real dev server was
+restarted three times in a row (the exact condition that originally
+exposed both bugs), and after every restart: the new customer's
+`GET /api/organizations` stayed empty (never leaked into Founders' HQ),
+and Ellis's real `GET /api/billing/status` stayed on the real "founder"
+plan (never reverted to "free"). All test data removed afterward.
+
+### 2. Background-job spending-limit bypass — proven closed
+
+A new test (`tests/missionWorkflow.test.ts`) proves the real scenario
+Section 6 asks about: an organization subscribes, recruits Scout, then
+genuinely cancels. Scout's own recruitment row is deliberately left
+"active" (recruitment isn't auto-reverted by a plan change) — the real
+protection has to come from the budget check INSIDE the background job
+itself (`runScoutPipeline`), since a direct Inngest-triggered job never
+goes through any HTTP route. Proven: the exact call shape
+`scoutResearchJob.ts` makes is refused before the real model is ever
+called, zero cost recorded. Content Bot's equivalent protection was
+already proven in Mission 8's own commit (the organization-level budget
+reservation lives inside `runContentProductionPipeline` itself, not
+just at content-item-creation time).
+
+### 3. Real Playwright sweep — one genuine bug found and fixed
+
+27 real screenshots (every Focus View tab + HQ View + the pricing page,
+at desktop/tablet/mobile) — zero console or page errors across all of
+them. One real, genuine visual bug found: at phone width (390px), the
+Finance "AI spending this month" stat grid's fixed 3-column layout let
+"Monthly limit"'s label wrap to two lines while its neighbors stayed on
+one, leaving two large dollar figures visually overlapping. Tablet and
+desktop were unaffected (the `sm:` breakpoint already gave enough
+room), which is why this was invisible in every earlier desktop-only
+screenshot. Fixed (`grid-cols-1 sm:grid-cols-3`, matching
+`OverviewSection`'s own existing responsive pattern) and confirmed via
+a real before/after screenshot.
+
+Also functionally tested (not just visually): Tasks' "Show more"
+pagination genuinely reveals more real missions (8→16, confirmed by
+counting real DOM elements); the real search filter genuinely filters
+(a "Woodland" search showed Woodland items and hid unrelated "Viral
+Short" items); a real expense was logged through Finance's form (real
+201 response, appeared in the real ledger), then removed from the real
+database afterward since it was test data. The Employee Directory's
+expand/collapse interaction (explicitly called out in the brief) was
+re-verified at mobile width — portraits and recruited status render
+correctly in the horizontally-scrolling strip, unchanged from Mission
+5's own established design.
+
+### 4. Pre-launch legal and operational audit (Section 8)
+
+Four real draft documents (`docs/legal/`) — Terms of Service, Privacy
+Policy, Cookie Notice, Subscription & Cancellation Terms — each built
+by directly inspecting the real schema, real third-party integrations,
+and real observed behavior (the Cookie Notice's list was verified
+against real `Set-Cookie` headers from a live session, not assumed from
+documentation). A consolidated audit (`docs/legal/launch-legal-audit.md`)
+names six real, functional product gaps independent of the documents
+themselves: no self-service data export, no account/organization
+deletion, no contact/support surface anywhere in the app, no
+consent-recording mechanism, no data-retention policy, and no real
+legal entity anywhere in the codebase. Per this session's own standing
+discipline, nothing was invented — every open item is an explicit
+`[DECISION NEEDED]` or `[REQUIRES QUALIFIED REVIEW]` placeholder.
+
+### What this round did NOT do (named honestly, not silently skipped)
+
+Given the realistic scope of one session, the following from the
+brief's original 10 sections were **not** exhaustively covered this
+round:
+- A real, paid execution test of all seven agents (explicitly deferred
+  — this app has no real `ANTHROPIC_API_KEY`/`FAL_KEY`/etc. in this
+  sandbox, consistent with every prior milestone's own standing
+  limitation; real agent execution was already proven live in earlier
+  sessions, cited rather than re-run to avoid needless real spend).
+- An exhaustive click-through of every dialog/form/failure-state in the
+  application (Section 3's own "click every significant button") — a
+  real, systematic sweep was done (27 screenshots, zero errors, one
+  real bug found and fixed, several real interactions functionally
+  tested), but this is not a claim that literally every control in the
+  app was exercised.
+- Real, exhaustive concurrent-reservation/retry/quota-exhaustion
+  stress-testing beyond what Mission 7/8's own `budgetWorkflow.test.ts`
+  and `subscriptionWorkflow.test.ts` already cover (10-way real
+  concurrent reservations, genuine two-request races, plan-downgrade
+  scenarios) — those existing, passing tests were re-run as part of
+  this session's full regression, not re-designed or expanded further
+  this round.
+
+## Mission 9 — Release-Readiness Report
+
+### VERIFIED WORKING
+- Real self-service customer sign-up, organization creation, and
+  onboarding (gated off by default; re-verified across 3 real restarts
+  this round with zero leak).
+- Real cross-organization isolation for missions, employees, finances,
+  content, and billing (proven via real HTTP with two independent
+  fictional customers, re-verified this round).
+- Real organization-level AI spending limits, enforced atomically,
+  including inside background jobs (newly proven this round for
+  Scout's downgrade-then-dispatch scenario).
+- Real subscription entitlement enforcement (paid-agent access, video
+  allowance, cancelled/past-due refusal) — both via direct tests and
+  real HTTP with two organizations.
+- Real Stripe webhook signature verification and idempotent processing
+  (local cryptography, no real Stripe account needed to prove this).
+- Focus View (all 7 tabs), HQ View, and the pricing page — clean across
+  desktop/tablet/mobile, zero console errors, one real bug found and
+  fixed this round.
+- The full automated suite: **774/774 tests**, TypeScript strict mode
+  clean, production build clean.
+
+### FIXED THIS SESSION (Mission 9 specifically)
+- Finance stat-grid mobile layout overlap (real, visual, found via
+  Playwright, fixed, re-verified).
+- Background-job spending-limit bypass for a downgraded-after-recruiting
+  organization (closed with a new, now-passing test proving the real
+  mechanism already protects this — no code change was needed, the
+  existing budget-resolution design already covered it correctly, but
+  this was unproven before this round).
+
+### REQUIRES EXTERNAL CONFIGURATION (founder action, not more code)
+- A real Stripe test-mode account, real test-mode product/price
+  creation, and `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET` — until
+  then, checkout cannot actually complete (proven safe: it refuses
+  clearly rather than failing silently).
+- A real GitHub OAuth App for a real deployment (standing gap since
+  Milestone 2).
+- `ALLOW_NEW_CUSTOMER_SIGNUP` is a deliberate founder decision, not a
+  default — currently on only in local `.env.local` for founder testing.
+- The real legal entity name, address, registration details, and a
+  real support contact — every legal draft has explicit placeholders
+  for these.
+
+### BLOCKED BEFORE LAUNCH
+- Final, approved subscription prices (current figures are explicitly
+  provisional).
+- A refund policy (none approved — deliberately not assumed in the
+  legal drafts).
+- Self-service data export and account/organization deletion (real
+  product features, not yet built).
+- A contact/support surface anywhere in the running application.
+- Qualified legal and data-protection review of all four draft
+  documents.
+- A real, visually-verified completed Stripe Checkout round-trip
+  (blocked on the same real Stripe account gap above).
+
+### OPTIONAL FUTURE IMPROVEMENT
+- Tasks section: richer filtering (date range, multi-select status).
+- Annual billing / proration / video-allowance rollover (explicitly
+  deferred product decisions, not gaps).
+- A consent-acceptance versioning mechanism for when legal documents
+  do get published.
+- Further Playwright coverage of dialogs/modals not exercised this
+  round (ProductionApprovalDialog, AssignWorkModal, ContentReviewSlideOver
+  beyond the one real click-through already proven in Mission 8).
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **774 tests
+   passing**).
+2. Per the founders' own priority order (security/data integrity above
+   cosmetic work), the highest-value remaining items are the real
+   product gaps named in `docs/legal/launch-legal-audit.md` (data
+   export, account deletion, a contact/support surface) — these block
+   a real pilot regardless of document review status.
+3. A real Stripe test-mode account is the single external dependency
+   blocking genuine end-to-end billing verification.
+4. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (774 tests) still holds before continuing.
