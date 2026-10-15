@@ -26,6 +26,7 @@ import { CommissionPilotDialog, type CommissionPilotInput } from "./hq/Commissio
 import { ProduceAgainDialog, type ProduceAgainInput } from "./hq/ProduceAgainDialog";
 import { ContentReviewSlideOver, type ContentItemDetailData } from "./hq/ContentReviewSlideOver";
 import { useMissionPolling } from "./useMissionPolling";
+import { handleUnauthorizedResponse } from "./sessionGuard";
 
 interface Props {
   signedInFounderName: string;
@@ -90,6 +91,7 @@ function writeLocalStorage(key: string, value: string): void {
     // Not fatal — the preference just won't persist across reloads.
   }
 }
+
 
 export function FoundersDeskApp({
   signedInFounderName,
@@ -191,6 +193,20 @@ export function FoundersDeskApp({
 
   async function refreshMissions() {
     const res = await fetch("/api/missions");
+    // A real, live-reproduced bug (Mission 10): a founder's session can
+    // become genuinely invalid mid-session — most notably from the new
+    // real account-deletion flow deleting their own auth_user row out
+    // from under an in-flight polling tick, but equally a session
+    // expiring or being revoked in another tab. Without this check,
+    // `data.missions` is undefined for a 401's `{error: ...}` body,
+    // `setMissions(undefined)` corrupts state, and the next render
+    // crashes the whole app on `missions.filter(...)` — reproduced live
+    // via a real Playwright run of account deletion. A redirect to
+    // /login is the correct, honest outcome for "you're not signed in
+    // anymore," not a crash.
+    if (handleUnauthorizedResponse(res)) {
+      return { missions, contentItems };
+    }
     const data = await res.json();
     setMissions(data.missions);
     setLeadAssignments(data.leadAssignments);
@@ -222,6 +238,7 @@ export function FoundersDeskApp({
 
   async function refreshFoundersDeskInboxCount() {
     const res = await fetch("/api/founders-desk/inbox");
+    if (handleUnauthorizedResponse(res)) return;
     if (!res.ok) return;
     const data = await res.json();
     setFoundersDeskPendingCount((data.items ?? []).length);
@@ -229,6 +246,7 @@ export function FoundersDeskApp({
 
   async function refreshLedger() {
     const res = await fetch("/api/ledger");
+    if (handleUnauthorizedResponse(res)) return;
     const data = await res.json();
     setLedgerEntries(data.entries);
     setLedgerTotal(data.totalUsd);
@@ -236,6 +254,7 @@ export function FoundersDeskApp({
 
   async function refreshProjects() {
     const res = await fetch("/api/projects");
+    if (handleUnauthorizedResponse(res)) return;
     const data = await res.json();
     setProjects(data.projects);
   }
