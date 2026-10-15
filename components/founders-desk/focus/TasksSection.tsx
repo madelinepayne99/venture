@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, useState } from "react";
 import type { Mission, Project } from "@/lib/db/types";
 import { StatusBadge } from "../StatusBadge";
 import { MissionForm } from "../MissionForm";
@@ -8,8 +9,11 @@ import { ProductionActions } from "../ProductionActions";
 import { ExecutiveAssistantTasks } from "../ExecutiveAssistantTasks";
 import { OperationsAgentChecklists } from "../OperationsAgentChecklists";
 import { ChiefOfStaffPanel } from "../ChiefOfStaffPanel";
-import { isCancellable } from "@/lib/domain/missionStates";
+import { isCancellable, missionDockBucket, MISSION_DOCK_BUCKET_LABELS, type MissionDockBucket } from "@/lib/domain/missionStates";
 import { FocusCard, FocusSectionHeading, FocusEmptyState } from "./FocusPrimitives";
+
+const PAGE_SIZE = 8;
+const ALL_BUCKETS = "all" as const;
 
 /**
  * Assigning work and reviewing genuine results (Mission 8 Focus View
@@ -51,6 +55,34 @@ export function TasksSection({
   onOpenProduceAgain: () => void;
   onOpenContentReview: (contentItemId: string) => void;
 }) {
+  const [search, setSearch] = useState("");
+  const [bucketFilter, setBucketFilter] = useState<MissionDockBucket | typeof ALL_BUCKETS>(ALL_BUCKETS);
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+
+  const filteredMissions = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return missions.filter((mission) => {
+      const matchesSearch =
+        !query || mission.title.toLowerCase().includes(query) || mission.brief.toLowerCase().includes(query);
+      const matchesBucket = bucketFilter === ALL_BUCKETS || missionDockBucket(mission.state) === bucketFilter;
+      return matchesSearch && matchesBucket;
+    });
+  }, [missions, search, bucketFilter]);
+
+  const visibleMissions = filteredMissions.slice(0, visibleCount);
+  const hasMore = filteredMissions.length > visibleMissions.length;
+
+  // Any real, deliberate filter/search change resets pagination — never
+  // show "load more" against a stale, pre-filter page offset.
+  function updateSearch(value: string) {
+    setSearch(value);
+    setVisibleCount(PAGE_SIZE);
+  }
+  function updateBucketFilter(value: MissionDockBucket | typeof ALL_BUCKETS) {
+    setBucketFilter(value);
+    setVisibleCount(PAGE_SIZE);
+  }
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_380px]">
@@ -66,13 +98,47 @@ export function TasksSection({
           </FocusCard>
 
           <FocusCard>
-            <FocusSectionHeading title="Missions" description={`${missions.length} total in this workspace.`} />
+            <FocusSectionHeading
+              title="Missions"
+              description={
+                filteredMissions.length === missions.length
+                  ? `${missions.length} total in this workspace.`
+                  : `${filteredMissions.length} of ${missions.length} shown.`
+              }
+            />
+            {missions.length > 0 && (
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center">
+                <input
+                  type="search"
+                  value={search}
+                  onChange={(e) => updateSearch(e.target.value)}
+                  placeholder="Search by title or brief…"
+                  aria-label="Search missions"
+                  className="flex-1 rounded-md border border-focus-border px-3 py-1.5 text-sm text-focus-ink focus:border-focus-emerald focus:outline-none"
+                />
+                <select
+                  value={bucketFilter}
+                  onChange={(e) => updateBucketFilter(e.target.value as MissionDockBucket | typeof ALL_BUCKETS)}
+                  aria-label="Filter missions by status"
+                  className="rounded-md border border-focus-border bg-white px-3 py-1.5 text-sm text-focus-ink focus:border-focus-emerald focus:outline-none"
+                >
+                  <option value={ALL_BUCKETS}>All statuses</option>
+                  {Object.entries(MISSION_DOCK_BUCKET_LABELS).map(([bucket, label]) => (
+                    <option key={bucket} value={bucket}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="mt-4">
               {missions.length === 0 ? (
                 <FocusEmptyState title="No missions yet" body="Create the first one above." />
+              ) : filteredMissions.length === 0 ? (
+                <FocusEmptyState title="No missions match" body="Try a different search term or status filter." />
               ) : (
                 <ul className="divide-y divide-focus-border">
-                  {missions.map((mission) => (
+                  {visibleMissions.map((mission) => (
                     <li key={mission.id} className="py-3">
                       <button
                         onClick={() => onSelectMission(mission.id)}
@@ -120,6 +186,15 @@ export function TasksSection({
                     </li>
                   ))}
                 </ul>
+              )}
+              {hasMore && (
+                <button
+                  type="button"
+                  onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
+                  className="mt-4 w-full rounded-md border border-focus-border py-2 text-sm font-medium text-focus-emerald transition hover:bg-focus-ivory"
+                >
+                  Show more ({filteredMissions.length - visibleMissions.length} remaining)
+                </button>
               )}
             </div>
           </FocusCard>

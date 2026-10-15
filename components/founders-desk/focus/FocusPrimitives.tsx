@@ -95,7 +95,7 @@ export function FocusStat({
   tone?: "default" | "warning" | "danger";
 }) {
   const toneClass =
-    tone === "danger" ? "text-status-danger" : tone === "warning" ? "text-focus-gold" : "text-focus-emerald";
+    tone === "danger" ? "text-status-danger" : tone === "warning" ? "text-focus-goldText" : "text-focus-emerald";
   return (
     <div>
       <p className="text-xs font-medium uppercase tracking-wide text-focus-slate">{label}</p>

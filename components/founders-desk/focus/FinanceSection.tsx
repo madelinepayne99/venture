@@ -79,7 +79,7 @@ function AiBudgetCard() {
                 Business Analyst requests will be refused until it resets next month.
               </p>
             ) : status.remainingUsd < status.monthlyLimitUsd * 0.2 ? (
-              <p className="rounded-lg bg-focus-goldSoft px-3 py-2 text-sm text-focus-gold">
+              <p className="rounded-lg bg-focus-goldSoft px-3 py-2 text-sm text-focus-goldText">
                 Less than 20% of this month&apos;s AI budget remains.
               </p>
             ) : null}

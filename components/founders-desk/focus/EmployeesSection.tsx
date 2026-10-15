@@ -114,7 +114,7 @@ export function EmployeesSection() {
                   <div className="min-w-0">
                     <p className="font-display text-lg font-semibold text-focus-ink">{definition.displayName}</p>
                     <p className="text-sm text-focus-slate">{definition.jobTitle}</p>
-                    <p className="text-xs uppercase tracking-wide text-focus-gold">{definition.department}</p>
+                    <p className="text-xs uppercase tracking-wide text-focus-goldText">{definition.department}</p>
                   </div>
                 </div>
 
@@ -133,7 +133,7 @@ export function EmployeesSection() {
                   <p className="mt-3 text-xs text-focus-slate">
                     Needs: {definition.requiredIntegrations.map((k) => INTEGRATION_LABELS[k] ?? k).join(", ")}
                     {!integrationsReady && recruited && (
-                      <span className="ml-1 font-medium text-focus-gold">— not yet connected</span>
+                      <span className="ml-1 font-medium text-focus-goldText">— not yet connected</span>
                     )}
                   </p>
                 )}
@@ -146,7 +146,7 @@ export function EmployeesSection() {
                           ? "bg-focus-emeraldSoft text-focus-emerald"
                           : definition.implementationStatus === "coming_soon"
                             ? "bg-focus-ivoryDark text-focus-slate"
-                            : "bg-focus-goldSoft text-focus-gold"
+                            : "bg-focus-goldSoft text-focus-goldText"
                       }`}
                     >
                       {recruited ? "Recruited" : STATUS_LABEL[definition.implementationStatus]}

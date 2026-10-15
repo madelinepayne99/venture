@@ -104,7 +104,13 @@ export function FocusView({
         <FocusNav active={section} onChange={changeSection} pendingReviewCount={pendingReviewCount} />
       </div>
 
-      <div className="p-4 sm:p-6">
+      {/* pb-20 (extra, beyond <main>'s own bottom padding): real clearance
+          for the global, fixed-to-viewport-bottom EmployeeDirectory strip
+          (components/founders-desk/EmployeeDirectory.tsx — rendered
+          outside this component, shared with HQ View, not touched here)
+          — found grazing the bottom of a tall section's last card during
+          Mission 8's Focus View verification. */}
+      <div className="p-4 pb-20 sm:p-6 sm:pb-24">
         {section === "overview" && (
           <OverviewSection
             missions={missions}
