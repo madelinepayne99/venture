@@ -56,6 +56,7 @@ import {
   OrganizationValidationError,
   OrganizationPermissionError,
 } from "@/lib/domain/organizationWorkflow";
+import { BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -193,6 +194,23 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof ContentAssetNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof BudgetExhaustedError) {
+    // 429 (Too Many Requests) is the closest standard status for "this
+    // organization's own spending limit is already used up this month" —
+    // not a 403 (it's not a permissions problem) and not a 402 (no real
+    // payment flow exists in this app yet). The real figures (never a
+    // vague message alone) let the UI show exactly how exhausted the
+    // budget is.
+    return NextResponse.json(
+      {
+        error: error.message,
+        limitUsd: error.limitUsd,
+        committedUsd: error.committedUsd,
+        requestedUsd: error.requestedUsd,
+      },
+      { status: 429 },
+    );
   }
   if (error instanceof Error && error.message.includes("not found")) {
     return NextResponse.json({ error: error.message }, { status: 404 });

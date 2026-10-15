@@ -1,4 +1,5 @@
 import "server-only";
+import { randomUUID } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
 import {
   saveBusinessAnalystReport,
@@ -9,10 +10,11 @@ import {
   recordActivity,
 } from "@/lib/db/repositories";
 import type { BusinessAnalystReportRecord } from "@/lib/db/types";
-import { runBusinessAnalystResearch, BusinessAnalystResearchError } from "@/lib/agents/businessAnalyst";
+import { runBusinessAnalystResearch, BusinessAnalystResearchError, BUSINESS_ANALYST_MODEL } from "@/lib/agents/businessAnalyst";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import type { BusinessAnalystReport } from "@/lib/agents/businessAnalyst/schema";
 import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { reserveBudget, settleReservation, releaseReservation } from "@/lib/domain/budgetWorkflow";
 
 /**
  * Business Analyst's one real, tested capability: standalone sourced
@@ -23,7 +25,45 @@ import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkfl
  * oversight. Real spend is recorded via the existing costs/ledger_entries
  * tables with missionId: null (already nullable — zero schema changes
  * needed there) rather than inventing a parallel ledger.
+ *
+ * Mission 7 Phase 4: this is also the first real call site wired into
+ * `budgetWorkflow.ts`'s atomic reservation gate — the simplest real
+ * integration point (a single synchronous call, no durable-job resume
+ * path to coordinate with), proven here before Scout's and Content Bot's
+ * own multi-stage pipelines get the same treatment. A reservation is
+ * taken out for a genuine worst-case ceiling *before* the real model call
+ * ever starts (so an organization that's already exhausted its monthly
+ * budget is refused before spending anything, not after), and is always
+ * either settled with the real final cost (success or a failed-but-
+ * billed run) or released (nothing was actually spent) — never left
+ * dangling.
  */
+
+// Business Analyst's agent-level worst case (see lib/agents/businessAnalyst/
+// index.ts): MAX_ITERATIONS (4) calls, each capped at MAX_TOKENS (8000)
+// output tokens — 32,000 output tokens total. Input tokens grow with a
+// multi-turn search conversation and aren't precisely bounded; 20,000 is a
+// generous, documented estimate (the same "don't try to bound input
+// precisely, use a generous figure" approach CLAUDE.md's own Scout cost
+// ceiling takes), not a measured figure. Computed via the real pricing
+// table rather than a hand-picked dollar constant, so it tracks the actual
+// model's rate automatically.
+const WORST_CASE_OUTPUT_TOKENS = 8000 * 4;
+const WORST_CASE_INPUT_TOKENS_ESTIMATE = 20_000;
+
+function estimateResearchCeilingUsd(): number {
+  try {
+    return calculateUsdCost(BUSINESS_ANALYST_MODEL, {
+      input_tokens: WORST_CASE_INPUT_TOKENS_ESTIMATE,
+      output_tokens: WORST_CASE_OUTPUT_TOKENS,
+    });
+  } catch {
+    // Unknown model pricing — fall back to a conservative, documented flat
+    // figure rather than letting an unpriced model bypass budget
+    // enforcement entirely.
+    return 1;
+  }
+}
 
 export class BusinessAnalystValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -66,6 +106,20 @@ export async function requestResearch(
   const organization = await getActiveOrganizationForFounder(founderId);
   const agent = await getAgentByKey("business_analyst");
 
+  // The real enforcement point: this throws BudgetExhaustedError (mapped
+  // to HTTP 429 in lib/api/errors.ts) and refuses the request *before* any
+  // real model call happens whenever this organization's current month
+  // committed spend plus this call's worst-case ceiling would exceed its
+  // budget. Two genuinely concurrent requests against the same
+  // organization's remaining headroom can never both pass this gate — see
+  // budgetWorkflow.ts's own row-locking guarantee.
+  const reservation = await reserveBudget({
+    organizationId: organization.id,
+    purpose: "business_analyst_research",
+    estimatedUsd: estimateResearchCeilingUsd(),
+    idempotencyKey: randomUUID(),
+  });
+
   try {
     const outcome = await runBusinessAnalystResearch(trimmed!, deps);
 
@@ -97,6 +151,11 @@ export async function requestResearch(
       action: "research_completed",
       detail: trimmed,
     });
+
+    // Close the reservation out with the real final cost — never the
+    // estimate. A null usdCost (unpriced model) settles as null too,
+    // matching recordCost's own "never invent a dollar figure" rule.
+    await settleReservation(reservation.id, outcome.usage.usdCost);
 
     return saved as BusinessAnalystReportRecord<BusinessAnalystReport>;
   } catch (error) {
@@ -139,8 +198,20 @@ export async function requestResearch(
         detail: error.message,
       });
 
+      // Still settle with the real (possibly null) cost — a failed-but-
+      // billed run genuinely spent money and must count against the
+      // organization's committed spend, same as a successful one.
+      await settleReservation(reservation.id, usdCost);
+
       return saved as BusinessAnalystReportRecord<BusinessAnalystReport>;
     }
+    // An unexpected error (not even a BusinessAnalystResearchError) means
+    // nothing was persisted or billed — release the reservation rather
+    // than settling it with a fabricated cost, so it stops counting
+    // against the organization's budget.
+    await releaseReservation(reservation.id).catch(() => {
+      // Never let a cleanup failure mask the real underlying error below.
+    });
     throw error;
   }
 }
