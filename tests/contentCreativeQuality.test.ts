@@ -632,8 +632,11 @@ describe("Visual QC — mandatory, bounded regeneration, cost ceiling, and stop-
     const { item } = await createHarness();
     // Pre-load spend right up to the cap — the QC regeneration's own
     // pre-flight budget check must refuse before spending anything more.
+    const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+    const organization = await getActiveOrganizationForFounder(founderId);
     await recordCost({
       missionId: null,
+      organizationId: organization.id,
       agentId: null,
       contentItemId: item.id,
       model: "n/a",

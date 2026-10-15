@@ -357,6 +357,13 @@ export async function ensureDefaultOrganization(instance: Db): Promise<string> {
     schema.agentDeliverableReviews,
     schema.expenses,
     schema.budgets,
+    // Mission 7's own real attribution-gap fix — see schema.ts's own
+    // comment on costs.organization_id. Every pre-existing cost row
+    // (whether mission-scoped or Business Analyst's own standalone
+    // research spend) genuinely belongs to the one real organization
+    // that existed when it was recorded — verified, not guessed, same
+    // reasoning as every other table in this backfill.
+    schema.costs,
   ] as const;
   for (const table of tablesToBackfill) {
     await instance
@@ -459,6 +466,7 @@ export async function resetDbForTests(): Promise<void> {
       deliverables, evidence, agent_assignments, mission_stages, missions,
       agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports,
       agent_deliverable_reviews, agent_deliverables, projects, agent_capabilities, agents,
+      budget_reservations, organization_budgets,
       organization_agents, organization_members, organizations, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE

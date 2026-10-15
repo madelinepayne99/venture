@@ -122,6 +122,72 @@ export const organizationAgents = pgTable(
   }),
 );
 
+// --- AI spending limits (Master Development Mission 7, Phase 4) ---------
+//
+// Real, server-side, atomic protection against unbounded provider spend —
+// "launch-critical" per the founders' own brief. Two tables:
+// `organization_budgets` is one row per organization's real, configured
+// limits (a missing row means "use the safe application default", never
+// "unlimited" — see lib/domain/budgetWorkflow.ts); `budget_reservations`
+// is the real, atomic ledger a paid operation must successfully insert
+// into BEFORE it's allowed to spend anything, and must settle (or
+// release) afterward — the actual mechanism, not just a display number.
+
+export const organizationBudgets = pgTable("organization_budgets", {
+  id: text("id").primaryKey(),
+  organization_id: text("organization_id")
+    .notNull()
+    .unique()
+    .references(() => organizations.id),
+  // Null means "use the application's own safe default" (see
+  // DEFAULT_MONTHLY_BUDGET_USD in budgetWorkflow.ts) — never silently
+  // "no limit." A founder/admin can configure a real, explicit ceiling
+  // here once settings UI exists (Phase 9/16); nothing writes this yet
+  // beyond tests, which is itself the honest, current state.
+  monthly_usd_limit: real("monthly_usd_limit"),
+  max_concurrent_paid_tasks: integer("max_concurrent_paid_tasks"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+export const budgetReservationStatusValues = ["reserved", "settled", "released"] as const;
+
+export const budgetReservations = pgTable(
+  "budget_reservations",
+  {
+    id: text("id").primaryKey(),
+    organization_id: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    // Caller-supplied, real idempotency key — the actual mechanism
+    // preventing a retried request from reserving (and later double-
+    // charging) twice. A real DB-level unique constraint, not just an
+    // application-level check, so two genuinely concurrent requests with
+    // the same key can never both succeed.
+    idempotency_key: text("idempotency_key").notNull().unique(),
+    // What real capability this reservation is for — "scout_research" |
+    // "business_analyst_research" | "content_production" | ... — plain
+    // text, same "the app layer is the source of truth for the
+    // vocabulary" philosophy every other status/category column in this
+    // schema already follows.
+    purpose: text("purpose").notNull(),
+    // The real, safe worst-case amount reserved BEFORE the operation
+    // runs — never the actual cost yet (that's unknown until the
+    // provider call finishes). This is what's actually checked against
+    // the organization's remaining budget at reservation time.
+    reserved_usd: real("reserved_usd").notNull(),
+    status: text("status").notNull().default("reserved"),
+    // Set only once the real operation finishes and its genuine cost is
+    // known (settleReservation) — null while still "reserved". Can
+    // legitimately be less than, equal to, or (rarely, if an estimate
+    // was wrong) more than reserved_usd; the reservation's own job was
+    // only ever to prevent overspending AT THE TIME it was made.
+    actual_usd_cost: real("actual_usd_cost"),
+    created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+    settled_at: timestamp("settled_at", { mode: "string" }),
+  },
+);
+
 export const agentStatusValues = ["active", "planned"] as const;
 
 export const agents = pgTable("agents", {
@@ -718,6 +784,16 @@ export const approvals = pgTable("approvals", {
 export const costs = pgTable("costs", {
   id: text("id").primaryKey(),
   mission_id: text("mission_id").references(() => missions.id),
+  // Master Development Mission 7 — the real attribution gap: previously
+  // the ONLY way to attribute a cost to an organization was through a
+  // mission, but Business Analyst's own standalone research (never
+  // mission-scoped — see businessAnalystWorkflow.ts) recorded real spend
+  // with mission_id null and no organization attribution at all. Direct
+  // and nullable (not a guess dressed as a default — see the real,
+  // verified backfill in lib/db/client.ts's ensureDefaultOrganization):
+  // every NEW cost row sets this explicitly from its own real, resolved
+  // organization, regardless of whether it also has a mission_id.
+  organization_id: text("organization_id").references(() => organizations.id),
   agent_id: text("agent_id").references(() => agents.id),
   model: text("model").notNull(),
   // Nullable — a media-generation call has no token count. Writing 0

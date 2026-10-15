@@ -141,6 +141,24 @@ export async function getActiveOrganizationForFounder(founderId: string): Promis
 }
 
 /**
+ * For system/background-job code that has a real mission (or any other
+ * row with a nullable `organization_id`) but no acting founder to resolve
+ * one through — `runScoutPipeline`/`runContentProductionPipeline`, which
+ * the Inngest jobs trigger directly, are the real callers. The column is
+ * only nullable at the schema level for safe-backfill reasons (see
+ * schema.ts); every real row has a real value in practice, so a missing
+ * one here means a genuine data-integrity problem, not a legitimate
+ * "unowned" state — this fails loudly rather than silently skipping cost
+ * attribution.
+ */
+export function requireOrganizationId(organizationId: string | null, context: string): string {
+  if (!organizationId) {
+    throw new Error(`${context} has no organization_id — a real data-integrity problem, not an expected state.`);
+  }
+  return organizationId;
+}
+
+/**
  * Real organization creation — used by this phase's own security-
  * negative tests (two genuinely separate fictional businesses) and by
  * a future onboarding flow (Phase I, not built yet). The creating

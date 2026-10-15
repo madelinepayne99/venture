@@ -88,7 +88,7 @@ import {
   CONTENT_PRODUCTION_REQUESTED_EVENT,
   CONTENT_REVISION_REQUESTED_EVENT,
 } from "@/lib/inngest/client";
-import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { getActiveOrganizationForFounder, requireOrganizationId } from "@/lib/domain/organizationWorkflow";
 
 /**
  * The real tenant-ownership check for every founder-facing Content Bot
@@ -112,6 +112,19 @@ async function assertContentItemInFoundersOrganization(
   if (!mission || mission.organization_id !== organization.id) {
     throw new Error(notFoundMessage);
   }
+}
+
+/**
+ * Cost attribution for the real pipeline's own internal stages
+ * (`runContentProductionPipeline` and everything it calls — all system/
+ * background-job code, no founderId in scope at all). Resolves the real
+ * owning mission's own `organization_id` directly — never a guess,
+ * never silently skipped (Master Development Mission 7's real
+ * attribution fix; see schema.ts's own comment on `costs.organization_id`).
+ */
+async function resolveContentItemOrganizationId(missionId: string): Promise<string> {
+  const mission = await getMission(missionId);
+  return requireOrganizationId(mission?.organization_id ?? null, `Content item's mission ${missionId}`);
 }
 
 export class ProductionApprovalValidationError extends Error {
@@ -1681,6 +1694,7 @@ async function persistMediaResult(args: {
   });
   await recordCost({
     missionId: args.missionId,
+    organizationId: await resolveContentItemOrganizationId(args.missionId),
     agentId: args.agentId,
     contentItemId: args.contentItemId,
     contentVersionId: args.contentVersionId,
@@ -1732,6 +1746,7 @@ async function recordTokenCostOnFailure(
   }
   await recordCost({
     missionId: item.mission_id,
+    organizationId: await resolveContentItemOrganizationId(item.mission_id),
     agentId: item.agent_id,
     contentItemId: item.id,
     contentVersionId: versionId,
@@ -1772,6 +1787,7 @@ async function runCreativeStrategyStage(
     const { strategy, usage } = await planCreativeStrategy({ brief, audience: ctx }, deps.contentBot ?? {});
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -1879,6 +1895,7 @@ async function runProductionPlanningStage(
     );
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -1996,6 +2013,7 @@ async function runSafetyReviewStage(
     const { verdict, usage } = await reviewContentSafety(plan, ctx, deps.contentBot ?? {});
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -2150,6 +2168,7 @@ async function runReferenceGenerationStage(
     );
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -2246,6 +2265,7 @@ async function runReferenceGenerationStage(
       referenceAsset = { ...referenceAsset, checksum_sha256: putResult.checksumSha256, byte_size: putResult.byteSize };
       await recordCost({
         missionId: item.mission_id,
+        organizationId: await resolveContentItemOrganizationId(item.mission_id),
         agentId: item.agent_id,
         contentItemId: item.id,
         contentVersionId: version.id,
@@ -2723,6 +2743,7 @@ async function runVisualQCStage(
     );
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -2876,6 +2897,7 @@ async function runVisualQCStage(
       }
       await recordCost({
         missionId: item.mission_id,
+        organizationId: await resolveContentItemOrganizationId(item.mission_id),
         agentId: item.agent_id,
         contentItemId: item.id,
         contentVersionId: version.id,

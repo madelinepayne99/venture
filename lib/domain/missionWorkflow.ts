@@ -28,7 +28,7 @@ import {
 } from "@/lib/db/repositories";
 import { validateMissionInput, type MissionInput } from "@/lib/domain/missionValidation";
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
-import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { getActiveOrganizationForFounder, requireOrganizationId } from "@/lib/domain/organizationWorkflow";
 import { isContentItemCancellable } from "@/lib/domain/contentItemStates";
 import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
 import { ScoutReportSchema } from "@/lib/agents/scout/schema";
@@ -683,6 +683,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
     // verdict.
     await recordCost({
       missionId: mission.id,
+      organizationId: requireOrganizationId(mission.organization_id, `Mission ${mission.id}`),
       agentId: scout.id,
       model: outcome.usage.model,
       inputTokens: outcome.usage.inputTokens,
@@ -805,6 +806,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
       }
       await recordCost({
         missionId: mission.id,
+        organizationId: requireOrganizationId(mission.organization_id, `Mission ${mission.id}`),
         agentId: scout.id,
         model: usage.model,
         inputTokens: usage.inputTokens,

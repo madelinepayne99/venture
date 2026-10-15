@@ -111,6 +111,12 @@ export type CostEntry = InferSelectModel<typeof schema.costs>;
 export type LedgerEntry = InferSelectModel<typeof schema.ledgerEntries>;
 export type ActivityEntry = InferSelectModel<typeof schema.activityHistory>;
 
+export type OrganizationBudget = InferSelectModel<typeof schema.organizationBudgets>;
+export type BudgetReservationStatus = (typeof schema.budgetReservationStatusValues)[number];
+export type BudgetReservation = Omit<InferSelectModel<typeof schema.budgetReservations>, "status"> & {
+  status: BudgetReservationStatus;
+};
+
 // --- Content Bot production (Milestone C1) ---------------------------------
 
 export type ContentItemState = (typeof schema.contentItemStateValues)[number];

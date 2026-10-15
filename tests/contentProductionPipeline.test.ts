@@ -594,8 +594,11 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const item = await createRealContentItem();
     // Pre-load the ledger past the cap — the very first real media call
     // (voiceover) must refuse before spending anything more.
+    const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+    const organization = await getActiveOrganizationForFounder(founderId);
     await recordCost({
       missionId: null,
+      organizationId: organization.id,
       agentId: null,
       contentItemId: item.id,
       model: "n/a",

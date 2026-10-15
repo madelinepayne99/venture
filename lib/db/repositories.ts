@@ -1263,6 +1263,15 @@ export async function listApprovalsForContentItem(contentItemId: string): Promis
 
 export async function recordCost(entry: {
   missionId: string | null;
+  /**
+   * Required — Master Development Mission 7's real attribution fix.
+   * Every caller must resolve and pass the real organization this spend
+   * belongs to (via its mission, its content item, or directly — see
+   * businessAnalystWorkflow.ts for the standalone-research case this
+   * closes). Never optional: an unattributed cost is exactly the gap
+   * this migration exists to close, so there is no silent fallback.
+   */
+  organizationId: string;
   agentId: string | null;
   model: string;
   /** Null for a media-provider call priced in a different unit — see `provider`/`unit`/`quantity`. */
@@ -1283,6 +1292,7 @@ export async function recordCost(entry: {
     .values({
       id: randomUUID(),
       mission_id: entry.missionId,
+      organization_id: entry.organizationId,
       agent_id: entry.agentId,
       model: entry.model,
       input_tokens: entry.inputTokens ?? null,

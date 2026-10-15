@@ -491,6 +491,7 @@ describe("produceAgainFromMission — one Scout mission, many independent produc
     const itemA = await commissionFirstProduction(mission.id, evidence[0]!.id);
     await recordCost({
       missionId: mission.id,
+      organizationId: mission.organization_id!,
       agentId: null,
       contentItemId: itemA.id,
       model: "claude-sonnet-5",

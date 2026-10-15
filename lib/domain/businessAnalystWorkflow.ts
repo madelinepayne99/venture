@@ -84,6 +84,7 @@ export async function requestResearch(
 
     await recordCost({
       missionId: null,
+      organizationId: organization.id,
       agentId: agent?.id ?? null,
       model: outcome.usage.model,
       inputTokens: outcome.usage.inputTokens,
@@ -123,6 +124,7 @@ export async function requestResearch(
       if (error.usage.inputTokens > 0 || error.usage.outputTokens > 0) {
         await recordCost({
           missionId: null,
+          organizationId: organization.id,
           agentId: agent?.id ?? null,
           model: error.usage.model,
           inputTokens: error.usage.inputTokens,
