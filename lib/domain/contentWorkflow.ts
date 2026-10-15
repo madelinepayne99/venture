@@ -93,6 +93,7 @@ import {
 } from "@/lib/inngest/client";
 import { getActiveOrganizationForFounder, requireOrganizationId } from "@/lib/domain/organizationWorkflow";
 import { reserveBudget, settleReservation, BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
+import { assertPlanAllowsNewVideoProduction } from "@/lib/domain/subscriptionWorkflow";
 
 /**
  * The real tenant-ownership check for every founder-facing Content Bot
@@ -248,6 +249,14 @@ export async function approveForProduction(
   }
 
   const project = mission.project_id ? (await getProject(mission.project_id)) ?? null : null;
+
+  // The real "video allowance" entitlement check (Mission 8, Sections
+  // 14-15) — before the mission's own state ever transitions, so a
+  // refused approval leaves the mission exactly where it was rather than
+  // flipping it to "in_production" and then failing. A real, SEPARATE
+  // monthly counter from the dollar AI budget (contentProduction.ts's
+  // own MAX_ITEM_SPEND_USD stays an independent per-item safety cap).
+  await assertPlanAllowsNewVideoProduction(organization.id);
 
   assertTransition(mission.state, "in_production");
   const transition = await transitionMissionState(missionId, [mission.state], "in_production");
@@ -474,6 +483,11 @@ export async function commissionPilotAnyway(
   }
 
   const project = mission.project_id ? (await getProject(mission.project_id)) ?? null : null;
+
+  // The real video-allowance entitlement check (Mission 8, Sections
+  // 14-15) — same real gate as the normal approveForProduction path,
+  // before the mission's state ever transitions.
+  await assertPlanAllowsNewVideoProduction(organization.id);
 
   // Same eligible predecessor state as the normal path (only
   // ready_for_founders_review legally transitions to in_production — see
@@ -713,6 +727,13 @@ export async function produceAgainFromMission(
   }
 
   const project = mission.project_id ? (await getProject(mission.project_id)) ?? null : null;
+
+  // The real video-allowance entitlement check (Mission 8, Sections
+  // 14-15) — every real "Produce Again" is its own new, independent
+  // content item/production slot (see this function's own doc comment),
+  // so it counts against the plan's real monthly allowance exactly like
+  // a first production does.
+  await assertPlanAllowsNewVideoProduction(organization.id);
 
   // The one-time, monotonic mission transition — see this function's own
   // doc comment. Only ever attempted from ready_for_founders_review;

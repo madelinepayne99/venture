@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
 import { createFounder, openNextVersion, updateContentVersion, recordContentAsset, transitionContentItemState } from "@/lib/db/repositories";
 import { createOrganizationWithOwner } from "@/lib/domain/organizationWorkflow";
-import { setupMissionReadyForProduction, makeContentPlan } from "./testUtils";
+import { setupMissionReadyForProduction, makeContentPlan, upgradeTestOrgToPaidPlan } from "./testUtils";
 import {
   approveForProduction,
   cancelContentItem,
@@ -39,6 +39,12 @@ interface TestOrg {
 async function makeTestOrganization(ownerName: string, orgName: string): Promise<TestOrg> {
   const founder = await createFounder({ name: ownerName });
   const { organization } = await createOrganizationWithOwner(founder.id, orgName);
+  // Content Bot is a real paid agent with a real, separate video
+  // allowance (Mission 8, Sections 14-15) — a fresh organization starts
+  // on the free plan (0 video productions/month) by design. This file is
+  // about cross-organization isolation of real production work, not
+  // plan gating (covered separately), so upgrade here.
+  await upgradeTestOrgToPaidPlan(organization.id);
   return { founderId: founder.id, organizationId: organization.id };
 }
 
