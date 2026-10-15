@@ -1121,3 +1121,177 @@ milestones — none of the following were started this round:
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (708 tests) still holds before continuing.
+
+---
+
+# Master Development Mission 7 — The Working Business
+# (Phase 4 only — the rest of Mission 7 was never started)
+
+Mission 7's own brief covered ten phases. Only **Phase 4 (AI cost
+attribution + real atomic spending limits)** was executed before Mission
+8 arrived; Phases 1-3 and 5-10 were never started under their own name,
+though Phase 2's seven-agent matrix and Phase 3's Chief-of-Staff
+demonstration were already substantially satisfied by Mission 6's own
+addendum (see that section above) before Mission 7 was even written.
+
+## Phase 4 — DONE, verified, committed
+
+**Cost attribution repair.** `costs.organization_id` (nullable, FK to
+`organizations`) closed a real gap: Business Analyst's standalone
+research had `missionId: null` and *no* organization attribution at all
+on its `costs` row. `recordCost()` now requires `organizationId`; every
+real call site (Business Analyst's success/failure paths, both Scout
+`recordCost` calls, all 8 Content Bot pipeline call sites via a new
+`resolveContentItemOrganizationId` helper) resolves and passes a real
+one. 184 existing `costs` rows backfilled via `ensureDefaultOrganization()`
+— 0 left null. Migration: `drizzle/0015_curly_post.sql`.
+**Commit `9c5e453`.**
+
+**Real atomic budget enforcement**, `lib/domain/budgetWorkflow.ts`:
+`organization_budgets` (configurable monthly USD limit, default $20) +
+`budget_reservations` (reserved/settled/released lifecycle).
+`reserveBudget()` takes a genuine Postgres row lock (`SELECT ... FOR
+UPDATE` inside a transaction) on the organization's budget row so
+concurrent reservations serialize instead of racing past the limit
+together. Idempotency-key retries return the original reservation
+rather than double-reserving. Found and fixed two real bugs via
+genuine-concurrency testing (documented in the module itself): a
+timezone-default bug (`defaultNow()` isn't reliably UTC under this
+Postgres session) and a connection-pool deadlock under real 10-way
+concurrency (a nested call was borrowing a second pooled connection from
+inside an already-open transaction). **Commit `2198ff4`.**
+
+**Wired into Business Analyst's `requestResearch`** — the simplest real
+integration point (single synchronous call). A request against an
+exhausted organization budget is refused with `BudgetExhaustedError`
+(mapped to HTTP 429 with real committed/limit/requested figures) *before*
+the model is ever called. **Verified live** against the real running dev
+server and real Postgres (not just the test suite): a temporary
+over-budget reservation against the real seeded organization produced a
+genuine HTTP 429 with real figures (`$20.32 committed of $20.00 limit`),
+then was cleaned up, restoring the organization's real state exactly.
+**Commit `2198ff4`.**
+
+**Wired into Scout's `runScoutPipeline`** — same pattern, both the
+initial dispatch and the automatic follow-up pass, reservation key tied
+to `(missionId, research_pass_count)` so a crash-resumed run never
+double-reserves. A refusal settles the mission straight to `failed` with
+a clear reason rather than stranding it in `researching`. **Commit
+`baf50d9`.**
+
+**Explicitly NOT yet done**: **Content Bot's production pipeline has no
+organization-level budget gate yet** — it still only has its own
+*per-item* `MAX_ITEM_SPEND_USD` ($8) cap (Milestone 5's own, unrelated to
+an organization's monthly ceiling). An organization could still create
+unboundedly many content items, each individually capped at $8, with no
+aggregate ceiling. This is the next real gap, named here rather than
+left implicit — see Mission 8's own cost-protection milestone below.
+
+**Verified**: 727/727 tests passing (722 baseline + 5 new across both
+integrations). `npx tsc --noEmit` clean. Production build clean (safe
+stop/rebuild/restart). Two new live-concurrency tests prove genuine
+simultaneous requests against the same budget can never both succeed
+past the limit, and that ten concurrent small reservations never let
+committed spend exceed the real limit.
+
+---
+
+# Master Development Mission 8 — The Full Product Push
+# (Working Agents, Premium Focus View, Free Playground, Subscriptions,
+# Legal Foundations and Relentless End-to-End Testing)
+
+This is a large, multi-session brief (30 sections). This document tracks
+it honestly, milestone by milestone, rather than claiming completion of
+work not yet done. Status values: **Not started / In progress /
+Implemented / Tested / Blocked / Deferred.**
+
+## Section 2 — Baseline audit (Milestone A): DONE
+
+Established from the repository itself, not assumed:
+
+- Branch: `claude/commercial-mvp-polish` (correct, matches the brief).
+- Git status at session start: Mission 7 Phase 4's work (cost
+  attribution + budget enforcement) was fully built but **entirely
+  uncommitted** — carried over from the previous session's context
+  window. Finished, verified, and committed as 3 commits this session
+  (`9c5e453`, `2198ff4`, `baf50d9`) before any Mission 8 work began, per
+  this document's own standing rule to never leave verified work
+  sitting uncommitted across a session boundary.
+- **Real baseline is 727 passing tests**, not the brief's stated 708 —
+  the 708 figure was Mission 6's own final count; 19 more have been
+  added since (14 budget-workflow tests, 3 Business-Analyst budget
+  tests, 2 Scout budget tests).
+- `npx tsc --noEmit`: clean. Production build: clean (safe stop/rebuild/
+  restart cycle, `.next` removed and rebuilt each time).
+- Astra's separate headquarters branch: still does not exist in this
+  repository. Nothing office-related has been touched.
+- Mission 6's own Phase (addendum) already proved Chief of Staff's real
+  multi-agent coordination live, with real money spent, across 4 agents
+  (Business Analyst/Operations/Finance/Executive Assistant) — this
+  substantially satisfies Mission 8 Section 7's "defining demonstration"
+  ask already; see that section above for the full account. Re-running
+  it from scratch this session would mean spending real money solely to
+  re-populate a dashboard, which Section 13's own standing instruction
+  argues against — it is cited here, not repeated.
+
+## Milestone C — AI cost protection (Section 10): IN PROGRESS
+
+Real progress, not complete:
+
+- Business Analyst: **DONE** (Mission 7 Phase 4, commit `2198ff4`).
+- Scout: **DONE** (commit `baf50d9`).
+- Content Bot: **NOT DONE** — still only has its own per-item $8 cap,
+  no organization-level ceiling. This is the single largest remaining
+  gap in cost protection and the natural next task, not started due to
+  its materially higher integration risk (a multi-stage resumable
+  pipeline the brief explicitly protects — see Section 4's "Do not
+  damage... Content Bot's production and publishing approvals").
+- Provider failure accounting, unknown-cost handling, and retry limits:
+  already real and tested (pre-existing, documented above and in
+  CLAUDE.md) — not new this session.
+- Monthly usage accounting and a customer-facing allowance display:
+  `getBudgetStatusForOrganization()` returns real figures but has no UI
+  surface yet — not started.
+
+## Everything else in Mission 8 (Sections 6, 8, 9, 11-20): NOT STARTED
+
+Named explicitly rather than left silently undone: seven-agent
+acceptance matrix as its own artifact (Section 6 — substantially
+covered by existing evidence cited above, but not assembled into the
+explicit automatic/manual/integration-dependent/not-implemented table
+the brief asks for), Focus View redesign (Section 8), Founders' Desk
+presentation polish (Section 9), customer sign-in/account management
+(Section 11), customer onboarding (Section 12), free HQ Playground and
+the Cleaner (Section 13), subscription plans and pricing research
+(Section 14), Stripe/billing foundation (Section 15), legal/privacy
+drafts (Section 16), full QA sweep (Section 17), real customer journey
+testing (Section 18), living-headquarters verification (Section 19),
+mobile/responsive testing (Section 20).
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **727 tests
+   passing**).
+2. Next real engineering action, in priority order per the brief's own
+   Section 21 (uncontrolled spending ranks above general usability and
+   all visual/product work): **wire the same organization budget
+   reservation into Content Bot's production pipeline** — reserve
+   `MAX_ITEM_SPEND_USD` (already a real, documented per-item ceiling) at
+   the point a content item is dispatched (`approveForProduction`'s
+   `content/production_requested` send, and each real revision
+   dispatch), settle when the item reaches a terminal state. Read
+   `lib/domain/contentWorkflow.ts` and `lib/domain/contentProduction.ts`
+   fully before touching either — this pipeline is explicitly protected
+   by the brief (Section 4) and is materially more complex than Scout's
+   single-pass-per-dispatch shape (multiple versions per item, revision
+   loops, asset-level crash recovery already built).
+3. After Content Bot's budget wiring: assemble the explicit seven-agent
+   capability matrix (Section 6) from existing code/evidence — this
+   does not require new paid calls, only inspection and honest
+   write-up, and is one of the Section 21 priorities Mission 8 asks for
+   before visual polish work begins.
+4. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (727 tests) still holds before continuing.
