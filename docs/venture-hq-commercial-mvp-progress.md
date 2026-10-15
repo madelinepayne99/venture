@@ -1234,24 +1234,44 @@ Established from the repository itself, not assumed:
   re-populate a dashboard, which Section 13's own standing instruction
   argues against — it is cited here, not repeated.
 
-## Milestone C — AI cost protection (Section 10): IN PROGRESS
+## Milestone C — AI cost protection (Section 10): DONE for all three real paid agents
 
-Real progress, not complete:
+Every real paid surface now has a genuine organization-level monthly
+budget ceiling, enforced atomically before any real model/provider call,
+never just observed after the fact:
 
 - Business Analyst: **DONE** (Mission 7 Phase 4, commit `2198ff4`).
 - Scout: **DONE** (commit `baf50d9`).
-- Content Bot: **NOT DONE** — still only has its own per-item $8 cap,
-  no organization-level ceiling. This is the single largest remaining
-  gap in cost protection and the natural next task, not started due to
-  its materially higher integration risk (a multi-stage resumable
-  pipeline the brief explicitly protects — see Section 4's "Do not
-  damage... Content Bot's production and publishing approvals").
+- Content Bot: **DONE** (commit `9cba750`) — reserves the item's real
+  *remaining* room under its existing per-item $8 cap
+  (`MAX_ITEM_SPEND_USD`), scoped per production version (each version is
+  its own real spend event, mirroring Scout's per-pass reservations), so
+  multiple versions of one item can never together reserve more than the
+  item could ever actually spend. 2 new tests; all 91 pre-existing
+  Content Bot pipeline/quality/retry/produce-again/reference-continuity/
+  organization-isolation tests pass unchanged — this delicate,
+  explicitly-protected pipeline's resumability, cancellation, and
+  version/attempt caps were not touched, only wrapped.
 - Provider failure accounting, unknown-cost handling, and retry limits:
   already real and tested (pre-existing, documented above and in
   CLAUDE.md) — not new this session.
-- Monthly usage accounting and a customer-facing allowance display:
-  `getBudgetStatusForOrganization()` returns real figures but has no UI
-  surface yet — not started.
+- **Remaining within this milestone**: a customer-facing allowance
+  display. `getBudgetStatusForOrganization()` returns real figures
+  (committed/limit/remaining/exhausted) but has no UI surface yet — this
+  is Section 10's own "Clear customer-facing allowance status" ask, not
+  started. Natural pairing with Section 8 (Focus View redesign) or
+  Section 9 (Founders' Desk polish) rather than its own isolated task.
+- **Also not done**: an actual admin/founder path to configure a
+  different `monthly_usd_limit` per organization — `organization_budgets`
+  rows are created on first reservation with the real $20 default; no
+  route or UI writes a different value yet. Needed before Section 14/15
+  (pricing tiers, billing) can translate a paid plan into a real,
+  different enforced ceiling.
+
+Full suite after all three integrations: **729/729 passing.** `npx tsc
+--noEmit` clean. Production build clean. Commits: `9c5e453` (cost
+attribution), `2198ff4` (budget module + Business Analyst), `baf50d9`
+(Scout), `9cba750` (Content Bot).
 
 ## Everything else in Mission 8 (Sections 6, 8, 9, 11-20): NOT STARTED
 
@@ -1270,26 +1290,25 @@ mobile/responsive testing (Section 20).
 
 ## Exact restart point for a future session
 
-1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **727 tests
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **729 tests
    passing**).
-2. Next real engineering action, in priority order per the brief's own
-   Section 21 (uncontrolled spending ranks above general usability and
-   all visual/product work): **wire the same organization budget
-   reservation into Content Bot's production pipeline** — reserve
-   `MAX_ITEM_SPEND_USD` (already a real, documented per-item ceiling) at
-   the point a content item is dispatched (`approveForProduction`'s
-   `content/production_requested` send, and each real revision
-   dispatch), settle when the item reaches a terminal state. Read
-   `lib/domain/contentWorkflow.ts` and `lib/domain/contentProduction.ts`
-   fully before touching either — this pipeline is explicitly protected
-   by the brief (Section 4) and is materially more complex than Scout's
-   single-pass-per-dispatch shape (multiple versions per item, revision
-   loops, asset-level crash recovery already built).
-3. After Content Bot's budget wiring: assemble the explicit seven-agent
-   capability matrix (Section 6) from existing code/evidence — this
-   does not require new paid calls, only inspection and honest
-   write-up, and is one of the Section 21 priorities Mission 8 asks for
-   before visual polish work begins.
+2. Milestone C (AI cost protection) is now DONE for all three real paid
+   agents — see above. Next real engineering action: assemble the
+   explicit seven-agent capability matrix (Section 6) from existing
+   code/evidence — no new paid calls required, pure inspection and
+   honest write-up — then move to whichever of Section 10's two small
+   remaining items (a customer-facing allowance display, or an actual
+   way to configure a non-default `monthly_usd_limit`) is more useful
+   once Focus View work (Section 8) begins, since both pair naturally
+   with that UI work rather than standing alone.
+3. After the capability matrix: per the brief's own Section 21 priority
+   order (data leaks > unauthorized actions > uncontrolled spending >
+   data corruption > broken agent workflows > broken payments >
+   broken onboarding > usability > visual polish > decorative features),
+   with spending now protected, the next highest-priority unstarted item
+   is Section 8 (Focus View redesign) or Section 11/12 (customer
+   sign-in/onboarding) — both still fully unstarted, pick based on
+   founder preference if asked.
 4. Astra's branch still doesn't exist — check again before touching
    anything office-related.
 
