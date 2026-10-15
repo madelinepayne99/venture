@@ -41,6 +41,7 @@ import type {
   Project,
   WorkspaceType,
   Organization,
+  VentureStage,
   OrganizationMember,
   OrganizationMemberRole,
   OrganizationAgent,
@@ -89,12 +90,21 @@ export async function createFounder(input: { name: string; email?: string | null
 
 // --- Organizations (Master Development Mission 6 — multi-tenancy) -------
 
-export async function createOrganization(input: { name: string; ownerFounderId: string }): Promise<Organization> {
+export async function createOrganization(input: {
+  name: string;
+  ownerFounderId: string;
+  ventureStage?: VentureStage | null;
+}): Promise<Organization> {
   const db = await getDb();
   const id = randomUUID();
   const [row] = await db
     .insert(schema.organizations)
-    .values({ id, name: input.name, owner_founder_id: input.ownerFounderId })
+    .values({
+      id,
+      name: input.name,
+      owner_founder_id: input.ownerFounderId,
+      venture_stage: input.ventureStage ?? null,
+    })
     .returning();
   return row!;
 }

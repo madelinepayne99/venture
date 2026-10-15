@@ -53,12 +53,28 @@ export const founders = pgTable("founders", {
 // "who owns this organization" is a single indexed lookup, not a query over
 // every member row — the same reasoning `missions.founder_id` already uses
 // instead of forcing every read through a join.
+// Plain text, not a Postgres enum — same reasoning as every other status/
+// type column in this codebase (see schema.ts's own data-model doc
+// comment): the app layer is the source of truth for what values are
+// legal, and a DB enum would need its own migration every time the
+// vocabulary changes.
+export const ventureStageValues = ["new_venture", "existing_business"] as const;
+
 export const organizations = pgTable("organizations", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
   owner_founder_id: text("owner_founder_id")
     .notNull()
     .references(() => founders.id),
+  // A real, customer-provided answer from onboarding (Mission 8, Section
+  // 11/12's "choose whether they are starting a business or running an
+  // existing business") — nullable because it's only ever set going
+  // forward: Ellis and Maddie's existing "Founders' HQ" (and any
+  // organization created before this column existed) legitimately has no
+  // answer to a question it was never asked, and backfilling a guess
+  // would be exactly the kind of fabricated data this codebase refuses
+  // to invent.
+  venture_stage: text("venture_stage"),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
 

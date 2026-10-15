@@ -6,7 +6,10 @@ import {
   listOrganizationMembershipsForFounder,
   getOrganizationMembership,
 } from "@/lib/db/repositories";
-import type { Organization, OrganizationMember, OrganizationMemberRole } from "@/lib/db/types";
+import type { Organization, OrganizationMember, OrganizationMemberRole, VentureStage } from "@/lib/db/types";
+import { ventureStageValues } from "@/lib/db/schema";
+
+const VENTURE_STAGE_VALUES: readonly VentureStage[] = ventureStageValues;
 
 /**
  * The real tenant-boundary enforcement layer (Master Development Mission
@@ -169,12 +172,16 @@ export function requireOrganizationId(organizationId: string | null, context: st
 export async function createOrganizationWithOwner(
   ownerFounderId: string,
   name: string,
+  ventureStage?: VentureStage | null,
 ): Promise<{ organization: Organization; membership: OrganizationMember }> {
   const trimmed = name?.trim();
   if (!trimmed) throw new OrganizationValidationError(["An organization needs a non-empty name."]);
   if (trimmed.length > 200) throw new OrganizationValidationError(["Organization name must be 200 characters or fewer."]);
+  if (ventureStage != null && !VENTURE_STAGE_VALUES.includes(ventureStage)) {
+    throw new OrganizationValidationError([`"${ventureStage}" is not a real venture stage.`]);
+  }
 
-  const organization = await createOrganization({ name: trimmed, ownerFounderId });
+  const organization = await createOrganization({ name: trimmed, ownerFounderId, ventureStage: ventureStage ?? null });
   const membership = await addOrganizationMember({ organizationId: organization.id, founderId: ownerFounderId, role: "owner" });
   return { organization, membership };
 }

@@ -7,6 +7,7 @@ import type * as schema from "./schema";
 
 export type Founder = InferSelectModel<typeof schema.founders>;
 
+export type VentureStage = (typeof schema.ventureStageValues)[number];
 export type Organization = InferSelectModel<typeof schema.organizations>;
 export type OrganizationMemberRole = (typeof schema.organizationMemberRoleValues)[number];
 export type OrganizationMember = Omit<InferSelectModel<typeof schema.organizationMembers>, "role"> & {

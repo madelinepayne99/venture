@@ -7,10 +7,12 @@ import {
   listProjects,
   listFounders,
   listAgentTaskWorldSignalsForOrganization,
+  listOrganizationMembershipsForFounder,
 } from "@/lib/db/repositories";
 import { auth } from "@/auth";
 import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 import { FoundersDeskApp } from "@/components/founders-desk/FoundersDeskApp";
+import { OnboardingFlow } from "@/components/onboarding/OnboardingFlow";
 
 // This page reads live from Postgres on every request — it must never be
 // statically prerendered, or founders would see build-time data forever.
@@ -21,6 +23,20 @@ export default async function HomePage() {
   // middleware.ts already redirects an unauthenticated request before this
   // component ever renders — session is present by the time we get here.
   const signedInFounderName = session?.founderName ?? "Unknown founder";
+
+  // Mission 8, Sections 11-12: a genuinely new customer (real self-service
+  // sign-up, see auth.ts's ALLOW_NEW_CUSTOMER_SIGNUP) has a real founder
+  // row but, on their very first visit, zero organization memberships.
+  // getActiveOrganizationForFounder below would throw for them (by
+  // design — "no organization" is a real error for every other caller)
+  // — checked here first so a brand-new founder gets the real onboarding
+  // flow instead of a crashed page. Ellis and Maddie, and every other
+  // founder with a real membership, never see this — identical behavior
+  // to before this check existed.
+  const memberships = await listOrganizationMembershipsForFounder(session!.founderId!);
+  if (memberships.length === 0) {
+    return <OnboardingFlow founderName={signedInFounderName} />;
+  }
 
   // Organization-scoped since Master Development Mission 6 — resolved
   // server-side from the real signed-in founder's own real membership,

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
 import { listFounders } from "@/lib/db/repositories";
-import { isAllowedFounderEmail, resolveFounderIdentity } from "@/lib/auth/allowList";
+import { isAllowedFounderEmail, resolveFounderIdentity, ensureFounderAccount } from "@/lib/auth/allowList";
 
 // The allow-list IS the founders table (see lib/auth/allowList.ts) — these
 // tests exercise the actual server-side check used in auth.ts's signIn
@@ -49,5 +49,60 @@ describe("founder allow-list", () => {
     // Fresh seed data has founders with email: null — nothing should match.
     expect(await isAllowedFounderEmail("ellis@example.test")).toBe(false);
     expect(await isAllowedFounderEmail("maddie@example.test")).toBe(false);
+  });
+});
+
+describe("ensureFounderAccount — real self-service account creation (Mission 8)", () => {
+  beforeEach(async () => {
+    await resetDbForTests();
+  });
+
+  it("creates a real new founder row for a genuinely unrecognized email", async () => {
+    const before = await listFounders();
+    const identity = await ensureFounderAccount("new-customer@example.test", "New Customer");
+
+    expect(identity.founderName).toBe("New Customer");
+    const after = await listFounders();
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.some((f) => f.id === identity.founderId && f.email === "new-customer@example.test")).toBe(true);
+  });
+
+  it("is idempotent — calling it again for the same email returns the same real founder, never a duplicate", async () => {
+    const first = await ensureFounderAccount("repeat-customer@example.test", "Repeat Customer");
+    const before = await listFounders();
+    const second = await ensureFounderAccount("repeat-customer@example.test", "Repeat Customer");
+    const after = await listFounders();
+
+    expect(second.founderId).toBe(first.founderId);
+    expect(after).toHaveLength(before.length);
+  });
+
+  it("never touches or recreates an already-recognized founder (e.g. Ellis)", async () => {
+    const founders = await listFounders();
+    const ellis = founders.find((f) => f.name === "Ellis Scott")!;
+    const { getDb } = await import("@/lib/db/client");
+    const schema = await import("@/lib/db/schema");
+    const { eq } = await import("drizzle-orm");
+    const db = await getDb();
+    await db.update(schema.founders).set({ email: "ellis@example.test" }).where(eq(schema.founders.id, ellis.id));
+
+    const identity = await ensureFounderAccount("ellis@example.test", "Someone Claiming To Be Ellis");
+
+    expect(identity.founderId).toBe(ellis.id);
+    expect(identity.founderName).toBe("Ellis Scott"); // the real existing name, not overwritten
+    const after = await listFounders();
+    expect(after).toHaveLength(founders.length); // no new row created
+  });
+
+  it("two genuinely concurrent first-sign-ins for the same brand-new email create exactly one founder", async () => {
+    const before = await listFounders();
+    const [a, b] = await Promise.all([
+      ensureFounderAccount("concurrent-customer@example.test", "Concurrent Customer"),
+      ensureFounderAccount("concurrent-customer@example.test", "Concurrent Customer"),
+    ]);
+    const after = await listFounders();
+
+    expect(a.founderId).toBe(b.founderId);
+    expect(after).toHaveLength(before.length + 1);
   });
 });
