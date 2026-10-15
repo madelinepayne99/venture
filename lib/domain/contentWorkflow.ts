@@ -37,6 +37,8 @@ import {
   completeStage,
   failStage,
   recordCost,
+  contentVersionSpendUsd,
+  contentItemSpendUsd,
 } from "@/lib/db/repositories";
 import { MissionConcurrencyError, assertTransition } from "@/lib/domain/missionStates";
 import {
@@ -55,6 +57,7 @@ import {
   MAX_VERSIONS_PER_ITEM,
   MAX_GENERATION_ATTEMPTS_PER_VERSION,
   MAX_ASSET_CALLS_PER_VERSION,
+  MAX_ITEM_SPEND_USD,
   MAX_QC_REGENERATIONS_PER_VERSION,
   MAX_REFERENCE_REGENERATIONS,
   assertItemBudgetRemaining,
@@ -89,6 +92,7 @@ import {
   CONTENT_REVISION_REQUESTED_EVENT,
 } from "@/lib/inngest/client";
 import { getActiveOrganizationForFounder, requireOrganizationId } from "@/lib/domain/organizationWorkflow";
+import { reserveBudget, settleReservation, BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
 
 /**
  * The real tenant-ownership check for every founder-facing Content Bot
@@ -3267,6 +3271,60 @@ export async function runContentProductionPipeline(
     return item;
   }
 
+  // The real organization-level enforcement point (Mission 8 Milestone C)
+  // — mirrors Scout's and Business Analyst's own gate, scoped to this
+  // specific version rather than the whole item: each version is a
+  // genuinely separate real production attempt (the item's own
+  // MAX_VERSIONS_PER_ITEM cap already treats them that way), so the
+  // reservation's idempotency key is the version's own id — a
+  // crash-resumed run for the SAME version reserves against the SAME key
+  // and gets back the existing reservation rather than double-counting;
+  // a genuinely new version (fresh or revision) gets its own key. The
+  // worst-case ceiling reserved is the item's own *remaining* room under
+  // MAX_ITEM_SPEND_USD (already a real, enforced per-item cap via
+  // assertItemBudgetRemaining) — never the full $8 regardless of what
+  // prior versions already spent, so multiple versions of the same item
+  // can never together reserve more than the item could ever actually
+  // spend. A refusal settles the item straight to "failed" with a clear
+  // reason — nothing was spent on this version, so there's no cost to
+  // record — rather than leaving a background job's thrown error strand
+  // it in "generating".
+  const organizationId = await resolveContentItemOrganizationId(item.mission_id);
+  const alreadySpentOnItem = await contentItemSpendUsd(item.id);
+  const remainingItemCeiling = Math.max(0, MAX_ITEM_SPEND_USD - alreadySpentOnItem);
+  let reservation;
+  try {
+    reservation = await reserveBudget({
+      organizationId,
+      purpose: `content_production_v${version.version_number}`,
+      estimatedUsd: remainingItemCeiling,
+      idempotencyKey: `content-version-${version.id}`,
+    });
+  } catch (error) {
+    if (error instanceof BudgetExhaustedError) {
+      await updateContentVersion(version.id, {
+        status: "failed",
+        failure_reason: error.message,
+        completed_at: new Date().toISOString(),
+      });
+      const refusal = await transitionContentItemState(item.id, ["generating"], "failed", {
+        failure_reason: error.message,
+      });
+      await recordActivity({
+        missionId: item.mission_id,
+        actor: "system",
+        action: "production_refused_budget_exhausted",
+        detail: error.message,
+      });
+      // transitionContentItemState always returns the item's real current
+      // state either way — if it moved on (e.g. cancelled) before this
+      // could land, that's the same non-overwrite guarantee this function
+      // follows everywhere else.
+      return refusal.item;
+    }
+    throw error;
+  }
+
   const brief = item.brief as ProductionBrief;
   const ctx = item.audience_context as AudienceContext;
 
@@ -3291,7 +3349,9 @@ export async function runContentProductionPipeline(
     }
 
     await runAssemblyStage(item, version, ctx, deps);
-    return await runFinalisationStage(item, version);
+    const finalised = await runFinalisationStage(item, version);
+    await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
+    return finalised;
   } catch (error) {
     if (error instanceof ProductionMovedOn) {
       // The version itself must not be left stuck at status "generating"
@@ -3311,6 +3371,7 @@ export async function runContentProductionPipeline(
         action: "production_discarded_after_state_change",
         detail: `Content item was already "${error.item.state}" by the time production work continued — remaining work was not applied, but any real cost already spent was recorded.`,
       });
+      await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
       return error.item;
     }
 
@@ -3343,6 +3404,7 @@ export async function runContentProductionPipeline(
         action: "production_discarded_after_state_change",
         detail: `Production ${isRefusal ? "was refused" : "failed"} (${reason}), but the item was already "${settlement.item.state}" — its state was not overwritten.`,
       });
+      await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
       return settlement.item;
     }
 
@@ -3352,6 +3414,7 @@ export async function runContentProductionPipeline(
       action: isRefusal ? "production_blocked" : "production_failed",
       detail: reason,
     });
+    await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
     return settlement.item;
   }
 }

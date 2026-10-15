@@ -1355,6 +1355,23 @@ export async function contentItemSpendUsd(contentItemId: string): Promise<number
   return row?.total ?? 0;
 }
 
+/**
+ * Sum of real, known (non-null) usd_cost rows for one content *version* —
+ * narrower than contentItemSpendUsd (item-wide), used by the organization
+ * budget reservation's settlement (Mission 8 Milestone C): one version is
+ * one real production attempt/spend event (mirrors Scout's one research
+ * pass), so its own reservation settles with just its own real cost, not
+ * the item's cumulative total across every version.
+ */
+export async function contentVersionSpendUsd(contentVersionId: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${schema.costs.usd_cost}), 0)` })
+    .from(schema.costs)
+    .where(and(eq(schema.costs.content_version_id, contentVersionId), sql`${schema.costs.usd_cost} is not null`));
+  return row?.total ?? 0;
+}
+
 export async function listLedgerEntries(limit = 50): Promise<LedgerEntry[]> {
   const db = await getDb();
   return db.select().from(schema.ledgerEntries).orderBy(desc(schema.ledgerEntries.created_at)).limit(limit);
