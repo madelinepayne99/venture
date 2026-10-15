@@ -2,6 +2,7 @@ import type { Project, WorkspaceType } from "@/lib/db/types";
 import { WorkspacePanel } from "../WorkspacePanel";
 import { FocusCard } from "./FocusPrimitives";
 import { BillingSection } from "./BillingSection";
+import { AccountSection } from "./AccountSection";
 
 /**
  * Settings (Mission 8 Focus View redesign) — workspace management, plus
@@ -26,6 +27,7 @@ export function SettingsSection({
       <FocusCard>
         <WorkspacePanel projects={projects} onCreate={onCreateWorkspace} />
       </FocusCard>
+      <AccountSection />
     </div>
   );
 }

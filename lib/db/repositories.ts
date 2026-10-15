@@ -49,6 +49,8 @@ import type {
   SubscriptionPlan,
   OrganizationSubscription,
   SubscriptionStatus,
+  SupportRequest,
+  SupportRequestStatus,
 } from "./types";
 
 function now(): string {
@@ -112,6 +114,61 @@ export async function createFounder(input: { name: string; email?: string | null
     .values({ id: randomUUID(), name: input.name, email: input.email ?? null })
     .returning();
   return row!;
+}
+
+/**
+ * Real account deletion (Mission 10) — anonymize, never hard-delete. Sets
+ * name to a clearly-labeled placeholder, frees the real email (so the
+ * same person could genuinely sign up again later, and so the unique
+ * constraint on `founders.email` never blocks a different real person
+ * from using it), and stamps `deleted_at`. Every real mission/cost/
+ * deliverable row this founder ever created keeps its real `founder_id`
+ * reference — this never touches those tables.
+ */
+export async function anonymizeFounder(founderId: string): Promise<Founder> {
+  const db = await getDb();
+  const [row] = await db
+    .update(schema.founders)
+    .set({ name: "Deleted Founder", email: null, deleted_at: now() })
+    .where(eq(schema.founders.id, founderId))
+    .returning();
+  return row!;
+}
+
+/**
+ * Real organization closure (Mission 10) — stamps `closed_at`, never a
+ * hard delete (see schema.ts's own doc comment: every real mission/cost/
+ * deliverable this organization ever produced keeps its real history).
+ * Only ever called for a sole owner with no other real members —
+ * enforced in `lib/domain/accountWorkflow.ts`, not here.
+ */
+export async function closeOrganization(organizationId: string): Promise<Organization> {
+  const db = await getDb();
+  const [row] = await db
+    .update(schema.organizations)
+    .set({ closed_at: now() })
+    .where(eq(schema.organizations.id, organizationId))
+    .returning();
+  return row!;
+}
+
+/**
+ * Deletes the real Auth.js `auth_user` row matching this email — the
+ * actual mechanism that signs a deleted founder out everywhere and
+ * refuses any future sign-in attempt through their old session, since
+ * `auth_user`/`founders` are linked by email, not a direct foreign key
+ * (see auth.ts's `resolveFounderIdentity`). `authAccounts`/
+ * `authSessions` both have `onDelete: "cascade"` on their `userId` FK
+ * (schema.ts), so this one delete also removes every real session and
+ * linked OAuth account row for them — no separate cleanup needed.
+ * Returns `false` if no matching `auth_user` row exists (e.g. this
+ * founder never actually signed in), which is a normal, safe outcome,
+ * not an error.
+ */
+export async function deleteAuthUserByEmail(email: string): Promise<boolean> {
+  const db = await getDb();
+  const deleted = await db.delete(schema.authUsers).where(eq(schema.authUsers.email, email)).returning();
+  return deleted.length > 0;
 }
 
 // --- Organizations (Master Development Mission 6 — multi-tenancy) -------
@@ -1572,6 +1629,59 @@ export async function ledgerTotalUsdForOrganization(organizationId: string): Pro
     .from(schema.ledgerEntries)
     .where(eq(schema.ledgerEntries.organization_id, organizationId));
   return row?.total ?? 0;
+}
+
+// --- Customer support (Mission 10) --------------------------------------
+
+export async function createSupportRequest(input: {
+  organizationId: string | null;
+  founderId: string;
+  subject: string;
+  message: string;
+}): Promise<SupportRequest> {
+  const db = await getDb();
+  const ts = now();
+  const [row] = await db
+    .insert(schema.supportRequests)
+    .values({
+      id: randomUUID(),
+      organization_id: input.organizationId,
+      founder_id: input.founderId,
+      subject: input.subject,
+      message: input.message,
+      status: "open",
+      created_at: ts,
+      updated_at: ts,
+    })
+    .returning();
+  return row as SupportRequest;
+}
+
+/** A founder's own real support requests — never another founder's, regardless of organization. */
+export async function listSupportRequestsForFounder(founderId: string): Promise<SupportRequest[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.supportRequests)
+    .where(eq(schema.supportRequests.founder_id, founderId))
+    .orderBy(desc(schema.supportRequests.created_at));
+  return rows as SupportRequest[];
+}
+
+/**
+ * Real, server-side rate-limit check — how many support requests this
+ * founder has filed since `sinceIso`. The actual spam/abuse protection
+ * mechanism (see `submitSupportRequest` in `lib/domain/supportWorkflow.ts`
+ * for the limit itself); this just counts, it never decides what the
+ * limit is.
+ */
+export async function countSupportRequestsForFounderSince(founderId: string, sinceIso: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.supportRequests)
+    .where(and(eq(schema.supportRequests.founder_id, founderId), sql`${schema.supportRequests.created_at} >= ${sinceIso}`));
+  return Number(row?.n ?? 0);
 }
 
 // --- Activity history -------------------------------------------------------

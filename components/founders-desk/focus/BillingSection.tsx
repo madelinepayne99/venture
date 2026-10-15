@@ -12,8 +12,21 @@ interface BillingStatus {
     currentPeriodEnd: string | null;
     hasStripeCustomer: boolean;
   };
-  plan: { id: string; display_name: string; monthly_price_gbp: number | null };
+  plan: {
+    id: string;
+    display_name: string;
+    monthly_price_gbp: number | null;
+    monthly_ai_budget_usd: number;
+    monthly_video_allowance: number;
+  };
   stripeConfigured: boolean;
+}
+
+interface BudgetStatus {
+  monthlyLimitUsd: number;
+  committedUsd: number;
+  remainingUsd: number;
+  exhausted: boolean;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -35,6 +48,8 @@ const STATUS_LABEL: Record<string, string> = {
  */
 export function BillingSection() {
   const [status, setStatus] = useState<BillingStatus | null>(null);
+  const [budget, setBudget] = useState<BudgetStatus | null>(null);
+  const [supportContactEmail, setSupportContactEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [portalBusy, setPortalBusy] = useState(false);
@@ -44,9 +59,18 @@ export function BillingSection() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/billing/status");
-      if (!res.ok) throw new Error();
-      setStatus(await res.json());
+      const [statusRes, budgetRes, supportRes] = await Promise.all([
+        fetch("/api/billing/status"),
+        fetch("/api/budget"),
+        fetch("/api/support"),
+      ]);
+      if (!statusRes.ok || !budgetRes.ok) throw new Error();
+      setStatus(await statusRes.json());
+      setBudget(await budgetRes.json());
+      if (supportRes.ok) {
+        const supportBody = await supportRes.json();
+        setSupportContactEmail(supportBody.supportContactEmail ?? null);
+      }
     } catch {
       setError("Could not load billing status right now.");
     } finally {
@@ -121,6 +145,57 @@ export function BillingSection() {
               </p>
             )}
             {portalError && <p className="text-xs text-status-danger">{portalError}</p>}
+
+            {budget && (
+              <div className="rounded-lg border border-focus-border bg-focus-ivory px-4 py-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-focus-slate">Your AI allowance this month</p>
+                <div className="mt-2 flex items-baseline justify-between">
+                  <p className="text-sm text-focus-ink">
+                    ${budget.committedUsd.toFixed(2)} used of ${budget.monthlyLimitUsd.toFixed(2)}
+                  </p>
+                  <p className={`text-xs font-medium ${budget.exhausted ? "text-status-danger" : "text-focus-slate"}`}>
+                    ${budget.remainingUsd.toFixed(2)} remaining
+                  </p>
+                </div>
+                <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-focus-border">
+                  <div
+                    className={`h-full rounded-full ${budget.exhausted ? "bg-status-danger" : "bg-focus-emerald"}`}
+                    style={{
+                      width: `${budget.monthlyLimitUsd > 0 ? Math.min(100, (budget.committedUsd / budget.monthlyLimitUsd) * 100) : 0}%`,
+                    }}
+                  />
+                </div>
+                {budget.exhausted && (
+                  <p className="mt-2 text-xs text-status-danger">
+                    This month&apos;s AI allowance is used up — new AI work will be refused until it resets or you
+                    upgrade your plan.
+                  </p>
+                )}
+                <p className="mt-2 text-xs text-focus-slate">
+                  {status.plan.monthly_video_allowance > 0
+                    ? `Your plan also includes up to ${status.plan.monthly_video_allowance} video production${status.plan.monthly_video_allowance === 1 ? "" : "s"} per month, controlled separately from the AI budget above.`
+                    : "Your plan does not include video production — this is controlled separately from the AI budget above."}
+                </p>
+              </div>
+            )}
+
+            <div className="rounded-lg border border-focus-border bg-focus-ivory px-4 py-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-focus-slate">Cancellation</p>
+              <p className="mt-1 text-sm text-focus-ink">
+                {status.subscription.hasStripeCustomer
+                  ? "You can cancel or change your plan any time using \"Manage billing\" above — changes take effect at the end of your current billing period."
+                  : "You're on the free plan — there's nothing to cancel. Choose a paid plan any time from \"View plans\"."}
+              </p>
+            </div>
+
+            <div className="rounded-lg border border-focus-border bg-focus-ivory px-4 py-3">
+              <p className="text-xs font-medium uppercase tracking-wide text-focus-slate">Need help with billing?</p>
+              <p className="mt-1 text-sm text-focus-ink">
+                {supportContactEmail
+                  ? `Contact us at ${supportContactEmail}, or use the Support section for a tracked request.`
+                  : "Use the Support section to send us a tracked request."}
+              </p>
+            </div>
           </div>
         ) : null}
       </div>

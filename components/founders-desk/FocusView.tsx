@@ -11,6 +11,7 @@ import { FoundersDeskSection } from "./focus/FoundersDeskSection";
 import { FinanceSection } from "./focus/FinanceSection";
 import { ReportsSection } from "./focus/ReportsSection";
 import { SettingsSection } from "./focus/SettingsSection";
+import { SupportSection } from "./focus/SupportSection";
 
 const SECTION_STORAGE_KEY = "venture-hq-focus-section";
 
@@ -18,7 +19,16 @@ function readStoredSection(): FocusSection {
   if (typeof window === "undefined") return "overview";
   try {
     const stored = window.localStorage.getItem(SECTION_STORAGE_KEY);
-    const valid: FocusSection[] = ["overview", "employees", "tasks", "foundersDesk", "finance", "reports", "settings"];
+    const valid: FocusSection[] = [
+      "overview",
+      "employees",
+      "tasks",
+      "foundersDesk",
+      "finance",
+      "reports",
+      "settings",
+      "support",
+    ];
     return valid.includes(stored as FocusSection) ? (stored as FocusSection) : "overview";
   } catch {
     return "overview";
@@ -144,6 +154,7 @@ export function FocusView({
         {section === "finance" && <FinanceSection ledgerEntries={ledgerEntries} ledgerTotal={ledgerTotal} />}
         {section === "reports" && <ReportsSection />}
         {section === "settings" && <SettingsSection projects={projects} onCreateWorkspace={onCreateWorkspace} />}
+        {section === "support" && <SupportSection />}
       </div>
     </div>
   );

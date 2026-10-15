@@ -1,6 +1,14 @@
 "use client";
 
-export type FocusSection = "overview" | "employees" | "tasks" | "foundersDesk" | "finance" | "reports" | "settings";
+export type FocusSection =
+  | "overview"
+  | "employees"
+  | "tasks"
+  | "foundersDesk"
+  | "finance"
+  | "reports"
+  | "settings"
+  | "support";
 
 const SECTIONS: { key: FocusSection; label: string }[] = [
   { key: "overview", label: "Overview" },
@@ -10,6 +18,7 @@ const SECTIONS: { key: FocusSection; label: string }[] = [
   { key: "finance", label: "Finance" },
   { key: "reports", label: "Reports" },
   { key: "settings", label: "Settings" },
+  { key: "support", label: "Support" },
 ];
 
 /**

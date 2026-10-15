@@ -65,6 +65,12 @@ import {
 } from "@/lib/domain/subscriptionWorkflow";
 import { PlanNotFoundError, PlanNotPurchasableError } from "@/lib/domain/billingWorkflow";
 import { StripeNotConfiguredError } from "@/lib/billing/stripe";
+import { SupportRequestValidationError, SupportRequestRateLimitError } from "@/lib/domain/supportWorkflow";
+import {
+  AccountDeletionConfirmationError,
+  AccountDeletionBlockedError,
+  AccountAlreadyDeletedError,
+} from "@/lib/domain/accountWorkflow";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -249,6 +255,24 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     // itself isn't configured in this environment, never a silent
     // failure or a fabricated success.
     return NextResponse.json({ error: error.message }, { status: 503 });
+  }
+  if (error instanceof SupportRequestValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof SupportRequestRateLimitError) {
+    return NextResponse.json({ error: error.message }, { status: 429 });
+  }
+  if (error instanceof AccountDeletionConfirmationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  if (error instanceof AccountDeletionBlockedError) {
+    return NextResponse.json(
+      { error: error.message, organizationId: error.organizationId, otherMemberCount: error.otherMemberCount },
+      { status: 409 },
+    );
+  }
+  if (error instanceof AccountAlreadyDeletedError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof Error && error.message.includes("not found")) {
     return NextResponse.json({ error: error.message }, { status: 404 });

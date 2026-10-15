@@ -91,6 +91,20 @@ export async function createBillingPortalSession(input: {
 }
 
 /**
+ * Real, immediate subscription cancellation (Mission 10 — account
+ * deletion). Deliberately `stripe.subscriptions.cancel`, not the
+ * `cancel_at_period_end` update `startBillingPortalSession`'s self-serve
+ * flow lets a customer choose themselves — closing an account is a final,
+ * irreversible action, so any real outstanding subscription is cancelled
+ * now, not left to run (and bill) until the end of a period nobody will
+ * be there to use.
+ */
+export async function cancelSubscriptionImmediately(stripeSubscriptionId: string): Promise<Stripe.Subscription> {
+  const stripe = getStripeClient();
+  return stripe.subscriptions.cancel(stripeSubscriptionId);
+}
+
+/**
  * Real webhook signature verification — `stripe.webhooks.constructEvent`
  * against the RAW request body (never JSON-parsed first; Stripe's
  * signature is computed over the exact bytes sent) and the real

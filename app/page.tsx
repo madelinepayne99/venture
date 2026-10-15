@@ -10,7 +10,7 @@ import {
   listOrganizationMembershipsForFounder,
 } from "@/lib/db/repositories";
 import { auth } from "@/auth";
-import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { getActiveOrganizationForFounder, OrganizationNotFoundError } from "@/lib/domain/organizationWorkflow";
 import { FoundersDeskApp } from "@/components/founders-desk/FoundersDeskApp";
 import { OnboardingFlow } from "@/components/onboarding/OnboardingFlow";
 
@@ -44,7 +44,23 @@ export default async function HomePage() {
   // organization-scoped too (Phase F): a pure data-scoping change, zero
   // changes to the 3D world itself (Astra's own design) — see
   // listLeadAssignmentsForOrganization's own doc comment.
-  const organization = await getActiveOrganizationForFounder(session!.founderId!);
+  //
+  // Mission 10: getActiveOrganizationForFounder now also excludes any
+  // organization closed via real account deletion (closed_at set) — a
+  // founder whose every real membership has been closed has, in effect,
+  // no organization, the same as a brand-new founder with zero
+  // memberships at all. Caught here for the same reason the zero-
+  // memberships case is checked above: so this reads as the real
+  // onboarding flow rather than a crashed page.
+  let organization;
+  try {
+    organization = await getActiveOrganizationForFounder(session!.founderId!);
+  } catch (error) {
+    if (error instanceof OrganizationNotFoundError) {
+      return <OnboardingFlow founderName={signedInFounderName} />;
+    }
+    throw error;
+  }
 
   // Mission 10: both ledger calls and the founders listing below used to be
   // globally unscoped (listLedgerEntries/ledgerTotalUsd/listFounders) — a

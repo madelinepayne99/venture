@@ -130,18 +130,31 @@ export async function getActiveOrganizationForFounder(founderId: string): Promis
   if (memberships.length === 0) {
     throw new OrganizationNotFoundError(`Founder ${founderId} does not belong to any organization yet.`);
   }
+
+  // Mission 10: a closed organization (deleteFounderAccount's real
+  // closeOrganization — see schema.ts's own doc comment on `closed_at`)
+  // must never be selected as "active," even if it's the only membership
+  // a founder has. Resolve every real membership's organization first so
+  // closed ones can be filtered out before choosing.
+  const resolved = await Promise.all(
+    memberships.map(async (membership) => ({ membership, organization: await getOrganizationById(membership.organization_id) })),
+  );
+  const openCandidates = resolved.filter(
+    (candidate): candidate is { membership: OrganizationMember; organization: Organization } =>
+      Boolean(candidate.organization) && !candidate.organization!.closed_at,
+  );
+  if (openCandidates.length === 0) {
+    // Either every real membership points at a row that no longer exists
+    // (a genuine data-integrity problem) or every one has been closed —
+    // either way, this founder has no real organization to act within.
+    throw new OrganizationNotFoundError(`Founder ${founderId} has no open organization membership.`);
+  }
+
   // Prefer a real "owner" membership over any other role, so a founder
   // who is both an owner of their own organization and (in the future) a
   // mere member of someone else's lands in their own by default.
-  const preferred = memberships.find((m) => m.role === "owner") ?? memberships[0]!;
-  const organization = await getOrganizationById(preferred.organization_id);
-  if (!organization) {
-    // A real data-integrity problem (a membership row with no organization
-    // behind it) — fail loudly rather than silently treating the founder
-    // as organization-less.
-    throw new OrganizationNotFoundError(`Organization ${preferred.organization_id} referenced by a real membership no longer exists.`);
-  }
-  return organization;
+  const preferred = openCandidates.find((c) => c.membership.role === "owner") ?? openCandidates[0]!;
+  return preferred.organization;
 }
 
 /**
