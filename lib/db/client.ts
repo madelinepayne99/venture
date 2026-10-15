@@ -378,7 +378,10 @@ export async function seedSubscriptionPlans(instance: Db): Promise<void> {
  * organization its OWN default plan, scoped to its own id — it can never
  * cross a tenant boundary, so it's safe to run on every call.
  */
-export async function ensureOrganizationSubscriptions(instance: Db): Promise<void> {
+export async function ensureOrganizationSubscriptions(
+  instance: Db,
+  defaultOrganizationId?: string,
+): Promise<void> {
   const orgs = await instance.select({ id: schema.organizations.id }).from(schema.organizations);
   if (orgs.length === 0) return;
   const existing = await instance
@@ -387,12 +390,26 @@ export async function ensureOrganizationSubscriptions(instance: Db): Promise<voi
   const existingIds = new Set(existing.map((s) => s.organization_id));
   for (const org of orgs) {
     if (existingIds.has(org.id)) continue;
+    // Real bug found live (Mission 8, Sections 14-15): the ONE real
+    // default organization (Ellis and Maddie's "Founders' HQ") already
+    // existed in this database before subscription_plans/
+    // organization_subscriptions did — created back in Mission 6, long
+    // before this migration's own one-time "founder" plan assignment
+    // (inside ensureDefaultOrganization's org-creation branch) could
+    // ever run for it. Without this check, this general safety-net
+    // backfill would give it the real "free" plan — wrong for the one
+    // organization explicitly meant to keep its existing, real $20/month
+    // development access (the founders' own explicit "preserve the
+    // existing founders' development access separately" instruction).
+    // Every OTHER organization this backfills still correctly defaults
+    // to "free" — this only special-cases the one real default org.
+    const planId = org.id === defaultOrganizationId ? "founder" : "free";
     await instance
       .insert(schema.organizationSubscriptions)
       .values({
         id: randomUUID(),
         organization_id: org.id,
-        plan_id: "free",
+        plan_id: planId,
         status: "active",
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
@@ -569,8 +586,8 @@ async function seed(instance: Db) {
   // Must run after both founders and projects/agents exist — it backfills
   // organization_id on whatever was just seeded above (a fresh database)
   // and on every pre-existing row (a real, already-populated database).
-  await ensureDefaultOrganization(instance);
-  await ensureOrganizationSubscriptions(instance);
+  const defaultOrganizationId = await ensureDefaultOrganization(instance);
+  await ensureOrganizationSubscriptions(instance, defaultOrganizationId);
 }
 
 /**

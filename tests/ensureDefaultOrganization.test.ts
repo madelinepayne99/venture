@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { resetDbForTests, getDb, ensureDefaultOrganization } from "@/lib/db/client";
+import { resetDbForTests, getDb, ensureDefaultOrganization, ensureOrganizationSubscriptions } from "@/lib/db/client";
 import { createFounder } from "@/lib/db/repositories";
+import { createOrganizationWithOwner } from "@/lib/domain/organizationWorkflow";
 import * as schema from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 
@@ -88,5 +89,72 @@ describe("ensureDefaultOrganization — real cross-tenant safety", () => {
       .where(eq(schema.organizationMembers.organization_id, orgId));
 
     expect(afterRepeatedCalls).toHaveLength(firstCallMembers.length);
+  });
+});
+
+describe("ensureOrganizationSubscriptions — the real default org gets the real 'founder' plan, not 'free'", () => {
+  beforeEach(async () => {
+    await resetDbForTests();
+  });
+
+  /**
+   * A second real bug, also caught live (not theoretical): a REAL,
+   * pre-existing "Founders' HQ" — created in an earlier session, before
+   * subscription_plans/organization_subscriptions existed at all — was
+   * showing "Free Playground" instead of its real "founder" plan after
+   * this migration ran, because ensureDefaultOrganization's own one-time
+   * "founder" plan assignment only runs inside its org-CREATION branch;
+   * an org that already existed never passes through that branch again.
+   * The general ensureOrganizationSubscriptions safety net then
+   * (correctly, for every OTHER organization) defaulted it to "free" —
+   * wrong specifically for the one real default org, which the founders
+   * explicitly asked to keep its existing real development access.
+   */
+  it("gives the real default organization the 'founder' plan when backfilling its subscription for the first time", async () => {
+    const db = await getDb();
+    const defaultOrgId = await ensureDefaultOrganization(db);
+    // ensureDefaultOrganization already creates its own real "founder"
+    // subscription inline for a BRAND-NEW default org (today's real
+    // flow) — delete it here to simulate the actual historical scenario
+    // this bug came from: a real "Founders' HQ" created in an earlier
+    // session, before organization_subscriptions existed at all, so it
+    // has NO subscription row of any kind yet when the backfill runs.
+    await db.delete(schema.organizationSubscriptions).where(eq(schema.organizationSubscriptions.organization_id, defaultOrgId));
+
+    // The real bug's shape: a subscription backfill call that doesn't
+    // know which org is "the" default one.
+    await ensureOrganizationSubscriptions(db); // no defaultOrganizationId passed — the real pre-fix call shape
+    const [withoutHint] = await db
+      .select()
+      .from(schema.organizationSubscriptions)
+      .where(eq(schema.organizationSubscriptions.organization_id, defaultOrgId));
+    expect(withoutHint!.plan_id).toBe("free"); // proves the bug's shape is real without the fix
+
+    // Now the real, fixed call shape (what seed() actually does).
+    await db.delete(schema.organizationSubscriptions).where(eq(schema.organizationSubscriptions.organization_id, defaultOrgId));
+    await ensureOrganizationSubscriptions(db, defaultOrgId);
+    const [withHint] = await db
+      .select()
+      .from(schema.organizationSubscriptions)
+      .where(eq(schema.organizationSubscriptions.organization_id, defaultOrgId));
+    expect(withHint!.plan_id).toBe("founder");
+  });
+
+  it("every OTHER real organization still correctly defaults to the real 'free' plan — the fix doesn't widen who gets 'founder'", async () => {
+    const db = await getDb();
+    const defaultOrgId = await ensureDefaultOrganization(db);
+
+    const founder = await createFounder({ name: "New Customer" });
+    const { organization } = await createOrganizationWithOwner(founder.id, "New Customer's Business");
+    // createOrganizationWithOwner already creates a real "free"
+    // subscription itself — this proves the backfill ALSO never
+    // upgrades it to "founder" even if called again.
+    await ensureOrganizationSubscriptions(db, defaultOrgId);
+
+    const [newOrgSub] = await db
+      .select()
+      .from(schema.organizationSubscriptions)
+      .where(eq(schema.organizationSubscriptions.organization_id, organization.id));
+    expect(newOrgSub!.plan_id).toBe("free");
   });
 });

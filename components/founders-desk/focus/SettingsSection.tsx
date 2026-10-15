@@ -1,14 +1,17 @@
 import type { Project, WorkspaceType } from "@/lib/db/types";
 import { WorkspacePanel } from "../WorkspacePanel";
 import { FocusCard } from "./FocusPrimitives";
+import { BillingSection } from "./BillingSection";
 
 /**
- * Settings (Mission 8 Focus View redesign) — workspace management today;
- * the natural future home for plan/billing/allowance configuration once
- * those exist. Reuses the exact same real `createWorkspace` workflow
- * (Milestone 3) FocusView always used — a workspace's type still can
- * never be changed after creation, same as before. No extra heading —
- * WorkspacePanel already renders its own real one.
+ * Settings (Mission 8 Focus View redesign) — workspace management, plus
+ * real plan & billing status (Mission 8, Sections 14-15 — this is
+ * exactly the "natural future home for plan/billing" this section's own
+ * earlier doc comment anticipated). Reuses the exact same real
+ * `createWorkspace` workflow (Milestone 3) FocusView always used — a
+ * workspace's type still can never be changed after creation, same as
+ * before. No extra heading on the workspace card — WorkspacePanel
+ * already renders its own real one.
  */
 export function SettingsSection({
   projects,
@@ -18,8 +21,11 @@ export function SettingsSection({
   onCreateWorkspace: (name: string, workspaceType: WorkspaceType) => Promise<void>;
 }) {
   return (
-    <FocusCard>
-      <WorkspacePanel projects={projects} onCreate={onCreateWorkspace} />
-    </FocusCard>
+    <div className="space-y-6">
+      <BillingSection />
+      <FocusCard>
+        <WorkspacePanel projects={projects} onCreate={onCreateWorkspace} />
+      </FocusCard>
+    </div>
   );
 }
