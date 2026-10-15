@@ -56,7 +56,14 @@ function AiBudgetCard() {
           <FocusErrorState message={error} onRetry={load} />
         ) : status ? (
           <div className="space-y-4">
-            <div className="grid grid-cols-3 gap-4">
+            {/* Mission 9 QA fix: a real visual bug found live at phone
+                width — a fixed 3-column grid let "Monthly limit"'s label
+                wrap to two lines while its neighbors stayed on one,
+                leaving the grid's own row height mismatched and the two
+                large dollar figures visually colliding. Stacks to one
+                column below sm, matching OverviewSection's own stat-grid
+                pattern. */}
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
               <FocusStat label="Committed" value={`$${status.committedUsd.toFixed(2)}`} />
               <FocusStat label="Monthly limit" value={`$${status.monthlyLimitUsd.toFixed(2)}`} />
               <FocusStat
