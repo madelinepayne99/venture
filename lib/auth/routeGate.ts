@@ -20,9 +20,13 @@ const PUBLIC_PATHS = ["/login"];
  * Decides what middleware.ts should do with a request, given only its
  * pathname and whether it carries a verified founder session. Venture HQ
  * has no public area: every route requires a session except `/login`
- * (the sign-in page), `/api/auth/**` (Auth.js's own routes), and
+ * (the sign-in page), `/api/auth/**` (Auth.js's own routes),
  * `/api/inngest` (authenticated separately, by Inngest itself, via
- * INNGEST_SIGNING_KEY).
+ * INNGEST_SIGNING_KEY), and `/api/billing/webhook` (Mission 8, Sections
+ * 14-15 — authenticated separately, by Stripe's own real webhook
+ * signature, verified against STRIPE_WEBHOOK_SECRET inside the route
+ * itself; Stripe calls this server-to-server and never carries a founder
+ * session).
  *
  * An authenticated founder who lands on `/login` (e.g. after completing
  * GitHub sign-in, or by navigating back to it) is sent to `/` rather than
@@ -31,9 +35,10 @@ const PUBLIC_PATHS = ["/login"];
 export function decideRouteGate(pathname: string, isAuthenticated: boolean): RouteGateDecision {
   const isAuthRoute = pathname.startsWith("/api/auth");
   const isInngestRoute = pathname.startsWith("/api/inngest");
+  const isBillingWebhookRoute = pathname === "/api/billing/webhook";
   const isPublicPage = PUBLIC_PATHS.includes(pathname);
 
-  if (isAuthRoute || isInngestRoute) {
+  if (isAuthRoute || isInngestRoute || isBillingWebhookRoute) {
     return { action: "allow" };
   }
 

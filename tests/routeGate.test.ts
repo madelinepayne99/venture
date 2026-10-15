@@ -40,4 +40,15 @@ describe("route gate", () => {
     expect(decideRouteGate("/api/inngest", false)).toEqual({ action: "allow" });
     expect(decideRouteGate("/api/inngest", true)).toEqual({ action: "allow" });
   });
+
+  it("never gates the real Stripe billing webhook — it authenticates itself via a verified signature (Mission 8, Sections 14-15)", () => {
+    expect(decideRouteGate("/api/billing/webhook", false)).toEqual({ action: "allow" });
+    expect(decideRouteGate("/api/billing/webhook", true)).toEqual({ action: "allow" });
+  });
+
+  it("still gates every OTHER real billing route — checkout/portal/status all require a real founder session", () => {
+    expect(decideRouteGate("/api/billing/checkout", false)).toEqual({ action: "unauthorized" });
+    expect(decideRouteGate("/api/billing/portal", false)).toEqual({ action: "unauthorized" });
+    expect(decideRouteGate("/api/billing/status", false)).toEqual({ action: "unauthorized" });
+  });
 });

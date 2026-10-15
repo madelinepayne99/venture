@@ -57,6 +57,14 @@ import {
   OrganizationPermissionError,
 } from "@/lib/domain/organizationWorkflow";
 import { BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
+import {
+  PlanDoesNotIncludePaidAgentsError,
+  SubscriptionNotEntitledError,
+  VideoAllowanceExceededError,
+  SubscriptionNotFoundError,
+} from "@/lib/domain/subscriptionWorkflow";
+import { PlanNotFoundError, PlanNotPurchasableError } from "@/lib/domain/billingWorkflow";
+import { StripeNotConfiguredError } from "@/lib/billing/stripe";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -211,6 +219,36 @@ export function toApiErrorResponse(error: unknown): NextResponse {
       },
       { status: 429 },
     );
+  }
+  if (error instanceof PlanDoesNotIncludePaidAgentsError) {
+    return NextResponse.json(
+      { error: error.message, planId: error.planId, agentKey: error.agentKey },
+      { status: 403 },
+    );
+  }
+  if (error instanceof SubscriptionNotEntitledError) {
+    return NextResponse.json({ error: error.message, status: error.status }, { status: 403 });
+  }
+  if (error instanceof VideoAllowanceExceededError) {
+    return NextResponse.json(
+      { error: error.message, planId: error.planId, usedThisMonth: error.usedThisMonth, allowance: error.allowance },
+      { status: 429 },
+    );
+  }
+  if (error instanceof SubscriptionNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof PlanNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof PlanNotPurchasableError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof StripeNotConfiguredError) {
+    // 503 (Service Unavailable) — a real, honest signal that billing
+    // itself isn't configured in this environment, never a silent
+    // failure or a fabricated success.
+    return NextResponse.json({ error: error.message }, { status: 503 });
   }
   if (error instanceof Error && error.message.includes("not found")) {
     return NextResponse.json({ error: error.message }, { status: 404 });
