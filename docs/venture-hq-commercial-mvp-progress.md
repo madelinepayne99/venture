@@ -1445,3 +1445,168 @@ skipped):
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (729 tests) still holds before continuing.
+
+## Milestone E — Customer sign-in, account management & onboarding (Sections 11-12): DONE, with a critical bug found and fixed
+
+A genuine new-customer journey was built and verified end to end — real
+account creation, real organization, real employee recruitment, real
+workspace, landing in a real headquarters ready for a real first task.
+Four commits: `08b40b3` (critical security fix, see below — committed
+first and in isolation given its severity), `eeae9d2` (the onboarding
+feature), `84a5753` (Focus View polish items addressed alongside it).
+
+### Real self-service account creation
+
+`ALLOW_NEW_CUSTOMER_SIGNUP` (new env var, default unset/off) gates
+everything — with it off, `auth.ts`'s `signIn` callback is byte-for-byte
+what it always was: only an existing `founders.email` row may sign in.
+Set to exactly `"true"`, a real GitHub-verified email that isn't already
+a founder gets a real new `founders` row via the new
+`ensureFounderAccount()` (`lib/auth/allowList.ts`) — idempotent, safe
+under genuine concurrency (proven with a real concurrent-call test), and
+never touches an already-recognized founder.
+
+### Real organization creation, finally reachable
+
+`POST /api/organizations` (new route) calls `createOrganizationWithOwner`
+— real since Mission 6, zero UI exposure until now. A new
+`organizations.venture_stage` column (migration `drizzle/0016_far_terrax.sql`,
+nullable text) persists the real "new venture vs existing business"
+answer from onboarding.
+
+### A critical security bug found and fixed (commit `08b40b3`)
+
+`ensureDefaultOrganization`'s founder-membership backfill ran
+unconditionally on *every* call (every server restart; every cold start
+in a real serverless deployment), granting **every founder row in the
+entire table** owner access to Ellis and Maddie's real "Founders' HQ" if
+they didn't already have a membership there. Invisible before self-
+service sign-up existed (only Ellis and Maddie ever existed as founders,
+and both legitimately belonged there); a real, serious cross-tenant leak
+the moment a brand-new customer founder can exist with zero memberships
+— their genuine, temporary pre-onboarding state.
+
+**Reproduced live**, not theoretical: two fictional customers (Priya,
+Tom) each independently ended up as real "owner" members of Founders'
+HQ after routine server restarts during this session's own testing,
+confirmed via `GET /api/organizations` and a real accidental cross-
+tenant Scout recruitment. All bad data was found, inspected, and deleted
+from the real database — confirmed restored to exactly the two genuine
+founders before any further work continued.
+
+**Fixed**: the membership-backfill loop now runs only inside the branch
+where the organization is actually created for the first time — a true
+one-time migration moment. New `tests/ensureDefaultOrganization.test.ts`
+(this function had no dedicated test file before — part of why this was
+invisible: `resetDbForTests()`'s "truncate and reseed" pattern only ever
+calls it once, against a database with no organization yet, exactly the
+one case where the bug can't show up).
+
+### Real onboarding UI
+
+`components/onboarding/OnboardingFlow.tsx`, shown instead of the normal
+dashboard only when a signed-in founder genuinely has zero organization
+memberships (`app/page.tsx` — a real crash this also fixed:
+`getActiveOrganizationForFounder` already threw for that exact case).
+Welcome → Create HQ (name + new-venture-vs-existing-business, **now also
+auto-creates a real default "commerce" workspace** — a second real gap
+found live during testing: without one, a fresh organization has no
+project for `MissionForm` to offer, and a founder would land on HQ
+View's own honest "the office is unfurnished" dead end) → Recruit
+(reuses Focus View's own real `EmployeesSection`, not a second
+recruitment flow) → Enter. Steps 5-6 of the brief's own outline (first
+task, review result) are deliberately not duplicated — Focus View's real
+Tasks and Founders' Desk sections already exist for exactly that the
+moment a founder has a real organization.
+
+### Verified, with real evidence
+
+- **Real cross-organization isolation via real HTTP**, not just domain-
+  function tests: two independent fictional customers (Priya/Riverside
+  Bakery, Tom's Landscaping), crafted sessions against the real running
+  app (a real GitHub OAuth round-trip can't run in this sandbox — see
+  CLAUDE.md's standing note). Each sees only their own organization,
+  missions (0, never Ellis's real 21), and employee recruitment
+  (independent Scout recruitment status). Ellis's real org and real
+  missions confirmed completely unaffected throughout.
+- **A real Playwright browser walkthrough** of the entire flow — Welcome
+  → name a business → choose venture stage → recruit Scout → Enter HQ →
+  Focus View's Tasks tab, real workspace pre-selected, ready to submit a
+  real mission. Screenshots at every step. The real HQ 3D office scene
+  confirmed rendering that new organization's own genuinely empty office
+  (0 of 7 recruited), completely independent of Ellis's.
+- `tests/customerOnboarding.test.ts` (6 tests), 4 new tests in
+  `tests/auth.test.ts`, 3 new tests in `tests/ensureDefaultOrganization.test.ts`.
+- All real test data created during live verification found, inspected,
+  and deleted — confirmed restored to exactly 2 founders, 1 organization.
+- Full suite: **742/742 passing.** TypeScript clean. Production build
+  clean.
+
+### Focus View polish (addressed alongside this milestone)
+
+- **Tasks filtering/pagination**: real search (title/brief) + status
+  filter (reusing `missionDockBucket`), 8-at-a-time with "Show more."
+- **Employee Directory overlap**: real extra bottom clearance added to
+  Focus View's content wrapper; confirmed fixed via a real scrolled-
+  viewport screenshot.
+- **Accessibility pass**: computed real WCAG contrast ratios for every
+  `focus.*` text color pairing. Found and fixed two real failures (gold
+  text measured 3.42:1 against white, 2.68:1 against its own badge
+  background — both below the 4.5:1/3:1 thresholds); added a separate,
+  darker `focus.goldText` token (4.5-5.8:1 against every real background
+  it's used against). Keyboard navigation, heading hierarchy, and form
+  labels also checked.
+
+### What a new customer can genuinely do today
+
+Sign in with GitHub (once `ALLOW_NEW_CUSTOMER_SIGNUP=true` is set) →
+create their own private organization → answer the venture-stage
+question → get a real default Commerce workspace → recruit any of the
+7 real employees → land in a fully working, completely isolated
+headquarters → create a real Scout mission or any other real supported
+task → review it at their own Founders' Desk. Every step is the same
+real code path and real data model Ellis and Maddie's own account uses
+— nothing simulated.
+
+### What remains blocked before real public registration
+
+1. **`ALLOW_NEW_CUSTOMER_SIGNUP` is off by default and must stay off**
+   until the founders deliberately decide to accept sign-ups — this is
+   the actual safety gate, not a cosmetic one.
+2. **No real GitHub OAuth App exists yet** (CLAUDE.md's own long-
+   standing deployment checklist, step 2, still not done) — nothing here
+   changes that; self-service signup still requires a real, deployed
+   OAuth app before anyone outside this sandbox could use it at all.
+3. **No account settings beyond Focus View's Settings tab** — no email
+   change, no account deletion/data export flow (Mission 8's own Section
+   11 lists these; not built this round).
+4. **No subscription/billing gate** — a self-service sign-up today gets
+   the same real, full access Ellis and Maddie have (within their own
+   organization's real `$20` default AI budget) — Section 14/15's
+   pricing tiers and billing don't exist yet, so "opening registration"
+   today would mean every new customer gets full real functionality for
+   free, bounded only by the existing per-organization spending cap.
+5. **Organization budget limits aren't configurable yet** — every
+   organization (new customers included) gets the same real `$20`/month
+   default; no admin path sets a different value per customer.
+
+## Exact restart point for a future session
+
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **742 tests
+   passing**).
+2. `ALLOW_NEW_CUSTOMER_SIGNUP=true` is currently set in the local dev
+   `.env.local` (never committed) so the founders can try the real
+   onboarding flow themselves — not set in `.env.example` or any
+   committed file, and should be explicitly decided on, not left on by
+   habit, before any real deployment.
+3. Per the brief's own Section 21 priority order, with sign-in/
+   onboarding and cost protection both done: the next highest-priority
+   unstarted items are Section 14/15 (pricing research + billing
+   foundation) if the founders want to move toward real revenue, or
+   Section 17/18 (full QA sweep, real customer journey testing) if they
+   want more confidence in what already exists first.
+4. Astra's branch still doesn't exist — check again before touching
+   anything office-related.
+
+Restart command: `npm test && npx tsc --noEmit` to reconfirm the
+baseline (742 tests) still holds before continuing.
