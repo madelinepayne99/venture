@@ -1273,13 +1273,11 @@ Full suite after all three integrations: **729/729 passing.** `npx tsc
 attribution), `2198ff4` (budget module + Business Analyst), `baf50d9`
 (Scout), `9cba750` (Content Bot).
 
-## Everything else in Mission 8 (Sections 6, 8, 9, 11-20): NOT STARTED
+## Everything else in Mission 8 (Sections 8, 9, 11-20): NOT STARTED
 
-Named explicitly rather than left silently undone: seven-agent
-acceptance matrix as its own artifact (Section 6 — substantially
-covered by existing evidence cited above, but not assembled into the
-explicit automatic/manual/integration-dependent/not-implemented table
-the brief asks for), Focus View redesign (Section 8), Founders' Desk
+Section 6 (seven-agent capability matrix) is now DONE — see its own
+section above. Still not started, named explicitly rather than left
+silently undone: Focus View redesign (Section 8), Founders' Desk
 presentation polish (Section 9), customer sign-in/account management
 (Section 11), customer onboarding (Section 12), free HQ Playground and
 the Cleaner (Section 13), subscription plans and pricing research
@@ -1292,16 +1290,14 @@ mobile/responsive testing (Section 20).
 
 1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **729 tests
    passing**).
-2. Milestone C (AI cost protection) is now DONE for all three real paid
-   agents — see above. Next real engineering action: assemble the
-   explicit seven-agent capability matrix (Section 6) from existing
-   code/evidence — no new paid calls required, pure inspection and
-   honest write-up — then move to whichever of Section 10's two small
-   remaining items (a customer-facing allowance display, or an actual
-   way to configure a non-default `monthly_usd_limit`) is more useful
-   once Focus View work (Section 8) begins, since both pair naturally
-   with that UI work rather than standing alone.
-3. After the capability matrix: per the brief's own Section 21 priority
+2. Milestone C (AI cost protection, Section 10) and Section 6 (seven-
+   agent capability matrix) are both now DONE — see their own sections
+   above. The two small items still open under Section 10 (a customer-
+   facing allowance display; an actual way to configure a non-default
+   `monthly_usd_limit`) pair naturally with Focus View work (Section 8)
+   rather than standing alone — pick them up there, not as isolated
+   tasks.
+3. Next real engineering action: per the brief's own Section 21 priority
    order (data leaks > unauthorized actions > uncontrolled spending >
    data corruption > broken agent workflows > broken payments >
    broken onboarding > usability > visual polish > decorative features),
@@ -1314,3 +1310,38 @@ mobile/responsive testing (Section 20).
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
 baseline (727 tests) still holds before continuing.
+
+## Section 6 — Seven-agent capability matrix: DONE (assembled from real code, no new paid calls)
+
+Per the brief's own instruction ("Do not confuse a functional user
+interface with a functional employee"), this table is built from the
+actual exported domain functions each agent's routes call — not from
+what the UI displays. "Automatic" means a real model/provider call runs
+with no further human input once dispatched; "Manual" means the action
+is a founder-driven data operation with no AI execution at all; a task
+delegated to a Manual agent through Chief of Staff is a real to-do item,
+not simulated AI work — it is just not AI work.
+
+| Agent | Real capability | Classification | Evidence |
+|---|---|---|---|
+| **Scout** | Web-search-backed opportunity research, two-pass evidence loop, structured report, guardrails | **Fully automatic** (dispatched, runs via Inngest to completion) | `lib/agents/scout/`, `runScoutPipeline`; live-verified (Milestone 2.2/3/5.1 sections above); org-budget-gated (this session) |
+| **Content Bot** | Five-stage real production pipeline (creative strategy → planning → safety → assets → assembly), real fal.ai/ElevenLabs/Shotstack calls | **Fully automatic** once a founder approves production; **requires manual input** to start (founder picks target platform/audience/content type and approves) and to resolve (Approve/Reject/Send-Back) | `lib/domain/contentWorkflow.ts`'s `runContentProductionPipeline`; Milestone 5 section above; org-budget-gated (this session) |
+| **Business Analyst** | Standalone sourced research (web search + Claude), single synchronous call | **Fully automatic** once requested | `lib/domain/businessAnalystWorkflow.ts`'s `requestResearch`; org-budget-gated (this session, first integration) |
+| **Chief of Staff** | Goal creation with delegated subtasks across supported agents; genuinely dispatches Business Analyst's real research for its own subtasks | **Automatic for the Business-Analyst delegate** (`runDelegatedResearch`, real billed call); **manual for every other delegate** (Operations/Finance/Executive Assistant subtasks are real to-do items a founder or those agents' own manual tools complete — never simulated AI work) | `lib/domain/chiefOfStaffWorkflow.ts`; live-verified 4-agent run, Mission 6 addendum section above (real $0.144 failed attempt + real retry success, both recorded) |
+| **Executive Assistant** | Internal task tracking: create/list/complete/cancel a founder task | **Manual only** — no AI execution exists or is claimed. Each action is a real, persisted database operation (not simulated), just not autonomous | `lib/domain/executiveAssistantWorkflow.ts` — no model/provider import at all |
+| **Finance Agent** | Expense logging, category budgets, budget-status calculation | **Manual only** — real persisted data and real arithmetic, no AI execution | `lib/domain/financeWorkflow.ts` — no model/provider import at all |
+| **Operations Agent** | Checklist creation, item management, completion tracking | **Manual only** — real persisted data, no AI execution | `lib/domain/operationsWorkflow.ts` — no model/provider import at all |
+
+**Integration-dependent or not-yet-implemented capabilities, named explicitly** (none of these exist in any form — not claimed, not stubbed):
+- Any real publishing surface for Content Bot (TikTok/YouTube/Etsy/Amazon) — Milestone 5's own "deliberately not built" list, unchanged.
+- Email or calendar operations for Executive Assistant — never implemented or claimed; `createFounderTask` is explicitly an internal reminder, not an integration.
+- Any payment-processor integration for Finance Agent — expense/budget tracking is internal-only; no bank, card, or accounting-software connection exists.
+- Content Bot's real generated video/motion (`VideoProvider`) — Milestone 5's own "C1.5" deferral, still true.
+- Inventor/Creator/Inspector/Merchant/TikTok/Amazon/Etsy Specialist/Manager — still `status = 'planned'` per Milestone 1, unchanged; none run.
+
+**No new paid calls were made to produce this table** — consistent with
+Section 13's own standing instruction against running costly calls
+solely to populate a status artifact. The one piece of live evidence
+this table leans on (Chief of Staff's real 4-agent coordination run) was
+already produced and recorded in an earlier session, cited here rather
+than repeated.
