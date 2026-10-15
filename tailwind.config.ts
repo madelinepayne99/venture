@@ -39,6 +39,29 @@ export default {
           text: "#F3EEDD",
           textDim: "#9DA89F",
         },
+        // "Refined Emerald & Ivory" — Focus View's own premium palette
+        // (Mission 8 Focus View redesign), additive and scoped: HQ View's
+        // 2D chrome (WorkspaceBar, MissionBoard, modals) keeps using
+        // hq.brass*/hq.teal* exactly as before, and the 3D office scene
+        // keeps its separate night.*/ROOM_PALETTES — this only gives
+        // Focus View a deeper, more deliberate identity of its own,
+        // mirroring the same "new namespace, nothing shared redefined"
+        // pattern night.* already established. Warm ivory surfaces, a
+        // deep emerald for navigation/headings, restrained (not bright
+        // brass-gold) gold for accents only.
+        focus: {
+          ivory: "#FAF7EF",
+          ivoryDark: "#F1EADA",
+          card: "#FFFFFF",
+          emerald: "#0B3D2E",
+          emeraldLight: "#145C45",
+          emeraldSoft: "#E6EEE9",
+          gold: "#A8863F",
+          goldSoft: "#EFE3C8",
+          ink: "#1C2521",
+          slate: "#5C6B63",
+          border: "#E4DCC8",
+        },
       },
       fontFamily: {
         display: ["Georgia", "Cambria", "serif"],

@@ -697,6 +697,7 @@ export function FoundersDeskApp({
       ) : (
         <FocusView
           agents={agents}
+          pendingReviewCount={foundersDeskPendingCount}
           ledgerEntries={ledgerEntries}
           ledgerTotal={ledgerTotal}
           projects={projects}
