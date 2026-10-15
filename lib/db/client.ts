@@ -322,18 +322,25 @@ export async function ensureDefaultOrganization(instance: Db): Promise<string> {
       name: "Founders' HQ",
       owner_founder_id: founders[0]!.id,
     });
-  }
 
-  // Every real founder is a real member — both are founders of the one
-  // real business this app served before organizations existed, so
-  // both are genuinely owners of it, not just the first one seeded.
-  const existingMembers = await instance
-    .select({ founder_id: schema.organizationMembers.founder_id })
-    .from(schema.organizationMembers)
-    .where(eq(schema.organizationMembers.organization_id, organizationId));
-  const memberFounderIds = new Set(existingMembers.map((m) => m.founder_id));
-  for (const founder of founders) {
-    if (!memberFounderIds.has(founder.id)) {
+    // Every real founder THAT EXISTED AT THIS EXACT MOMENT is a real
+    // member — this is the one-time Mission 6 migration moment, when
+    // Ellis and Maddie (the only founders at the time) are genuinely
+    // both owners of the one real business this app served before
+    // organizations existed. Deliberately scoped inside this `else`
+    // branch — it runs exactly once, the moment the default org is
+    // actually created, never again.
+    //
+    // Real bug this fixes (caught live during Mission 8's self-service
+    // sign-up testing, not theoretical): this loop originally ran
+    // unconditionally on every call, for every founder in the table —
+    // meaning a brand-new self-service customer's founder row (which
+    // genuinely has zero organization memberships between account
+    // creation and completing their own onboarding) got silently
+    // auto-granted OWNER access to Ellis and Maddie's real "Founders'
+    // HQ" the next time this ran (e.g. any server restart). A real
+    // cross-tenant access-control bug, not a cosmetic one.
+    for (const founder of founders) {
       await instance.insert(schema.organizationMembers).values({
         id: randomUUID(),
         organization_id: organizationId,
