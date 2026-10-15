@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
 import { createFounder, getAgentByKey, recordCost, listFounders } from "@/lib/db/repositories";
 import { createOrganizationWithOwner, getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { upgradeTestOrgToPaidPlan } from "./testUtils";
 import {
   reserveBudget,
   settleReservation,
@@ -20,23 +21,47 @@ import {
  * Every test here exercises the real domain functions against a real
  * Postgres database — the genuine concurrency test fires real,
  * simultaneous requests at the real database, not a simulated race.
+ *
+ * Mission 8, Sections 14-15: every real organization now starts on the
+ * real "free" plan ($0 AI budget — see createOrganizationWithOwner),
+ * replacing the flat DEFAULT_MONTHLY_BUDGET_USD every organization
+ * implicitly got before subscriptions existed. makeTestOrganization
+ * upgrades to the real "business" plan (deliberately $20/month — the
+ * same figure DEFAULT_MONTHLY_BUDGET_USD always was) so every atomicity/
+ * concurrency/reservation-mechanics test below keeps testing exactly
+ * what it always tested, unchanged; the one test that was genuinely
+ * about the default-resolution behavior itself is rewritten to test the
+ * real new mechanism directly (see "plan-based budget resolution" below).
  */
 
 async function makeTestOrganization(name: string): Promise<string> {
   const founder = await createFounder({ name: `${name} owner` });
   const { organization } = await createOrganizationWithOwner(founder.id, name);
+  await upgradeTestOrgToPaidPlan(organization.id);
   return organization.id;
 }
 
-describe("getOrganizationBudgetConfig / getBudgetStatusForOrganization", () => {
+describe("plan-based budget resolution (Mission 8, Sections 14-15)", () => {
   beforeEach(async () => {
     await resetDbForTests();
   });
 
-  it("an organization with no explicit configuration gets the real, safe application default — never silently unlimited", async () => {
-    const organizationId = await makeTestOrganization("Bakery HQ");
+  it("a brand-new organization on the real free plan gets a real $0 AI budget — never a complimentary default", async () => {
+    const founder = await createFounder({ name: "Free Org owner" });
+    const { organization } = await createOrganizationWithOwner(founder.id, "Free Org");
+    const config = await getOrganizationBudgetConfig(organization.id);
+    expect(config.monthlyUsdLimit).toBe(0);
+    expect(config.row).toBeNull(); // no explicit override row — resolved from the plan
+
+    const status = await getBudgetStatusForOrganization(organization.id);
+    expect(status.monthlyLimitUsd).toBe(0);
+    expect(status.exhausted).toBe(true); // $0 limit, $0 committed — exhausted from the start, by design
+  });
+
+  it("an organization upgraded to a real paid plan gets that plan's real AI budget, resolved live — not a flat legacy default", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ"); // upgrades to "business" ($20/mo)
     const config = await getOrganizationBudgetConfig(organizationId);
-    expect(config.monthlyUsdLimit).toBe(DEFAULT_MONTHLY_BUDGET_USD);
+    expect(config.monthlyUsdLimit).toBe(DEFAULT_MONTHLY_BUDGET_USD); // business plan's real $20 — same figure, resolved from the plan now
     expect(config.row).toBeNull();
 
     const status = await getBudgetStatusForOrganization(organizationId);

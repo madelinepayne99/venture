@@ -5,6 +5,7 @@ import {
   addOrganizationMember,
   listOrganizationMembershipsForFounder,
   getOrganizationMembership,
+  createOrganizationSubscription,
 } from "@/lib/db/repositories";
 import type { Organization, OrganizationMember, OrganizationMemberRole, VentureStage } from "@/lib/db/types";
 import { ventureStageValues } from "@/lib/db/schema";
@@ -183,5 +184,15 @@ export async function createOrganizationWithOwner(
 
   const organization = await createOrganization({ name: trimmed, ownerFounderId, ventureStage: ventureStage ?? null });
   const membership = await addOrganizationMember({ organizationId: organization.id, founderId: ownerFounderId, role: "owner" });
+  // Every real organization gets a real subscription row from the
+  // moment it exists — "free" by default (Mission 8, Sections 14-15).
+  // This is the actual mechanism behind "a newly created free
+  // organization cannot consume paid AI usage": budgetWorkflow.ts
+  // resolves this organization's real monthly AI budget from this real
+  // plan, not a flat default. Created here, atomically alongside the
+  // organization and its owner membership, rather than relying on any
+  // backfill — the exact discipline the cross-tenant membership bug
+  // (see ensureDefaultOrganization's own doc comment) argued for.
+  await createOrganizationSubscription({ organizationId: organization.id, planId: "free" });
   return { organization, membership };
 }

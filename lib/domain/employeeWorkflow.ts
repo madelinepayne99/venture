@@ -12,6 +12,7 @@ import {
   listAgentTasksForOrganization,
 } from "@/lib/db/repositories";
 import type { Agent } from "@/lib/db/types";
+import { assertPlanAllowsAgent } from "@/lib/domain/subscriptionWorkflow";
 
 /**
  * The Employee Directory's real recruit/remove workflow — now genuinely
@@ -143,6 +144,12 @@ export async function recruitEmployee(organizationId: string, key: string): Prom
   if (!definition.recruitable) throw new EmployeeNotRecruitableError(key);
   const existing = await getAgentByKey(key);
   if (!existing) throw new EmployeeNotFoundError(key);
+  // The real, server-side "employee access" entitlement check (Mission
+  // 8, Sections 14-15) — a free-plan organization (or one with a
+  // cancelled/past-due subscription) is refused here before the real
+  // agent/organization_agents row is ever flipped active, regardless of
+  // what a direct API call claims.
+  await assertPlanAllowsAgent(organizationId, key);
   await setOrganizationAgentStatus(organizationId, key, "active");
 }
 

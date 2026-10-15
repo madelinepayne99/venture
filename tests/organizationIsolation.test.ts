@@ -22,6 +22,7 @@ import {
   submitGoalConsolidation,
   FoundersDeskNotFoundError,
 } from "@/lib/domain/foundersDeskWorkflow";
+import { upgradeTestOrgToPaidPlan } from "./testUtils";
 
 /**
  * Real, dedicated tenant-isolation tests (Master Development Mission 6,
@@ -66,6 +67,12 @@ describe("Organization isolation — Bakery HQ vs. Landscaping HQ", () => {
   });
 
   it("recruiting an agent in one organization never recruits it in the other", async () => {
+    // business_analyst is a real paid agent (Mission 8, Sections 14-15) —
+    // needs a real paid-plan organization to recruit at all; a free-plan
+    // org is refused by design (see subscriptionWorkflow.ts). This test
+    // is about cross-organization isolation, not plan gating, so upgrade
+    // Bakery HQ here rather than changing what a free org can do.
+    await upgradeTestOrgToPaidPlan(bakery.organizationId);
     await recruitEmployee(bakery.organizationId, "business_analyst");
 
     const bakeryDirectory = await listEmployeeDirectory(bakery.organizationId);
@@ -350,6 +357,7 @@ describe("Organization roles and permissions", () => {
 
   it("a real member cannot recruit or remove an employee — only owner/admin can", async () => {
     const { OrganizationPermissionError } = await import("@/lib/domain/organizationWorkflow");
+    await upgradeTestOrgToPaidPlan(bakery.organizationId); // business_analyst is a real paid agent — see Mission 8, Sections 14-15
     await recruitEmployee(bakery.organizationId, "business_analyst");
 
     // The employeeWorkflow functions themselves are organization-scoped

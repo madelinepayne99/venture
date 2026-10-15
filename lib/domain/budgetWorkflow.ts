@@ -81,8 +81,48 @@ export async function getOrganizationBudgetConfig(
     .select()
     .from(schema.organizationBudgets)
     .where(eq(schema.organizationBudgets.organization_id, organizationId));
+
+  // An explicit, founder-configured override always wins, regardless of
+  // plan — more specific than any plan default.
+  if (row?.monthly_usd_limit != null) {
+    return { monthlyUsdLimit: row.monthly_usd_limit, maxConcurrentPaidTasks: row.max_concurrent_paid_tasks, row };
+  }
+
+  // No override — resolve the real default from this organization's
+  // real subscription plan (Mission 8, Sections 14-15), using the SAME
+  // executor/connection the caller passed in — deliberately never a
+  // fresh getDb() call here, even though subscriptionWorkflow.ts's own
+  // resolveOrganizationSubscription() would be simpler to call: doing so
+  // from inside reserveBudget's open transaction would reopen the exact
+  // real connection-pool deadlock this function's own doc comment
+  // documents (two connections held by one in-flight reservation).
+  const [subscription] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.organization_id, organizationId));
+  if (subscription) {
+    const [plan] = await db
+      .select()
+      .from(schema.subscriptionPlans)
+      .where(eq(schema.subscriptionPlans.id, subscription.plan_id));
+    if (plan) {
+      const isEntitled = subscription.status === "active" || subscription.status === "trialing";
+      // A cancelled/past-due/incomplete subscription gets $0, never the
+      // plan's real allowance and never the flat legacy default — the
+      // real mechanism behind "a cancelled subscription cannot unlock
+      // paid AI work," not just a UI restriction.
+      const monthlyUsdLimit = isEntitled ? plan.monthly_ai_budget_usd : 0;
+      return { monthlyUsdLimit, maxConcurrentPaidTasks: row?.max_concurrent_paid_tasks ?? null, row: row ?? null };
+    }
+  }
+
+  // No real subscription row at all — shouldn't happen for an
+  // organization created via createOrganizationWithOwner (which creates
+  // one atomically), but a conservative, non-crashing fallback rather
+  // than throwing from deep inside every paid operation's own pre-flight
+  // check over a data-integrity problem this function can't itself fix.
   return {
-    monthlyUsdLimit: row?.monthly_usd_limit ?? DEFAULT_MONTHLY_BUDGET_USD,
+    monthlyUsdLimit: DEFAULT_MONTHLY_BUDGET_USD,
     maxConcurrentPaidTasks: row?.max_concurrent_paid_tasks ?? null,
     row: row ?? null,
   };

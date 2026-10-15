@@ -4,6 +4,7 @@ import { listOrganizationMembershipsForFounder } from "@/lib/db/repositories";
 import { ensureFounderAccount } from "@/lib/auth/allowList";
 import { createOrganizationWithOwner, OrganizationValidationError } from "@/lib/domain/organizationWorkflow";
 import { listEmployeeDirectory, recruitEmployee } from "@/lib/domain/employeeWorkflow";
+import { upgradeTestOrgToPaidPlan } from "./testUtils";
 
 /**
  * Mission 8, Sections 11-12 — the real new-customer journey, exercised
@@ -68,6 +69,11 @@ describe("the real new-customer journey (Mission 8)", () => {
     expect(tomMemberships.map((m) => m.organization_id)).toEqual([tom.organization.id]);
 
     // Recruiting an employee in one organization never appears in the other's.
+    // scout is a real paid agent (Mission 8, Sections 14-15) — a real
+    // paid plan is required to recruit it at all; a fresh sign-up starts
+    // on the free plan by design, so upgrade here since this test is
+    // about recruitment isolation, not plan gating (covered separately).
+    await upgradeTestOrgToPaidPlan(priya.organization.id);
     await recruitEmployee(priya.organization.id, "scout");
 
     const priyaDirectory = await listEmployeeDirectory(priya.organization.id);

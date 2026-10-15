@@ -286,6 +286,121 @@ export async function seedAgents(instance: Db): Promise<void> {
   }
 }
 
+// --- Subscription plans (Mission 8, Sections 14-15) ----------------------
+//
+// The real plan catalog — see docs/venture-hq-commercial-mvp-progress.md
+// for the full pricing analysis these numbers come from (real measured
+// per-task costs from this app's own `costs` table, plus researched
+// comparable AI-tool pricing; every figure below is cited there, nothing
+// here is invented). `monthly_price_gbp` are provisional, founder-
+// approval-pending prices — `is_published: false` on every real
+// customer-facing plan keeps them off the real pricing page until a
+// founder deliberately flips it. "founder" is Ellis and Maddie's own
+// plan: never purchasable, never shown on the pricing page at all, kept
+// at the same $20/month budget their Founders' HQ has always had (this
+// migration doesn't change their real access, just names it).
+export const CANONICAL_SUBSCRIPTION_PLANS = [
+  {
+    id: "free",
+    display_name: "Free Playground",
+    monthly_price_gbp: 0,
+    // Real $0 — the actual mechanism (not a UI restriction) behind "a
+    // free organization can't consume paid AI usage": reserveBudget's
+    // own real atomic gate refuses any paid call once this is resolved
+    // as the organization's limit.
+    monthly_ai_budget_usd: 0,
+    monthly_video_allowance: 0,
+    includes_paid_agents: false,
+    is_published: false,
+  },
+  {
+    id: "starter",
+    display_name: "Starter",
+    monthly_price_gbp: 19,
+    monthly_ai_budget_usd: 10,
+    monthly_video_allowance: 0,
+    includes_paid_agents: true,
+    is_published: false,
+  },
+  {
+    id: "business",
+    display_name: "Business",
+    monthly_price_gbp: 49,
+    monthly_ai_budget_usd: 20,
+    monthly_video_allowance: 2,
+    includes_paid_agents: true,
+    is_published: false,
+  },
+  {
+    id: "growth",
+    display_name: "Growth",
+    monthly_price_gbp: 99,
+    monthly_ai_budget_usd: 45,
+    monthly_video_allowance: 5,
+    includes_paid_agents: true,
+    is_published: false,
+  },
+  {
+    id: "founder",
+    display_name: "Founder (internal)",
+    monthly_price_gbp: null,
+    monthly_ai_budget_usd: 20, // unchanged from the real default Founders' HQ has always had
+    monthly_video_allowance: 999, // not meaningfully limited — development/ops use, not a customer allowance
+    includes_paid_agents: true,
+    is_published: false, // never shown on the real customer pricing page
+  },
+] as const;
+
+/** Idempotent: inserts any plan from the canonical catalog that doesn't already exist by id. Never updates an existing plan's price/quotas — a real price change is a deliberate, reviewed code change, not a silent reseed. */
+export async function seedSubscriptionPlans(instance: Db): Promise<void> {
+  const existing = await instance.select({ id: schema.subscriptionPlans.id }).from(schema.subscriptionPlans);
+  const existingIds = new Set(existing.map((p) => p.id));
+  const missing = CANONICAL_SUBSCRIPTION_PLANS.filter((p) => !existingIds.has(p.id));
+  if (missing.length === 0) return;
+  await instance.insert(schema.subscriptionPlans).values(
+    missing.map((p) => ({
+      ...p,
+      created_at: new Date().toISOString(),
+    })),
+  );
+}
+
+/**
+ * Safety net, not the primary mechanism — real new organizations get a
+ * real "free" subscription row created atomically at creation time (see
+ * createOrganizationWithOwner). This only backfills any organization
+ * that's somehow missing one (every pre-existing organization the first
+ * time this migration runs; a crash between an organization's own
+ * creation and its subscription row in some future bug). Deliberately
+ * NOT the same shape as the real cross-tenant bug this session already
+ * found and fixed in ensureDefaultOrganization: that bug granted
+ * membership in SOMEONE ELSE'S organization; this only ever gives an
+ * organization its OWN default plan, scoped to its own id — it can never
+ * cross a tenant boundary, so it's safe to run on every call.
+ */
+export async function ensureOrganizationSubscriptions(instance: Db): Promise<void> {
+  const orgs = await instance.select({ id: schema.organizations.id }).from(schema.organizations);
+  if (orgs.length === 0) return;
+  const existing = await instance
+    .select({ organization_id: schema.organizationSubscriptions.organization_id })
+    .from(schema.organizationSubscriptions);
+  const existingIds = new Set(existing.map((s) => s.organization_id));
+  for (const org of orgs) {
+    if (existingIds.has(org.id)) continue;
+    await instance
+      .insert(schema.organizationSubscriptions)
+      .values({
+        id: randomUUID(),
+        organization_id: org.id,
+        plan_id: "free",
+        status: "active",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .onConflictDoNothing({ target: schema.organizationSubscriptions.organization_id });
+  }
+}
+
 // Multi-tenancy (Master Development Mission 6). Every table that gained a
 // real `organization_id` column in this migration keeps it NULLABLE at
 // the schema level specifically so this function can backfill safely —
@@ -348,6 +463,23 @@ export async function ensureDefaultOrganization(instance: Db): Promise<string> {
         role: "owner",
       });
     }
+
+    // The real "founder" plan (Mission 8, Sections 14-15) — same
+    // one-time-only scoping as the membership loop above, for the same
+    // reason: this must only ever apply to the one real default
+    // organization at the exact moment it's created, never backfilled
+    // onto any organization created later. ensureOrganizationSubscriptions
+    // (called from seed() after this function) is the safety net for
+    // every other organization, always defaulting to "free" — never
+    // "founder", which is deliberately not assignable by any backfill.
+    await instance.insert(schema.organizationSubscriptions).values({
+      id: randomUUID(),
+      organization_id: organizationId,
+      plan_id: "founder",
+      status: "active",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
   }
 
   // Backfill every real table this migration touched — WHERE ... IS NULL
@@ -416,6 +548,7 @@ async function seed(instance: Db) {
   }
 
   await seedAgents(instance);
+  await seedSubscriptionPlans(instance);
 
   const projectCount = await countRows(instance, schema.projects);
   if (projectCount === 0) {
@@ -437,6 +570,7 @@ async function seed(instance: Db) {
   // organization_id on whatever was just seeded above (a fresh database)
   // and on every pre-existing row (a real, already-populated database).
   await ensureDefaultOrganization(instance);
+  await ensureOrganizationSubscriptions(instance);
 }
 
 /**
@@ -474,6 +608,7 @@ export async function resetDbForTests(): Promise<void> {
       agent_tasks, chief_of_staff_goals, expenses, budgets, checklist_items, checklists, business_analyst_reports,
       agent_deliverable_reviews, agent_deliverables, projects, agent_capabilities, agents,
       budget_reservations, organization_budgets,
+      billing_webhook_events, organization_subscriptions, subscription_plans,
       organization_agents, organization_members, organizations, founders,
       auth_session, auth_account, auth_verification_token, auth_user
     RESTART IDENTITY CASCADE

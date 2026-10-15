@@ -46,6 +46,9 @@ import type {
   OrganizationMemberRole,
   OrganizationAgent,
   OrganizationAgentStatus,
+  SubscriptionPlan,
+  OrganizationSubscription,
+  SubscriptionStatus,
 } from "./types";
 
 function now(): string {
@@ -162,6 +165,120 @@ export async function getOrganizationMembership(
       ),
     );
   return row as OrganizationMember | undefined;
+}
+
+// --- Subscription plans & billing (Mission 8, Sections 14-15) -----------
+
+export async function listSubscriptionPlans(): Promise<SubscriptionPlan[]> {
+  const db = await getDb();
+  return db.select().from(schema.subscriptionPlans);
+}
+
+export async function getSubscriptionPlan(planId: string): Promise<SubscriptionPlan | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.subscriptionPlans).where(eq(schema.subscriptionPlans.id, planId));
+  return row;
+}
+
+/** Real, atomic creation — called once, at the moment an organization itself is created (createOrganizationWithOwner), so every organization has exactly one subscription row from the start. `onConflictDoNothing` makes a retried call safe rather than erroring on the real unique constraint. */
+export async function createOrganizationSubscription(input: {
+  organizationId: string;
+  planId: string;
+}): Promise<OrganizationSubscription> {
+  const db = await getDb();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const [row] = await db
+    .insert(schema.organizationSubscriptions)
+    .values({
+      id,
+      organization_id: input.organizationId,
+      plan_id: input.planId,
+      status: "active",
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflictDoNothing({ target: schema.organizationSubscriptions.organization_id })
+    .returning();
+  if (row) return row as OrganizationSubscription;
+  // Lost a race to a concurrent creation for the SAME organization (or a
+  // retried call) — return the real existing row rather than erroring.
+  const [existing] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.organization_id, input.organizationId));
+  return existing as OrganizationSubscription;
+}
+
+export async function getOrganizationSubscription(organizationId: string): Promise<OrganizationSubscription | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.organization_id, organizationId));
+  return row as OrganizationSubscription | undefined;
+}
+
+export async function getOrganizationSubscriptionByStripeCustomerId(
+  stripeCustomerId: string,
+): Promise<OrganizationSubscription | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.stripe_customer_id, stripeCustomerId));
+  return row as OrganizationSubscription | undefined;
+}
+
+export async function updateOrganizationSubscription(
+  organizationId: string,
+  fields: Partial<{
+    planId: string;
+    status: SubscriptionStatus;
+    stripeCustomerId: string | null;
+    stripeSubscriptionId: string | null;
+    currentPeriodEnd: string | null;
+    cancelAtPeriodEnd: boolean;
+  }>,
+): Promise<OrganizationSubscription> {
+  const db = await getDb();
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (fields.planId !== undefined) updates.plan_id = fields.planId;
+  if (fields.status !== undefined) updates.status = fields.status;
+  if (fields.stripeCustomerId !== undefined) updates.stripe_customer_id = fields.stripeCustomerId;
+  if (fields.stripeSubscriptionId !== undefined) updates.stripe_subscription_id = fields.stripeSubscriptionId;
+  if (fields.currentPeriodEnd !== undefined) updates.current_period_end = fields.currentPeriodEnd;
+  if (fields.cancelAtPeriodEnd !== undefined) updates.cancel_at_period_end = fields.cancelAtPeriodEnd;
+  const [row] = await db
+    .update(schema.organizationSubscriptions)
+    .set(updates)
+    .where(eq(schema.organizationSubscriptions.organization_id, organizationId))
+    .returning();
+  return row as OrganizationSubscription;
+}
+
+/** Real idempotency check — returns true if this exact Stripe event id has already been processed (insert succeeded = first time seeing it; conflict = a genuine redelivery). */
+export async function recordBillingWebhookEventIfNew(eventId: string, type: string): Promise<boolean> {
+  const db = await getDb();
+  const result = await db
+    .insert(schema.billingWebhookEvents)
+    .values({ id: eventId, type, processed_at: new Date().toISOString() })
+    .onConflictDoNothing({ target: schema.billingWebhookEvents.id })
+    .returning({ id: schema.billingWebhookEvents.id });
+  return result.length > 0;
+}
+
+/** Real count of content items a real organization has already started producing this calendar month — the actual mechanism behind each plan's separate monthly video allowance (contentProduction.ts's assertPlanAllowsNewVideoProduction). */
+export async function countContentItemsStartedThisMonth(organizationId: string, monthStartIso: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db.execute<{ count: string }>(sql`
+    select count(*)::int as count
+    from ${schema.contentItems} ci
+    join ${schema.missions} m on m.id = ci.mission_id
+    where m.organization_id = ${organizationId}
+      and ci.created_at >= ${monthStartIso}
+  `);
+  return Number((row as unknown as { count: number })?.count ?? 0);
 }
 
 // --- Per-organization workforce (replaces the global agents.status as the

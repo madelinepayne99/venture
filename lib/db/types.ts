@@ -118,6 +118,14 @@ export type BudgetReservation = Omit<InferSelectModel<typeof schema.budgetReserv
   status: BudgetReservationStatus;
 };
 
+// --- Subscription plans & billing (Mission 8, Sections 14-15) -----------
+export type SubscriptionPlan = InferSelectModel<typeof schema.subscriptionPlans>;
+export type SubscriptionStatus = (typeof schema.subscriptionStatusValues)[number];
+export type OrganizationSubscription = Omit<InferSelectModel<typeof schema.organizationSubscriptions>, "status"> & {
+  status: SubscriptionStatus;
+};
+export type BillingWebhookEvent = InferSelectModel<typeof schema.billingWebhookEvents>;
+
 // --- Content Bot production (Milestone C1) ---------------------------------
 
 export type ContentItemState = (typeof schema.contentItemStateValues)[number];

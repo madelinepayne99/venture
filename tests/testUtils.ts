@@ -11,8 +11,28 @@ import {
   recordEvidence,
   recordDeliverable,
   getAgentByKey,
+  updateOrganizationSubscription,
 } from "@/lib/db/repositories";
 import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+
+/**
+ * Mission 8, Sections 14-15: every real organization now starts on the
+ * real "free" plan ($0 AI budget, no paid-agent access — see
+ * createOrganizationWithOwner) rather than the old flat
+ * DEFAULT_MONTHLY_BUDGET_USD ($20) every organization implicitly had
+ * before subscriptions existed. Tests that exercise real paid-agent
+ * recruitment or real budget headroom (most of the existing Scout/
+ * Content Bot/Business Analyst/budget suite) need a real paid plan to
+ * do that — this is the one, real, shared way to put a test
+ * organization on one, rather than each test file inventing its own
+ * direct schema write. "business" is used as the default real plan
+ * here specifically because it's the one plan with both paid-agent
+ * access AND a real, non-zero video allowance, covering the widest
+ * range of existing tests without each needing to pick a plan.
+ */
+export async function upgradeTestOrgToPaidPlan(organizationId: string, planId = "business"): Promise<void> {
+  await updateOrganizationSubscription(organizationId, { planId, status: "active" });
+}
 
 export function makeScoutReport(overrides: Partial<CommerceReport> = {}): CommerceReport {
   return {

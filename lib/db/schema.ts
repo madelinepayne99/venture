@@ -204,6 +204,112 @@ export const budgetReservations = pgTable(
   },
 );
 
+// --- Subscription plans & billing (Mission 8, Sections 14-15) -----------
+//
+// Real organization-level entitlements, enforced server-side through the
+// SAME atomic budget-reservation mechanism above — this section adds
+// *what the ceiling is* (resolved from a real subscription plan instead
+// of always DEFAULT_MONTHLY_BUDGET_USD), never a second, parallel
+// enforcement path. Stripe billing is real, current-API code
+// (lib/billing/stripe.ts) that runs in test mode only; with no
+// STRIPE_SECRET_KEY configured (true in this sandbox — see CLAUDE.md's
+// own "Local verification vs a real deployment" discipline, applied here
+// identically to every other provider), billing routes refuse clearly
+// rather than silently no-opping or granting access.
+
+export const subscriptionPlans = pgTable("subscription_plans", {
+  // Plain, stable slugs — "free" | "starter" | "business" | "growth" |
+  // "founder" (Ellis/Maddie's own real plan, never purchasable via
+  // Stripe — see organizationSubscriptions' own doc comment). Plain
+  // text, not an enum, same reasoning as every other vocabulary column
+  // in this schema.
+  id: text("id").primaryKey(),
+  display_name: text("display_name").notNull(),
+  // Provisional, founder-approved-pending prices — see
+  // docs/venture-hq-commercial-mvp-progress.md's own pricing analysis
+  // for how these were derived from real measured costs plus researched
+  // comparable tools, not invented. monthly_price_gbp is null for a plan
+  // with no real price (free, founder).
+  monthly_price_gbp: real("monthly_price_gbp"),
+  // The real monthly AI research/text budget this plan grants —
+  // resolved by budgetWorkflow.ts's getOrganizationBudgetConfig as the
+  // real default when an organization has no explicit
+  // organization_budgets override, replacing the flat
+  // DEFAULT_MONTHLY_BUDGET_USD constant for every plan but "free" (which
+  // is real monthly_ai_budget_usd: 0 — the actual mechanism behind "a
+  // free organization can't consume paid AI usage", not just a UI
+  // restriction).
+  monthly_ai_budget_usd: real("monthly_ai_budget_usd").notNull(),
+  // Content Bot video productions are disproportionately expensive
+  // (up to MAX_ITEM_SPEND_USD each — $8) relative to a research task
+  // (tens of cents) — a real, SEPARATE monthly counter from the dollar
+  // budget above, per the founders' own explicit "separately controlled
+  // allowances" instruction. Enforced by contentWorkflow.ts before a new
+  // content item is ever created, independent of (and in addition to)
+  // the existing per-item dollar cap.
+  monthly_video_allowance: integer("monthly_video_allowance").notNull().default(0),
+  // Whether this plan may recruit/use the three real agents with actual
+  // paid AI execution (Scout, Content Bot, Business Analyst) — the real
+  // "employee access" enforcement the founders asked for, checked
+  // server-side in employeeWorkflow.ts's recruitEmployee, never just
+  // hidden in the UI. The three manual/free agents (Executive Assistant,
+  // Finance, Operations) and Chief of Staff's own delegation UI remain
+  // available on every plan, including free.
+  includes_paid_agents: boolean("includes_paid_agents").notNull().default(false),
+  // Real Stripe Price ID once a real Stripe product/price is created for
+  // this plan (test mode) — null until then, and permanently null for
+  // "free"/"founder", which are never purchased through Stripe.
+  stripe_price_id: text("stripe_price_id"),
+  // Gates whether a plan is shown on the real customer-facing pricing
+  // page at all — every plan here starts false (provisional prices,
+  // explicitly not yet founder-approved for publication) until a
+  // founder deliberately flips it.
+  is_published: boolean("is_published").notNull().default(false),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+export const subscriptionStatusValues = [
+  "trialing",
+  "active",
+  "past_due",
+  "canceled",
+  "incomplete",
+] as const;
+
+export const organizationSubscriptions = pgTable("organization_subscriptions", {
+  id: text("id").primaryKey(),
+  organization_id: text("organization_id")
+    .notNull()
+    .unique()
+    .references(() => organizations.id),
+  plan_id: text("plan_id")
+    .notNull()
+    .references(() => subscriptionPlans.id),
+  status: text("status").notNull().default("active"),
+  // Real Stripe references once a real checkout completes (test mode) —
+  // both null for "free"/"founder" organizations, which never go
+  // through Stripe at all.
+  stripe_customer_id: text("stripe_customer_id"),
+  stripe_subscription_id: text("stripe_subscription_id"),
+  current_period_end: timestamp("current_period_end", { mode: "string" }),
+  cancel_at_period_end: boolean("cancel_at_period_end").notNull().default(false),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// Real idempotency for Stripe webhook processing — Stripe's own delivery
+// guarantee is "at least once", so the same real event can genuinely
+// arrive twice (a retry after a slow response, a dashboard resend). The
+// event's own real Stripe id is the primary key: a second delivery's
+// insert attempt collides on it (ON CONFLICT DO NOTHING in the handler),
+// so its entitlement-changing side effects run at most once — the same
+// real discipline budget_reservations' idempotency_key already follows.
+export const billingWebhookEvents = pgTable("billing_webhook_events", {
+  id: text("id").primaryKey(), // the real Stripe event id, e.g. "evt_..."
+  type: text("type").notNull(),
+  processed_at: timestamp("processed_at", { mode: "string" }).notNull().defaultNow(),
+});
+
 export const agentStatusValues = ["active", "planned"] as const;
 
 export const agents = pgTable("agents", {
