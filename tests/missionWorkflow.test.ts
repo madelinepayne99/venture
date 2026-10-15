@@ -212,6 +212,57 @@ describe("mission workflow", () => {
     expect(actions).toContain("research_refused_budget_exhausted");
   });
 
+  it("Mission 9 — a background job (runScoutPipeline) cannot be used to bypass an organization's spending limit, even for a stale-recruited agent after a real downgrade/cancellation", async () => {
+    // A real scenario this protects against: an organization subscribes
+    // to a paid plan, recruits Scout, then genuinely downgrades or
+    // cancels (a real Stripe webhook — see billingWorkflow.ts). Scout's
+    // own organization_agents row stays "active" (recruitment isn't
+    // automatically reverted by a plan change) — the real, actual
+    // protection must come from the budget/entitlement check INSIDE the
+    // background job itself (runScoutPipeline), not from a route-level
+    // check that a direct Inngest-triggered background job never goes
+    // through at all.
+    const { createOrganizationWithOwner } = await import("@/lib/domain/organizationWorkflow");
+    const { createFounder, updateOrganizationSubscription } = await import("@/lib/db/repositories");
+    const { recruitEmployee } = await import("@/lib/domain/employeeWorkflow");
+
+    const customerFounder = await createFounder({ name: "Downgrade Test Customer" });
+    const { organization } = await createOrganizationWithOwner(customerFounder.id, "Downgrade Test Co");
+
+    // Genuinely paid, genuinely recruits Scout — both real, legitimate actions.
+    await updateOrganizationSubscription(organization.id, { planId: "business", status: "active" });
+    await recruitEmployee(organization.id, "scout");
+
+    // A real cancellation (e.g. customer.subscription.deleted) — the
+    // actual mechanism billingWorkflow.ts uses, reverting to the real
+    // free plan. Scout's own recruitment row is deliberately left
+    // untouched — proving THIS, not agent-recruitment state, is what a
+    // background job must actually check.
+    await updateOrganizationSubscription(organization.id, { planId: "free", status: "canceled" });
+
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+    const created = await createAndSubmitMission({
+      founderId: customerFounder.id,
+      projectId: null,
+      title: "Should never actually run",
+      brief: "Proving a downgraded organization's background job is still blocked.",
+    });
+    await approveMission(created.id, customerFounder.id);
+
+    // This is the exact call shape the real Inngest job
+    // (scoutResearchJob.ts) makes — no HTTP route, no founder session,
+    // nothing to bypass by crafting a request differently.
+    const settled = await runScoutPipeline(created.id);
+
+    expect(scoutModule.runScoutResearch).not.toHaveBeenCalled(); // the real model was never reached
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toMatch(/budget is exhausted/i); // $0 real budget on the free plan
+    expect(await listCosts(created.id)).toHaveLength(0); // zero real spend
+  });
+
   it("moves a mission to awaiting_evidence when Scout's evidence is too weak to decide", async () => {
     const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
       "@/lib/domain/missionWorkflow"
