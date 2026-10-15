@@ -62,6 +62,29 @@ export async function listFounders(): Promise<Founder[]> {
   return db.select().from(schema.founders).orderBy(schema.founders.created_at);
 }
 
+/**
+ * Real, organization-scoped founder listing (Mission 10) — the actual
+ * fix for a real cross-tenant PII leak found live during this session:
+ * `listFounders()` above returns EVERY founder in the entire system
+ * with no scoping at all, and was being served directly to any
+ * authenticated founder via `GET /api/founders` and `app/page.tsx` —
+ * meaning a completely unrelated customer could see every other real
+ * founder's name and (where set) real email address, including Ellis
+ * and Maddie's. This is the organization-scoped replacement every
+ * customer-facing read must use instead: only the real members of the
+ * organization actually being asked about.
+ */
+export async function listFoundersForOrganization(organizationId: string): Promise<Founder[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ founder: schema.founders })
+    .from(schema.organizationMembers)
+    .innerJoin(schema.founders, eq(schema.founders.id, schema.organizationMembers.founder_id))
+    .where(eq(schema.organizationMembers.organization_id, organizationId))
+    .orderBy(schema.founders.created_at);
+  return rows.map((r) => r.founder);
+}
+
 export async function getFounder(id: string): Promise<Founder | undefined> {
   const db = await getDb();
   const [row] = await db.select().from(schema.founders).where(eq(schema.founders.id, id));
@@ -1445,6 +1468,7 @@ export async function recordCost(entry: {
     await db.insert(schema.ledgerEntries).values({
       id: randomUUID(),
       mission_id: entry.missionId,
+      organization_id: entry.organizationId,
       category: "agent_cost",
       description,
       amount_usd: -Math.abs(entry.usdCost),
@@ -1499,16 +1523,54 @@ export async function contentVersionSpendUsd(contentVersionId: string): Promise<
   return row?.total ?? 0;
 }
 
+/**
+ * @deprecated Globally unscoped — returns EVERY organization's real ledger
+ * entries with no filtering at all. This was found live during Mission 10
+ * serving one organization's real financial data to a completely unrelated
+ * customer via GET /api/ledger and app/page.tsx. Kept only because tests
+ * reference it directly for seed-data assertions; every real route/page must
+ * use `listLedgerEntriesForOrganization` instead.
+ */
 export async function listLedgerEntries(limit = 50): Promise<LedgerEntry[]> {
   const db = await getDb();
   return db.select().from(schema.ledgerEntries).orderBy(desc(schema.ledgerEntries.created_at)).limit(limit);
 }
 
+/**
+ * @deprecated Globally unscoped — see `listLedgerEntries`'s doc comment.
+ * Use `ledgerTotalUsdForOrganization` for any real, customer-facing total.
+ */
 export async function ledgerTotalUsd(): Promise<number> {
   const db = await getDb();
   const [row] = await db
     .select({ total: sql<number>`coalesce(sum(${schema.ledgerEntries.amount_usd}), 0)` })
     .from(schema.ledgerEntries);
+  return row?.total ?? 0;
+}
+
+/**
+ * Real, organization-scoped ledger listing (Mission 10) — the fix for the
+ * second real cross-tenant leak found live this session (the first was
+ * `listFoundersForOrganization`'s own leak). Only entries belonging to the
+ * organization actually being asked about.
+ */
+export async function listLedgerEntriesForOrganization(organizationId: string, limit = 50): Promise<LedgerEntry[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(schema.ledgerEntries)
+    .where(eq(schema.ledgerEntries.organization_id, organizationId))
+    .orderBy(desc(schema.ledgerEntries.created_at))
+    .limit(limit);
+}
+
+/** Organization-scoped counterpart to `ledgerTotalUsd` — see its doc comment above. */
+export async function ledgerTotalUsdForOrganization(organizationId: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${schema.ledgerEntries.amount_usd}), 0)` })
+    .from(schema.ledgerEntries)
+    .where(eq(schema.ledgerEntries.organization_id, organizationId));
   return row?.total ?? 0;
 }
 

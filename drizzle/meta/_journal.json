@@ -134,6 +134,13 @@
       "when": 1792091087699,
       "tag": "0018_luxuriant_squirrel_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1792091571945,
+      "tag": "0019_ledger_entries_organization_scoping",
+      "breakpoints": true
     }
   ]
 }

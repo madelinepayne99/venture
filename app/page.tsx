@@ -2,10 +2,10 @@ import {
   listAgents,
   listMissionsForOrganization,
   listLeadAssignmentsForOrganization,
-  listLedgerEntries,
-  ledgerTotalUsd,
+  listLedgerEntriesForOrganization,
+  ledgerTotalUsdForOrganization,
   listProjects,
-  listFounders,
+  listFoundersForOrganization,
   listAgentTaskWorldSignalsForOrganization,
   listOrganizationMembershipsForFounder,
 } from "@/lib/db/repositories";
@@ -46,15 +46,21 @@ export default async function HomePage() {
   // listLeadAssignmentsForOrganization's own doc comment.
   const organization = await getActiveOrganizationForFounder(session!.founderId!);
 
+  // Mission 10: both ledger calls and the founders listing below used to be
+  // globally unscoped (listLedgerEntries/ledgerTotalUsd/listFounders) — a
+  // confirmed live cross-tenant leak of every organization's real financial
+  // ledger and real founder names/emails to any other organization's
+  // founder. Fixed to the organization-scoped equivalents everywhere else
+  // in this file already uses.
   const [agents, missions, leadAssignments, ledgerEntries, ledgerTotal, projects, founders, agentTaskSignals] =
     await Promise.all([
       listAgents(),
       listMissionsForOrganization(organization.id),
       listLeadAssignmentsForOrganization(organization.id),
-      listLedgerEntries(),
-      ledgerTotalUsd(),
+      listLedgerEntriesForOrganization(organization.id),
+      ledgerTotalUsdForOrganization(organization.id),
       listProjects(organization.id),
-      listFounders(),
+      listFoundersForOrganization(organization.id),
       listAgentTaskWorldSignalsForOrganization(organization.id),
     ]);
 

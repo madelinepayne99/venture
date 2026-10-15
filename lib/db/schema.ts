@@ -983,6 +983,16 @@ export const costs = pgTable("costs", {
 export const ledgerEntries = pgTable("ledger_entries", {
   id: text("id").primaryKey(),
   mission_id: text("mission_id").references(() => missions.id),
+  // Mission 10 — the real second half of the same gap Mission 7 closed on
+  // `costs`: this table had NO organization attribution at all (only a
+  // nullable `mission_id`), and was being served completely unscoped to
+  // every authenticated founder via GET /api/ledger and app/page.tsx —
+  // a confirmed live cross-tenant leak of every organization's real
+  // financial ledger. Direct and nullable for the same reason `costs.
+  // organization_id` is nullable (a safe backfill for pre-existing rows,
+  // not a guess dressed as a default) — every NEW row sets this
+  // explicitly from `recordCost`'s already-resolved organization id.
+  organization_id: text("organization_id").references(() => organizations.id),
   category: text("category").notNull(),
   description: text("description").notNull(),
   amount_usd: real("amount_usd").notNull(),
