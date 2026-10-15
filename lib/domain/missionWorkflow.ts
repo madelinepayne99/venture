@@ -30,12 +30,13 @@ import { validateMissionInput, type MissionInput } from "@/lib/domain/missionVal
 import { assertTransition, isCancellable, MissionConcurrencyError } from "@/lib/domain/missionStates";
 import { getActiveOrganizationForFounder, requireOrganizationId } from "@/lib/domain/organizationWorkflow";
 import { isContentItemCancellable } from "@/lib/domain/contentItemStates";
-import { runScoutResearch, ScoutResearchError } from "@/lib/agents/scout";
+import { runScoutResearch, ScoutResearchError, SCOUT_MODEL } from "@/lib/agents/scout";
 import { ScoutReportSchema } from "@/lib/agents/scout/schema";
 import { findProductionRecommendationInconsistency } from "@/lib/agents/scout/guardrails";
 import { formatDiagnostics } from "@/lib/agents/scout/diagnostics";
 import { calculateUsdCost } from "@/lib/agents/pricing";
 import { inngest, MISSION_APPROVED_EVENT, MISSION_FOLLOWUP_NEEDED_EVENT } from "@/lib/inngest/client";
+import { reserveBudget, settleReservation, BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
 
 // The one and only cap on automatic Scout research: a mission whose first
 // pass comes back "investigate_further" gets exactly one automatic,
@@ -48,6 +49,34 @@ import { inngest, MISSION_APPROVED_EVENT, MISSION_FOLLOWUP_NEEDED_EVENT } from "
 // concurrency key on scoutResearchJob.ts) — never trust a single code
 // path with real, uncapped model spend.
 export const MAX_RESEARCH_PASSES = 2;
+
+// Mission 7 Phase 4 / Mission 8 Milestone C: the real organization-level
+// worst-case ceiling for one Scout research pass — mirrors CLAUDE.md's own
+// documented figure (MAX_ITERATIONS main-loop calls plus one bounded
+// recovery call, each capped at MAX_TOKENS output tokens, ≈$0.50 at
+// Sonnet 5's rate) but computed from the real pricing table and Scout's own
+// constants rather than a hand-picked dollar amount, so it tracks the
+// actual model's rate automatically. Input tokens aren't precisely
+// bounded (a growing search-result conversation) — 30,000 is a generous,
+// documented estimate, not a measured figure, the same "don't try to
+// bound input precisely" approach Business Analyst's own ceiling takes.
+const SCOUT_MAX_ITERATIONS = 4;
+const SCOUT_MAX_TOKENS = 10_000;
+const SCOUT_WORST_CASE_OUTPUT_TOKENS = SCOUT_MAX_TOKENS * SCOUT_MAX_ITERATIONS + SCOUT_MAX_TOKENS; // + one bounded recovery call
+const SCOUT_WORST_CASE_INPUT_TOKENS_ESTIMATE = 30_000;
+
+function estimateScoutPassCeilingUsd(): number {
+  try {
+    return calculateUsdCost(SCOUT_MODEL, {
+      input_tokens: SCOUT_WORST_CASE_INPUT_TOKENS_ESTIMATE,
+      output_tokens: SCOUT_WORST_CASE_OUTPUT_TOKENS,
+    });
+  } catch {
+    // Unknown model pricing — a conservative, documented flat fallback
+    // rather than letting an unpriced model bypass budget enforcement.
+    return 1;
+  }
+}
 
 export class MissionValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -641,6 +670,49 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
     return mission;
   }
 
+  // The real organization-level enforcement point, mirroring Business
+  // Analyst's own gate exactly: reserve this pass's worst-case ceiling
+  // before any real model call happens. The idempotency key is keyed on
+  // the mission's own id and its (already atomically set) pass number —
+  // a crash-resumed run for the SAME pass reserves against the SAME key
+  // and gets back the existing reservation rather than double-counting;
+  // pass 1 and pass 2 get distinct keys since they're genuinely separate
+  // spend events. A refusal here settles the mission to "failed" directly
+  // — nothing was spent, so there's no cost to record — rather than
+  // letting a background job's thrown error leave it stuck in
+  // "researching" for the stuck-mission watchdog to eventually reap with
+  // a less honest reason.
+  const organizationId = requireOrganizationId(mission.organization_id, `Mission ${mission.id}`);
+  let reservation;
+  try {
+    reservation = await reserveBudget({
+      organizationId,
+      purpose: `scout_research_pass_${mission.research_pass_count}`,
+      estimatedUsd: estimateScoutPassCeilingUsd(),
+      idempotencyKey: `scout-pass-${mission.id}-${mission.research_pass_count}`,
+    });
+  } catch (error) {
+    if (error instanceof BudgetExhaustedError) {
+      const refusal = await transitionMissionState(mission.id, ["researching"], "failed", {
+        failure_reason: error.message,
+      });
+      await failStage(stage.id, error.message);
+      await recordActivity({
+        missionId: mission.id,
+        actor: "system",
+        action: "research_refused_budget_exhausted",
+        detail: error.message,
+      });
+      // transitionMissionState always returns the mission's real current
+      // state either way — if it moved on (e.g. cancelled) before this
+      // could land, that's exactly the non-overwrite guarantee this
+      // function follows everywhere else: leave it where the founder put
+      // it, never force "failed" over a state that already moved on.
+      return refusal.mission;
+    }
+    throw error;
+  }
+
   try {
     const workspaceType = await resolveWorkspaceType(mission);
     const isFollowupPass = mission.research_pass_count >= 2;
@@ -708,6 +780,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
         action: "research_discarded_after_state_change",
         detail: `Mission was "${settlement.mission.state}" by the time Scout's research finished; its verdict (${outcome.report.verdict}) was not applied, but the ${outcome.usage.usdCost.toFixed(4)} USD cost was recorded.`,
       });
+      await settleReservation(reservation.id, outcome.usage.usdCost);
       return settlement.mission;
     }
 
@@ -784,16 +857,20 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
       }
     }
 
+    await settleReservation(reservation.id, outcome.usage.usdCost);
     return settlement.mission;
   } catch (error) {
     // Pricing/cost-calculation problems must never prevent settlement —
     // preserve the original failure reason regardless of whether we can
     // also price the tokens that were spent.
     const usage = error instanceof ScoutResearchError ? error.usage : null;
+    // Tracks the real cost to close the reservation out with below —
+    // null when truly nothing was spent (no usage at all), matching
+    // recordCost's own "never invent a dollar figure" rule.
+    let failureUsdCost: number | null = null;
     if (usage && usage.inputTokens + usage.outputTokens > 0) {
-      let usdCost: number | null;
       try {
-        usdCost = calculateUsdCost(usage.model, {
+        failureUsdCost = calculateUsdCost(usage.model, {
           input_tokens: usage.inputTokens,
           output_tokens: usage.outputTokens,
         });
@@ -802,7 +879,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
           `Could not price ${usage.inputTokens} in / ${usage.outputTokens} out tokens for model "${usage.model}" — recording the token usage with no dollar amount rather than inventing one.`,
           pricingError,
         );
-        usdCost = null;
+        failureUsdCost = null;
       }
       await recordCost({
         missionId: mission.id,
@@ -811,7 +888,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
         model: usage.model,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
-        usdCost,
+        usdCost: failureUsdCost,
       });
     }
 
@@ -855,6 +932,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
         action: "research_discarded_after_state_change",
         detail: `Research failed (${reason}), but the mission was already "${settlement.mission.state}" — its state was not overwritten.`,
       });
+      await settleReservation(reservation.id, failureUsdCost);
       return settlement.mission;
     }
 
@@ -874,6 +952,7 @@ export async function runScoutPipeline(missionId: string): Promise<Mission> {
         detail: `${reason}${diagnosticsSuffix}`,
       });
     }
+    await settleReservation(reservation.id, failureUsdCost);
     return settlement.mission;
   }
 }

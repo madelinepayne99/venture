@@ -16,10 +16,16 @@ import {
 } from "@/lib/db/repositories";
 import { makeScoutReport, makeServiceBusinessReport, makeProductionRecommendation } from "./testUtils";
 import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import {
+  reserveBudget,
+  getBudgetStatusForOrganization,
+  DEFAULT_MONTHLY_BUDGET_USD,
+} from "@/lib/domain/budgetWorkflow";
 
 vi.mock("@/lib/agents/scout", () => {
   return {
     runScoutResearch: vi.fn(),
+    SCOUT_MODEL: "claude-sonnet-5",
     ScoutResearchError: class ScoutResearchError extends Error {
       usage: { model: string; inputTokens: number; outputTokens: number };
       constructor(message: string, usage: { model: string; inputTokens: number; outputTokens: number }) {
@@ -138,6 +144,72 @@ describe("mission workflow", () => {
     expect(actions).toContain("mission_created");
     expect(actions).toContain("mission_approved");
     expect(actions).toContain("research_completed");
+  });
+
+  it("settles a real reservation with the actual cost once Scout's research completes", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+    const report = makeScoutReport();
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report,
+      usage: { model: "claude-sonnet-5", inputTokens: 1200, outputTokens: 600, usdCost: 0.0084 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title: "Preschool counting worksheets",
+      brief: "Research demand for printable counting worksheets on Etsy.",
+    });
+    const organization = await getActiveOrganizationForFounder(founderId);
+    await approveMission(created.id, founderId);
+
+    const before = await getBudgetStatusForOrganization(organization.id);
+    await runScoutPipeline(created.id);
+    const after = await getBudgetStatusForOrganization(organization.id);
+
+    // Committed spend grew by exactly the real recorded cost, not the
+    // worst-case reservation taken out before the call.
+    expect(after.committedUsd - before.committedUsd).toBeCloseTo(0.0084, 6);
+  });
+
+  it("refuses to run Scout and settles the mission as failed when the organization's AI budget is already exhausted", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title: "Preschool counting worksheets",
+      brief: "Research demand for printable counting worksheets on Etsy.",
+    });
+    const organization = await getActiveOrganizationForFounder(founderId);
+    await approveMission(created.id, founderId);
+
+    // Simulate prior real spend this month that already used up this
+    // organization's entire default budget.
+    await reserveBudget({
+      organizationId: organization.id,
+      purpose: "test_prior_spend",
+      estimatedUsd: DEFAULT_MONTHLY_BUDGET_USD,
+      idempotencyKey: "prior-spend-exhausts-scout-budget",
+    });
+
+    const settled = await runScoutPipeline(created.id);
+
+    // The real model was never called — the gate refused before any spend.
+    expect(scoutModule.runScoutResearch).not.toHaveBeenCalled();
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toMatch(/budget is exhausted/i);
+    expect(await listCosts(created.id)).toHaveLength(0);
+
+    const actions = (await listActivity(created.id)).map((a) => a.action);
+    expect(actions).toContain("research_refused_budget_exhausted");
   });
 
   it("moves a mission to awaiting_evidence when Scout's evidence is too weak to decide", async () => {
