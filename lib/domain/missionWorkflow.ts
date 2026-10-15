@@ -115,6 +115,29 @@ export async function createAndSubmitMission(
   }
 
   const organization = await getActiveOrganizationForFounder(input.founderId);
+
+  // Mission 11 security audit finding: `projectId` is raw client input
+  // (POST /api/missions passes body.projectId straight through) and was
+  // never verified to belong to the caller's own organization before
+  // being written onto the new mission's real, FK-constrained
+  // `project_id` column. An attacker who merely knew (or guessed) a real
+  // project id belonging to an unrelated organization could create a
+  // mission cross-linked to it — a cross-tenant foreign-key injection:
+  // the mission's workspace_type would then be resolved from a
+  // workspace the caller's own organization doesn't own
+  // (resolveWorkspaceType reads project.workspace_type), and a
+  // non-existent id's distinct FK-violation error shape is a weak but
+  // real existence oracle for other organizations' real project ids.
+  // Same "not found" treatment as every other cross-tenant check in this
+  // codebase — never a signal that a project with this id exists
+  // elsewhere.
+  if (input.projectId) {
+    const project = await getProject(input.projectId);
+    if (!project || project.organization_id !== organization.id) {
+      throw new MissionValidationError([`Project ${input.projectId} not found.`]);
+    }
+  }
+
   const mission = await createMission({
     founderId: input.founderId,
     organizationId: organization.id,

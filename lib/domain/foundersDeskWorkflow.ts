@@ -235,6 +235,30 @@ export async function reviewScoutMission(
 
 export type DeliverableDecision = "approve" | "reject" | "revise";
 
+/**
+ * Mission 11 security audit finding (CRITICAL): `GET /api/founders-desk/
+ * deliverables/[id]` previously called the raw, globally unscoped
+ * `getAgentDeliverable(id)` directly — `requireFounderId()` was called
+ * but its result discarded, so the route never actually checked that the
+ * requesting founder's organization owned the deliverable at all. Any
+ * authenticated founder could read ANY organization's deliverable
+ * content (Scout reports, Business Analyst reports, Executive Assistant
+ * summaries, checklist reviews, Chief of Staff goal consolidations) and
+ * its full review history by guessing or observing an id. This is the
+ * real, centralized ownership check both the GET route and
+ * `reviewAgentDeliverable` below now share — the same "not found"
+ * regardless of whether the id doesn't exist or belongs to someone
+ * else's organization, never a signal either way.
+ */
+export async function getOwnedAgentDeliverable(deliverableId: string, founderId: string): Promise<AgentDeliverable> {
+  const organization = await getActiveOrganizationForFounder(founderId);
+  const deliverable = await getAgentDeliverable(deliverableId);
+  if (!deliverable || deliverable.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Deliverable ${deliverableId} not found.`);
+  }
+  return deliverable;
+}
+
 export async function reviewAgentDeliverable(
   deliverableId: string,
   founderId: string,

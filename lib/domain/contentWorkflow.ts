@@ -679,9 +679,26 @@ export async function produceAgainFromMission(
     throw new ProduceAgainValidationError(validationErrors);
   }
 
-  // Idempotent replay — see this function's own doc comment. Checked
-  // before anything else is read or written, so a genuine duplicate
-  // submission costs nothing beyond this one lookup.
+  // Real organization-ownership check — deliberately BEFORE the
+  // idempotency replay below (Mission 11 security audit finding: the
+  // replay branch returns a full content item row; checking ownership
+  // only after it meant a caller from an unrelated organization who
+  // merely supplied a real (missionId, contentItemId) pair — their own
+  // `idempotencyKey` is entirely client-chosen, see the API route — could
+  // retrieve another organization's content item with zero membership
+  // check. `missionId` itself must be proven to belong to the caller's
+  // own organization before ANY data is read or returned, idempotent
+  // replay included.)
+  const mission = await getMission(missionId);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
+
+  // Idempotent replay — see this function's own doc comment. Safe here
+  // specifically because the organization check above has already run:
+  // `missionId` is confirmed to belong to the caller's own organization,
+  // so a matching existing content item for it is too.
   const existingReplay = await getContentItem(input.idempotencyKey);
   if (existingReplay) {
     if (existingReplay.mission_id !== missionId) {
@@ -691,12 +708,6 @@ export async function produceAgainFromMission(
       ]);
     }
     return existingReplay;
-  }
-
-  const mission = await getMission(missionId);
-  const organization = await getActiveOrganizationForFounder(founderId);
-  if (!mission || mission.organization_id !== organization.id) {
-    throw new Error(`Mission ${missionId} not found.`);
   }
 
   if (!PRODUCIBLE_MISSION_STATES.includes(mission.state)) {
