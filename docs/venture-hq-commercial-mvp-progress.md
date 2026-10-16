@@ -2151,19 +2151,69 @@ status in the `agents` table untouched.
   unset by design; the support form already works without it, it just
   doesn't claim to send email).
 
+## Mission 11 — Operation Lockdown: complete security audit — DONE
+
+Full report: `docs/security/venture-hq-security-release-report.md`.
+Full route-by-route matrix: `docs/security/route-authorization-audit.md`.
+Checkpoint tag before any change: `mission11-baseline-799tests`.
+
+A systematic, repository-generated audit of all 52 real API routes, all
+6 real background jobs, and the full database-access layer — not just
+re-checking the endpoints with known prior bugs. Found and fixed **3
+real cross-tenant vulnerabilities**, each verified by temporarily
+reverting the fix and confirming its regression test genuinely fails
+against the unfixed code first:
+
+1. **CRITICAL** — `GET /api/founders-desk/deliverables/[id]` called
+   `requireFounderId()` but discarded the result, then read from the
+   globally unscoped `getAgentDeliverable()` with zero ownership check —
+   any founder could read any organization's deliverable content (Scout/
+   Business Analyst reports, Executive Assistant summaries, checklist
+   reviews, Chief of Staff consolidations) by id. Fixed via a new
+   centralized `getOwnedAgentDeliverable`.
+2. **HIGH** — `produceAgainFromMission`'s idempotency-replay branch
+   returned a full `ContentItem` row before verifying the caller's
+   organization owned the named mission; `idempotencyKey` is raw client
+   input. Fixed by reordering the ownership check before the replay
+   lookup.
+3. **MEDIUM/HIGH** — `createAndSubmitMission` accepted a raw client
+   `projectId` and wrote it onto a new mission's real FK-constrained
+   column with no ownership check — a cross-tenant foreign-key
+   injection. Fixed with an explicit ownership check.
+
+Also performed and found clean: a full database-layer scan (confirmed
+the deliverable bug was the only route bypassing domain-layer ownership
+checks), a background-jobs review (none trust founder/org claims from
+external event payloads), a billing/Stripe review, an AI-spend/budget-
+reservation review, an XSS/CSRF/SQL-injection/path-traversal review, and
+a live cross-tenant attack session (two real fictional organizations,
+~12 attack vectors, plus role-enforcement testing for a plain member —
+all correctly refused) plus a real Playwright sign-out/session-switch
+test (9/9 checks, zero stale cross-session data). All fictional test
+data removed afterward; Ellis/Maddie's real data confirmed untouched
+throughout.
+
+10 new regression tests (`crossTenantContentSecurity.test.ts`,
+`crossTenantDeliverableSecurity.test.ts`). Full suite now **68 files /
+809 tests**, typecheck clean, production build clean. 2 commits.
+
+**Requires further testing / blocked before launch:** unchanged from
+Mission 9/10 — a real Stripe test-mode account, a real GitHub OAuth App,
+final approved pricing/refund policy, legal review. This session added
+no new launch blocker.
+
 ## Exact restart point for a future session
 
-1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **799 tests
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **809 tests
    passing**).
-2. Account management, support, and billing transparency are now real
-   and complete — the next natural founder-facing work is either (a)
-   genuinely connecting the real Stripe test-mode account to unblock
-   checkout verification, or (b) whatever the founders name as the next
-   mission.
+2. Recommended follow-up (not blocking): re-run Mission 9/10's full
+   desktop+mobile Playwright user-journey sweep once more, since this
+   session's fixes touched `missionWorkflow.ts`/`contentWorkflow.ts`,
+   which those flows exercise.
 3. A real Stripe test-mode account is the single external dependency
    blocking genuine end-to-end billing verification.
 4. Astra's branch still doesn't exist — check again before touching
    anything office-related.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
-baseline (799 tests) still holds before continuing.
+baseline (809 tests) still holds before continuing.
