@@ -3,20 +3,36 @@ import { EMPLOYEE_REGISTRY, type EmployeeDefinition } from "@/lib/agents/employe
 import {
   listAgents,
   getAgentByKey,
-  setAgentStatus,
-  listMissions,
+  listOrganizationAgents,
+  getOrganizationAgent,
+  setOrganizationAgentStatus,
+  listMissionsForOrganization,
   listLeadAssignments,
   listContentItemsForMissions,
-  listAgentTaskWorldSignals,
+  listAgentTasksForOrganization,
 } from "@/lib/db/repositories";
 import type { Agent } from "@/lib/db/types";
+import { assertPlanAllowsAgent } from "@/lib/domain/subscriptionWorkflow";
 
 /**
- * The Employee Directory's real recruit/remove workflow (Commercial MVP
- * milestone). "Recruit" and "remove" are the real `agents.status` column
- * (active/planned) under a customer-facing name — this app is still
- * single-tenant (founder-only; see CLAUDE.md's Authentication section),
- * so there is no separate per-business roster table to introduce yet.
+ * The Employee Directory's real recruit/remove workflow — now genuinely
+ * organization-scoped (Master Development Mission 6, Phase E). "Recruit"
+ * and "remove" are the real `organization_agents` table (active/planned,
+ * one row per real organization+agent pair), replacing what used to be
+ * the global `agents.status` column (Commercial MVP milestone). `agents`
+ * itself stays exactly what it always was — the one shared, global
+ * CATALOG of agent types that exist at all — never touched by recruiting
+ * or removing within any one organization.
+ *
+ * Every function here takes a real, already-verified `organizationId` —
+ * callers (API routes) resolve it server-side via
+ * `getActiveOrganizationForFounder`/`requireOrganizationMembership` in
+ * `lib/domain/organizationWorkflow.ts`, never from client input. This
+ * module does not re-check membership itself; it trusts the organizationId
+ * it's given exactly as far as the caller already verified it, the same
+ * "the route proves identity, the domain function proves the operation"
+ * split `requireFounderId()` already establishes for founders.
+ *
  * Recruiting/removing an employee NEVER touches any other table —
  * missions, costs, deliverables, agent_tasks, chief_of_staff_goals all
  * stay exactly as they are, satisfying "removing an employee must not
@@ -47,63 +63,103 @@ export interface EmployeeProfile {
   definition: EmployeeDefinition;
   /** null only for the three not-yet-built future employees, which have no `agents` row at all. */
   agent: Agent | null;
+  /** Scoped to the one real organization this directory was requested for — never another organization's recruitment. */
   recruited: boolean;
+  /**
+   * Whether every real integration this employee's capability depends on
+   * is actually configured right now (Master Development Mission 5,
+   * Section 4 — "Do not pretend customers can self-connect a provider if
+   * that workflow does not exist" cuts both ways: don't show "Ready to
+   * work" when it genuinely isn't, either). Computed server-side from
+   * real `process.env` presence — the boolean crosses into client code,
+   * never a key's value. `true` for every employee with no required
+   * integrations at all (nothing to wait on).
+   */
+  integrationsReady: boolean;
 }
 
-export async function listEmployeeDirectory(): Promise<EmployeeProfile[]> {
-  const agents = await listAgents();
-  const byKey = new Map(agents.map((a) => [a.key, a]));
+/** Real presence check only — never reads or forwards an env var's actual value. */
+function hasRealIntegration(envVarName: string): boolean {
+  return Boolean(process.env[envVarName] && process.env[envVarName]!.length > 0);
+}
+
+export async function listEmployeeDirectory(organizationId: string): Promise<EmployeeProfile[]> {
+  const [agents, orgAgents] = await Promise.all([listAgents(), listOrganizationAgents(organizationId)]);
+  const agentsByKey = new Map(agents.map((a) => [a.key, a]));
+  const orgAgentsByKey = new Map(orgAgents.map((a) => [a.agent_key, a]));
   return EMPLOYEE_REGISTRY.map((definition) => {
-    const agent = byKey.get(definition.key) ?? null;
-    return { definition, agent, recruited: agent?.status === "active" };
+    const agent = agentsByKey.get(definition.key) ?? null;
+    const orgAgent = orgAgentsByKey.get(definition.key);
+    return {
+      definition,
+      agent,
+      recruited: orgAgent?.status === "active",
+      integrationsReady: definition.requiredIntegrations.every(hasRealIntegration),
+    };
   });
 }
 
 /**
- * Whether `agentKey` genuinely has real work in flight right now —
- * reuses the exact same real signals the shared 3D office already reads
- * (missions/leadAssignments/contentItems for Scout/Content Bot;
- * agent_tasks for the five Operations Wing agents, with Chief of Staff's
- * own goal_id-based special case) rather than a new query.
+ * Whether `agentKey` genuinely has real work in flight right now, within
+ * THIS organization specifically — reuses the same real signals the
+ * shared 3D office already reads (missions/leadAssignments/contentItems
+ * for Scout/Content Bot; agent_tasks for the five Operations Wing
+ * agents, with Chief of Staff's own goal_id-based special case), now
+ * scoped by real organization_id rather than read globally. A mission
+ * genuinely owned by a different organization can never block (or wrongly
+ * permit) removing an agent here — the exact cross-tenant leak this
+ * migration exists to close.
  */
-async function hasActiveWork(agentKey: string): Promise<boolean> {
+async function hasActiveWork(organizationId: string, agentKey: string): Promise<boolean> {
   const OPEN_TASK_STATES = new Set(["open", "in_progress"]);
 
-  if (agentKey === "scout") {
-    const [missions, leadAssignments] = await Promise.all([listMissions(), listLeadAssignments()]);
-    const led = new Set(leadAssignments.filter((a) => a.agent_key === "scout").map((a) => a.mission_id));
-    return missions.some((m) => m.state === "researching" && led.has(m.id));
+  if (agentKey === "scout" || agentKey === "content_bot") {
+    const missions = await listMissionsForOrganization(organizationId);
+    const missionIds = new Set(missions.map((m) => m.id));
+    // listLeadAssignments() is deliberately global (the shared 3D office's
+    // own doc comment explains why) — filtered here down to only this
+    // organization's real missions before it's used for anything.
+    const allLeadAssignments = await listLeadAssignments();
+    const led = new Set(
+      allLeadAssignments.filter((a) => a.agent_key === agentKey && missionIds.has(a.mission_id)).map((a) => a.mission_id),
+    );
+
+    if (agentKey === "scout") {
+      return missions.some((m) => m.state === "researching" && led.has(m.id));
+    }
+    const items = await listContentItemsForMissions(missions.filter((m) => led.has(m.id)).map((m) => m.id));
+    return items.some((c) => c.state === "planning" || c.state === "generating");
   }
-  if (agentKey === "content_bot") {
-    const [missions, leadAssignments] = await Promise.all([listMissions(), listLeadAssignments()]);
-    const led = new Set(leadAssignments.filter((a) => a.agent_key === "content_bot").map((a) => a.mission_id));
-    const items = await listContentItemsForMissions(missions.map((m) => m.id));
-    return items.some((c) => (c.state === "planning" || c.state === "generating") && led.has(c.mission_id));
-  }
-  const signals = await listAgentTaskWorldSignals();
+
+  const tasks = await listAgentTasksForOrganization(organizationId, agentKey === "chief_of_staff" ? undefined : { agentKey });
   if (agentKey === "chief_of_staff") {
-    return signals.some((s) => s.goal_id != null && OPEN_TASK_STATES.has(s.state));
+    return tasks.some((t) => t.goal_id != null && OPEN_TASK_STATES.has(t.state));
   }
-  return signals.some((s) => s.agent_key === agentKey && OPEN_TASK_STATES.has(s.state));
+  return tasks.some((t) => OPEN_TASK_STATES.has(t.state));
 }
 
-export async function recruitEmployee(key: string): Promise<Agent> {
+export async function recruitEmployee(organizationId: string, key: string): Promise<void> {
   const definition = EMPLOYEE_REGISTRY.find((d) => d.key === key);
   if (!definition) throw new EmployeeNotFoundError(key);
   if (!definition.recruitable) throw new EmployeeNotRecruitableError(key);
   const existing = await getAgentByKey(key);
   if (!existing) throw new EmployeeNotFoundError(key);
-  const updated = await setAgentStatus(key, "active");
-  return updated!;
+  // The real, server-side "employee access" entitlement check (Mission
+  // 8, Sections 14-15) — a free-plan organization (or one with a
+  // cancelled/past-due subscription) is refused here before the real
+  // agent/organization_agents row is ever flipped active, regardless of
+  // what a direct API call claims.
+  await assertPlanAllowsAgent(organizationId, key);
+  await setOrganizationAgentStatus(organizationId, key, "active");
 }
 
-export async function removeEmployee(key: string): Promise<Agent> {
+export async function removeEmployee(organizationId: string, key: string): Promise<void> {
   const definition = EMPLOYEE_REGISTRY.find((d) => d.key === key);
   if (!definition) throw new EmployeeNotFoundError(key);
   const existing = await getAgentByKey(key);
   if (!existing) throw new EmployeeNotFoundError(key);
-  if (existing.status !== "active") return existing; // already not recruited — no-op, not an error
-  if (await hasActiveWork(key)) throw new EmployeeHasActiveWorkError(key);
-  const updated = await setAgentStatus(key, "planned");
-  return updated!;
+  const orgAgent = await getOrganizationAgent(organizationId, key);
+  if (orgAgent?.status !== "active") return; // already not recruited in this organization — no-op, not an error
+  if (await hasActiveWork(organizationId, key)) throw new EmployeeHasActiveWorkError(key);
+  await setOrganizationAgentStatus(organizationId, key, "planned");
 }

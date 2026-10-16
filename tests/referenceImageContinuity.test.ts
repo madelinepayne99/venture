@@ -532,8 +532,11 @@ describe("Reference-image continuity", () => {
 
       const toGenerating = await transitionContentItemState(item.id, ["planning"], "generating", { generation_attempt_count: 1 });
       expect(toGenerating.ok).toBe(true);
+      const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+      const organization = await getActiveOrganizationForFounder(founderId);
       await recordCost({
         missionId: item.mission_id,
+        organizationId: organization.id,
         agentId: null,
         contentItemId: item.id,
         model: "claude-sonnet-5",
@@ -825,8 +828,11 @@ describe("Reference-image continuity", () => {
       const item = await createHarness();
       // Pre-spend right up to the cap so the very next call (the
       // reference's own generation) would exceed it.
+      const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+      const organization = await getActiveOrganizationForFounder(founderId);
       await recordCost({
         missionId: item.mission_id,
+        organizationId: organization.id,
         agentId: null,
         contentItemId: item.id,
         model: "fake",

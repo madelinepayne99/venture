@@ -2,12 +2,14 @@ import { NextResponse } from "next/server";
 import { getMissionDetail } from "@/lib/api/missionDetail";
 import { toApiErrorResponse } from "@/lib/api/errors";
 import { requireFounderId } from "@/lib/api/session";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    await requireFounderId();
+    const founderId = await requireFounderId();
+    const organization = await getActiveOrganizationForFounder(founderId);
     const { id } = await params;
-    const detail = await getMissionDetail(id);
+    const detail = await getMissionDetail(id, organization.id);
     if (!detail) {
       return NextResponse.json({ error: `Mission ${id} not found.` }, { status: 404 });
     }

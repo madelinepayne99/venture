@@ -119,8 +119,11 @@ describe("retryProductionAfterTechnicalFailure (real Postgres)", () => {
     // A real, known cost already spent before the technical failure (e.g.
     // the planning + safety-review Claude calls) — this must survive the
     // retry untouched.
+    const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+    const organization = await getActiveOrganizationForFounder(founderId);
     await recordCost({
       missionId: item.mission_id,
+      organizationId: organization.id,
       agentId: null,
       contentItemId: item.id,
       model: "claude-sonnet-5",

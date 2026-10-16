@@ -1,7 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
 import { calculateUsdCost } from "@/lib/agents/pricing";
-import { recordCost, listCosts, listLedgerEntries, ledgerTotalUsd, listAgents } from "@/lib/db/repositories";
+import { recordCost, listCosts, listLedgerEntries, ledgerTotalUsd, listAgents, listFounders } from "@/lib/db/repositories";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+
+async function seededOrganizationId(): Promise<string> {
+  const founders = await listFounders();
+  return (await getActiveOrganizationForFounder(founders[0]!.id)).id;
+}
 
 describe("calculateUsdCost", () => {
   it("computes cost from real per-token pricing", () => {
@@ -24,8 +30,10 @@ describe("cost ledger", () => {
   it("writes a matching, negative ledger entry for every recorded cost", async () => {
     const agents = await listAgents();
     const scout = agents.find((a) => a.key === "scout")!;
+    const organizationId = await seededOrganizationId();
     await recordCost({
       missionId: null,
+      organizationId,
       agentId: scout.id,
       model: "claude-sonnet-5",
       inputTokens: 1000,
@@ -45,8 +53,10 @@ describe("cost ledger", () => {
   it("records token usage with a null cost without inventing a ledger charge", async () => {
     const agents = await listAgents();
     const scout = agents.find((a) => a.key === "scout")!;
+    const organizationId = await seededOrganizationId();
     const cost = await recordCost({
       missionId: null,
+      organizationId,
       agentId: scout.id,
       model: "some-future-model-not-in-the-pricing-table",
       inputTokens: 640,

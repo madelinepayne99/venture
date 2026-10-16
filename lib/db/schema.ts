@@ -32,6 +32,324 @@ export const founders = pgTable("founders", {
   name: text("name").notNull(),
   email: text("email").unique(),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  // Real account deletion (Mission 10). Null for every real, active
+  // founder. Set (alongside name -> "Deleted Founder" and email -> null)
+  // by deleteFounderAccount — never a hard DELETE of this row, so every
+  // real mission/cost/deliverable that references this founder_id keeps
+  // working and keeps its real history, consistent with this schema's
+  // own insert-only/never-fabricate philosophy. email is nulled (not
+  // just left as-is) specifically so the same real GitHub account can
+  // genuinely sign up again later as a brand-new account, per
+  // ensureFounderAccount's own "find by email" lookup.
+  deleted_at: timestamp("deleted_at", { mode: "string" }),
+});
+
+// --- Multi-tenancy (Master Development Mission 6) -------------------------
+//
+// An `organization` is one customer's private Venture HQ — the real tenant
+// boundary. `founders` stays exactly what it already was (a real, GitHub-
+// authenticated person allowed to sign in — see CLAUDE.md's Authentication
+// section); it is deliberately NOT renamed or repurposed to mean "business",
+// since a future person may belong to more than one organization (an
+// accountant helping two separate real clients, for instance). The two are
+// linked by `organization_members`, a real many-to-many: supporting multiple
+// members per organization AND multiple organizations per founder from day
+// one, even though this milestone's own supported customer experience keeps
+// a signed-in founder on one active organization at a time (a client-side
+// preference, not a schema limitation — see `lib/domain/organizationWorkflow.ts`).
+//
+// `owner_founder_id` is denormalized from `organization_members` (where a
+// membership's own `role` would already say "owner") specifically so
+// "who owns this organization" is a single indexed lookup, not a query over
+// every member row — the same reasoning `missions.founder_id` already uses
+// instead of forcing every read through a join.
+// Plain text, not a Postgres enum — same reasoning as every other status/
+// type column in this codebase (see schema.ts's own data-model doc
+// comment): the app layer is the source of truth for what values are
+// legal, and a DB enum would need its own migration every time the
+// vocabulary changes.
+export const ventureStageValues = ["new_venture", "existing_business"] as const;
+
+export const organizations = pgTable("organizations", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  owner_founder_id: text("owner_founder_id")
+    .notNull()
+    .references(() => founders.id),
+  // A real, customer-provided answer from onboarding (Mission 8, Section
+  // 11/12's "choose whether they are starting a business or running an
+  // existing business") — nullable because it's only ever set going
+  // forward: Ellis and Maddie's existing "Founders' HQ" (and any
+  // organization created before this column existed) legitimately has no
+  // answer to a question it was never asked, and backfilling a guess
+  // would be exactly the kind of fabricated data this codebase refuses
+  // to invent.
+  venture_stage: text("venture_stage"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  // Real account deletion (Mission 10) — set only when a sole owner with
+  // no other real members closes their account (deleteFounderAccount).
+  // Never a hard DELETE: every real mission/cost/deliverable this
+  // organization ever produced keeps its real history for audit/
+  // financial retention, consistent with this schema's own insert-only
+  // philosophy. A closed organization is excluded from
+  // getActiveOrganizationForFounder and every other real access path —
+  // closed, not just hidden.
+  closed_at: timestamp("closed_at", { mode: "string" }),
+});
+
+export const organizationMemberRoleValues = ["owner", "admin", "member"] as const;
+
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    id: text("id").primaryKey(),
+    organization_id: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    founder_id: text("founder_id")
+      .notNull()
+      .references(() => founders.id),
+    role: text("role").notNull().default("member"),
+    created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  },
+  (table) => ({
+    oneMembershipPerFounderPerOrg: uniqueIndex("organization_members_org_founder_unique").on(
+      table.organization_id,
+      table.founder_id,
+    ),
+  }),
+);
+
+// Per-organization workforce (Section 7) — replaces the global
+// `agents.status` as the real "is this agent recruited" signal.
+// Deliberately a separate table, not a new column on `agents`: `agents`
+// stays the one shared, global CATALOG of what agent types exist at all
+// (seeded once, read by every organization alike — see `lib/db/client.ts`'s
+// `seedAgents()`, unchanged) — exactly the same "don't force-fit a column
+// that was never shaped for this" call already made for
+// `agent_deliverables` vs. the mission-scoped `deliverables`/`approvals`.
+// `agents.status` itself is intentionally left alone by this migration —
+// see the accompanying backfill in `lib/db/client.ts` for why repurposing
+// it would have silently broken existing world-rendering/seed-upgrade code
+// that already reads it for a different real purpose (whether an agent
+// type is implemented at all, not whether any particular customer has it).
+export const organizationAgentStatusValues = ["active", "planned"] as const;
+
+export const organizationAgents = pgTable(
+  "organization_agents",
+  {
+    id: text("id").primaryKey(),
+    organization_id: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    agent_key: text("agent_key")
+      .notNull()
+      .references(() => agents.key),
+    status: text("status").notNull().default("planned"),
+    created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+    updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+  },
+  (table) => ({
+    oneRowPerAgentPerOrg: uniqueIndex("organization_agents_org_agent_unique").on(
+      table.organization_id,
+      table.agent_key,
+    ),
+  }),
+);
+
+// --- AI spending limits (Master Development Mission 7, Phase 4) ---------
+//
+// Real, server-side, atomic protection against unbounded provider spend —
+// "launch-critical" per the founders' own brief. Two tables:
+// `organization_budgets` is one row per organization's real, configured
+// limits (a missing row means "use the safe application default", never
+// "unlimited" — see lib/domain/budgetWorkflow.ts); `budget_reservations`
+// is the real, atomic ledger a paid operation must successfully insert
+// into BEFORE it's allowed to spend anything, and must settle (or
+// release) afterward — the actual mechanism, not just a display number.
+
+export const organizationBudgets = pgTable("organization_budgets", {
+  id: text("id").primaryKey(),
+  organization_id: text("organization_id")
+    .notNull()
+    .unique()
+    .references(() => organizations.id),
+  // Null means "use the application's own safe default" (see
+  // DEFAULT_MONTHLY_BUDGET_USD in budgetWorkflow.ts) — never silently
+  // "no limit." A founder/admin can configure a real, explicit ceiling
+  // here once settings UI exists (Phase 9/16); nothing writes this yet
+  // beyond tests, which is itself the honest, current state.
+  monthly_usd_limit: real("monthly_usd_limit"),
+  max_concurrent_paid_tasks: integer("max_concurrent_paid_tasks"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+export const budgetReservationStatusValues = ["reserved", "settled", "released"] as const;
+
+export const budgetReservations = pgTable(
+  "budget_reservations",
+  {
+    id: text("id").primaryKey(),
+    organization_id: text("organization_id")
+      .notNull()
+      .references(() => organizations.id),
+    // Caller-supplied, real idempotency key — the actual mechanism
+    // preventing a retried request from reserving (and later double-
+    // charging) twice. A real DB-level unique constraint, not just an
+    // application-level check, so two genuinely concurrent requests with
+    // the same key can never both succeed.
+    idempotency_key: text("idempotency_key").notNull().unique(),
+    // What real capability this reservation is for — "scout_research" |
+    // "business_analyst_research" | "content_production" | ... — plain
+    // text, same "the app layer is the source of truth for the
+    // vocabulary" philosophy every other status/category column in this
+    // schema already follows.
+    purpose: text("purpose").notNull(),
+    // The real, safe worst-case amount reserved BEFORE the operation
+    // runs — never the actual cost yet (that's unknown until the
+    // provider call finishes). This is what's actually checked against
+    // the organization's remaining budget at reservation time.
+    reserved_usd: real("reserved_usd").notNull(),
+    status: text("status").notNull().default("reserved"),
+    // Set only once the real operation finishes and its genuine cost is
+    // known (settleReservation) — null while still "reserved". Can
+    // legitimately be less than, equal to, or (rarely, if an estimate
+    // was wrong) more than reserved_usd; the reservation's own job was
+    // only ever to prevent overspending AT THE TIME it was made.
+    actual_usd_cost: real("actual_usd_cost"),
+    created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+    settled_at: timestamp("settled_at", { mode: "string" }),
+  },
+);
+
+// --- Subscription plans & billing (Mission 8, Sections 14-15) -----------
+//
+// Real organization-level entitlements, enforced server-side through the
+// SAME atomic budget-reservation mechanism above — this section adds
+// *what the ceiling is* (resolved from a real subscription plan instead
+// of always DEFAULT_MONTHLY_BUDGET_USD), never a second, parallel
+// enforcement path. Stripe billing is real, current-API code
+// (lib/billing/stripe.ts) that runs in test mode only; with no
+// STRIPE_SECRET_KEY configured (true in this sandbox — see CLAUDE.md's
+// own "Local verification vs a real deployment" discipline, applied here
+// identically to every other provider), billing routes refuse clearly
+// rather than silently no-opping or granting access.
+
+export const subscriptionPlans = pgTable("subscription_plans", {
+  // Plain, stable slugs — "free" | "starter" | "business" | "growth" |
+  // "founder" (Ellis/Maddie's own real plan, never purchasable via
+  // Stripe — see organizationSubscriptions' own doc comment). Plain
+  // text, not an enum, same reasoning as every other vocabulary column
+  // in this schema.
+  id: text("id").primaryKey(),
+  display_name: text("display_name").notNull(),
+  // Provisional, founder-approved-pending prices — see
+  // docs/venture-hq-commercial-mvp-progress.md's own pricing analysis
+  // for how these were derived from real measured costs plus researched
+  // comparable tools, not invented. monthly_price_gbp is null for a plan
+  // with no real price (free, founder).
+  monthly_price_gbp: real("monthly_price_gbp"),
+  // The real monthly AI research/text budget this plan grants —
+  // resolved by budgetWorkflow.ts's getOrganizationBudgetConfig as the
+  // real default when an organization has no explicit
+  // organization_budgets override, replacing the flat
+  // DEFAULT_MONTHLY_BUDGET_USD constant for every plan but "free" (which
+  // is real monthly_ai_budget_usd: 0 — the actual mechanism behind "a
+  // free organization can't consume paid AI usage", not just a UI
+  // restriction).
+  monthly_ai_budget_usd: real("monthly_ai_budget_usd").notNull(),
+  // Content Bot video productions are disproportionately expensive
+  // (up to MAX_ITEM_SPEND_USD each — $8) relative to a research task
+  // (tens of cents) — a real, SEPARATE monthly counter from the dollar
+  // budget above, per the founders' own explicit "separately controlled
+  // allowances" instruction. Enforced by contentWorkflow.ts before a new
+  // content item is ever created, independent of (and in addition to)
+  // the existing per-item dollar cap.
+  monthly_video_allowance: integer("monthly_video_allowance").notNull().default(0),
+  // Whether this plan may recruit/use the three real agents with actual
+  // paid AI execution (Scout, Content Bot, Business Analyst) — the real
+  // "employee access" enforcement the founders asked for, checked
+  // server-side in employeeWorkflow.ts's recruitEmployee, never just
+  // hidden in the UI. The three manual/free agents (Executive Assistant,
+  // Finance, Operations) and Chief of Staff's own delegation UI remain
+  // available on every plan, including free.
+  includes_paid_agents: boolean("includes_paid_agents").notNull().default(false),
+  // Real Stripe Price ID once a real Stripe product/price is created for
+  // this plan (test mode) — null until then, and permanently null for
+  // "free"/"founder", which are never purchased through Stripe.
+  stripe_price_id: text("stripe_price_id"),
+  // Gates whether a plan is shown on the real customer-facing pricing
+  // page at all — every plan here starts false (provisional prices,
+  // explicitly not yet founder-approved for publication) until a
+  // founder deliberately flips it.
+  is_published: boolean("is_published").notNull().default(false),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+export const subscriptionStatusValues = [
+  "trialing",
+  "active",
+  "past_due",
+  "canceled",
+  "incomplete",
+] as const;
+
+export const organizationSubscriptions = pgTable("organization_subscriptions", {
+  id: text("id").primaryKey(),
+  organization_id: text("organization_id")
+    .notNull()
+    .unique()
+    .references(() => organizations.id),
+  plan_id: text("plan_id")
+    .notNull()
+    .references(() => subscriptionPlans.id),
+  status: text("status").notNull().default("active"),
+  // Real Stripe references once a real checkout completes (test mode) —
+  // both null for "free"/"founder" organizations, which never go
+  // through Stripe at all.
+  stripe_customer_id: text("stripe_customer_id"),
+  stripe_subscription_id: text("stripe_subscription_id"),
+  current_period_end: timestamp("current_period_end", { mode: "string" }),
+  cancel_at_period_end: boolean("cancel_at_period_end").notNull().default(false),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// Real idempotency for Stripe webhook processing — Stripe's own delivery
+// guarantee is "at least once", so the same real event can genuinely
+// arrive twice (a retry after a slow response, a dashboard resend). The
+// event's own real Stripe id is the primary key: a second delivery's
+// insert attempt collides on it (ON CONFLICT DO NOTHING in the handler),
+// so its entitlement-changing side effects run at most once — the same
+// real discipline budget_reservations' idempotency_key already follows.
+export const billingWebhookEvents = pgTable("billing_webhook_events", {
+  id: text("id").primaryKey(), // the real Stripe event id, e.g. "evt_..."
+  type: text("type").notNull(),
+  processed_at: timestamp("processed_at", { mode: "string" }).notNull().defaultNow(),
+});
+
+// --- Customer support (Mission 10) ---------------------------------------
+//
+// A real, server-side-persisted support ticket — the actual mechanism
+// behind "Create an accessible Help & Support section... a genuine
+// server-side persistence mechanism" (not a contact form that silently
+// does nothing, and not a claim of real email delivery this app can't
+// back up — no email provider is configured in this environment; see
+// lib/domain/supportWorkflow.ts's own doc comment).
+export const supportRequestStatusValues = ["open", "in_progress", "resolved"] as const;
+
+export const supportRequests = pgTable("support_requests", {
+  id: text("id").primaryKey(),
+  organization_id: text("organization_id").references(() => organizations.id),
+  founder_id: text("founder_id")
+    .notNull()
+    .references(() => founders.id),
+  subject: text("subject").notNull(),
+  message: text("message").notNull(),
+  status: text("status").notNull().default("open"),
+  created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
+  updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
 });
 
 export const agentStatusValues = ["active", "planned"] as const;
@@ -64,6 +382,13 @@ export const chiefOfStaffGoals = pgTable("chief_of_staff_goals", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  // Nullable for this migration only — see the multi-tenancy backfill in
+  // lib/db/client.ts's ensureDefaultOrganization(). Every row, including
+  // every pre-existing one, is backfilled to a real organization at
+  // startup; a future migration tightens this to NOT NULL once that's
+  // verified. Never read as "global" when null — see
+  // lib/domain/organizationWorkflow.ts's own doc comment.
+  organization_id: text("organization_id").references(() => organizations.id),
   title: text("title").notNull(),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
 });
@@ -90,6 +415,9 @@ export const agentTasks = pgTable("agent_tasks", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  // Nullable for this migration — see chief_of_staff_goals's own comment
+  // above; the same backfill covers this table.
+  organization_id: text("organization_id").references(() => organizations.id),
   task_type: text("task_type").notNull(),
   title: text("title").notNull(),
   detail: text("detail"),
@@ -118,6 +446,11 @@ export const agentTasks = pgTable("agent_tasks", {
 // additive, not a migration of existing data.
 export const expenses = pgTable("expenses", {
   id: text("id").primaryKey(),
+  // The most urgent real gap this migration closes: expenses previously
+  // had NO ownership column at all — a genuinely global, shared table
+  // regardless of which business logged what. Nullable here only for the
+  // same safe-backfill reason as every other table in this migration.
+  organization_id: text("organization_id").references(() => organizations.id),
   category: text("category").notNull(),
   description: text("description").notNull(),
   amount: real("amount").notNull(),
@@ -134,6 +467,8 @@ export const budgetPeriodValues = ["monthly", "one_off"] as const;
 
 export const budgets = pgTable("budgets", {
   id: text("id").primaryKey(),
+  // Same real gap as expenses above — previously no ownership at all.
+  organization_id: text("organization_id").references(() => organizations.id),
   category: text("category").notNull(),
   amount: real("amount").notNull(),
   currency: text("currency").notNull(),
@@ -154,6 +489,7 @@ export const checklists = pgTable("checklists", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   title: text("title").notNull(),
   created_at: timestamp("created_at", { mode: "string" }).notNull().defaultNow(),
   updated_at: timestamp("updated_at", { mode: "string" }).notNull().defaultNow(),
@@ -186,6 +522,7 @@ export const businessAnalystReports = pgTable("business_analyst_reports", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   query: text("query").notNull(),
   state: text("state").notNull(),
   report: jsonb("report"),
@@ -221,6 +558,7 @@ export const agentDeliverables = pgTable("agent_deliverables", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   // Which real entity this deliverable summarizes — "agent_task" |
   // "chief_of_staff_goal" | "checklist" | "finance_report" |
   // "business_analyst_report". Never a free-text label: always traces
@@ -250,6 +588,7 @@ export const agentDeliverableReviews = pgTable("agent_deliverable_reviews", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   decision: text("decision").notNull(), // "approved" | "rejected" | "revision_requested"
   note: text("note"),
   decided_at: timestamp("decided_at", { mode: "string" }).notNull().defaultNow(),
@@ -269,6 +608,11 @@ export const workspaceTypeValues = ["commerce", "service_business"] as const;
 
 export const projects = pgTable("projects", {
   id: text("id").primaryKey(),
+  // Another real gap this migration closes: a workspace previously had
+  // NO ownership at all — any founder/organization could see and create
+  // missions under any workspace. Nullable only for the same safe-
+  // backfill reason as every table in this migration.
+  organization_id: text("organization_id").references(() => organizations.id),
   name: text("name").notNull(),
   description: text("description"),
   platform_focus: text("platform_focus"),
@@ -282,6 +626,7 @@ export const missions = pgTable("missions", {
   founder_id: text("founder_id")
     .notNull()
     .references(() => founders.id),
+  organization_id: text("organization_id").references(() => organizations.id),
   title: text("title").notNull(),
   brief: text("brief").notNull(),
   interpreted_mission: text("interpreted_mission"),
@@ -603,6 +948,16 @@ export const approvals = pgTable("approvals", {
 export const costs = pgTable("costs", {
   id: text("id").primaryKey(),
   mission_id: text("mission_id").references(() => missions.id),
+  // Master Development Mission 7 — the real attribution gap: previously
+  // the ONLY way to attribute a cost to an organization was through a
+  // mission, but Business Analyst's own standalone research (never
+  // mission-scoped — see businessAnalystWorkflow.ts) recorded real spend
+  // with mission_id null and no organization attribution at all. Direct
+  // and nullable (not a guess dressed as a default — see the real,
+  // verified backfill in lib/db/client.ts's ensureDefaultOrganization):
+  // every NEW cost row sets this explicitly from its own real, resolved
+  // organization, regardless of whether it also has a mission_id.
+  organization_id: text("organization_id").references(() => organizations.id),
   agent_id: text("agent_id").references(() => agents.id),
   model: text("model").notNull(),
   // Nullable — a media-generation call has no token count. Writing 0
@@ -628,6 +983,16 @@ export const costs = pgTable("costs", {
 export const ledgerEntries = pgTable("ledger_entries", {
   id: text("id").primaryKey(),
   mission_id: text("mission_id").references(() => missions.id),
+  // Mission 10 — the real second half of the same gap Mission 7 closed on
+  // `costs`: this table had NO organization attribution at all (only a
+  // nullable `mission_id`), and was being served completely unscoped to
+  // every authenticated founder via GET /api/ledger and app/page.tsx —
+  // a confirmed live cross-tenant leak of every organization's real
+  // financial ledger. Direct and nullable for the same reason `costs.
+  // organization_id` is nullable (a safe backfill for pre-existing rows,
+  // not a guess dressed as a default) — every NEW row sets this
+  // explicitly from `recordCost`'s already-resolved organization id.
+  organization_id: text("organization_id").references(() => organizations.id),
   category: text("category").notNull(),
   description: text("description").notNull(),
   amount_usd: real("amount_usd").notNull(),

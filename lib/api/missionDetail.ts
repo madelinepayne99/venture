@@ -12,9 +12,16 @@ import {
 } from "@/lib/db/repositories";
 import type { ScoutReport } from "@/lib/agents/scout/schema";
 
-export async function getMissionDetail(missionId: string) {
+/**
+ * `organizationId` is required and real-server-resolved by the caller
+ * (never accepted from a client) — a mission belonging to a different
+ * organization returns `null`, the exact same shape as a mission that
+ * genuinely doesn't exist, so a founder outside an organization can
+ * never tell the difference (Master Development Mission 6, Section 8).
+ */
+export async function getMissionDetail(missionId: string, organizationId: string) {
   const mission = await getMission(missionId);
-  if (!mission) return null;
+  if (!mission || mission.organization_id !== organizationId) return null;
 
   const [stages, assignments, evidence, deliverables, costs, approvals, activity, contentItems] = await Promise.all([
     listStages(missionId),

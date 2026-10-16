@@ -30,12 +30,15 @@ import {
   listContentAssets,
   recordContentAsset,
   updateContentAsset,
+  getContentAsset,
   listApprovalsForContentItem,
   startStage,
   getOpenStage,
   completeStage,
   failStage,
   recordCost,
+  contentVersionSpendUsd,
+  contentItemSpendUsd,
 } from "@/lib/db/repositories";
 import { MissionConcurrencyError, assertTransition } from "@/lib/domain/missionStates";
 import {
@@ -54,6 +57,7 @@ import {
   MAX_VERSIONS_PER_ITEM,
   MAX_GENERATION_ATTEMPTS_PER_VERSION,
   MAX_ASSET_CALLS_PER_VERSION,
+  MAX_ITEM_SPEND_USD,
   MAX_QC_REGENERATIONS_PER_VERSION,
   MAX_REFERENCE_REGENERATIONS,
   assertItemBudgetRemaining,
@@ -87,6 +91,46 @@ import {
   CONTENT_PRODUCTION_REQUESTED_EVENT,
   CONTENT_REVISION_REQUESTED_EVENT,
 } from "@/lib/inngest/client";
+import { getActiveOrganizationForFounder, requireOrganizationId } from "@/lib/domain/organizationWorkflow";
+import { reserveBudget, settleReservation, BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
+import { assertPlanAllowsNewVideoProduction } from "@/lib/domain/subscriptionWorkflow";
+
+/**
+ * The real tenant-ownership check for every founder-facing Content Bot
+ * action (Master Development Mission 6 — Content Bot's own routes had
+ * the exact same gap Phase E found and fixed for Founders' Desk: a
+ * founderId parameter that was never actually checked against the
+ * resource being acted on). `content_items` has no direct
+ * `organization_id` column of its own — it's scoped transitively through
+ * `mission_id → missions.organization_id`, the same real chain
+ * `listContentItemsForMissions` already relies on — so this resolves the
+ * owning mission and compares there, deliberately throwing the exact
+ * same "not found" a missing resource would, never confirming or
+ * denying that a piece of content exists in a different organization.
+ */
+async function assertContentItemInFoundersOrganization(
+  missionId: string,
+  founderId: string,
+  notFoundMessage: string,
+): Promise<void> {
+  const [mission, organization] = await Promise.all([getMission(missionId), getActiveOrganizationForFounder(founderId)]);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(notFoundMessage);
+  }
+}
+
+/**
+ * Cost attribution for the real pipeline's own internal stages
+ * (`runContentProductionPipeline` and everything it calls — all system/
+ * background-job code, no founderId in scope at all). Resolves the real
+ * owning mission's own `organization_id` directly — never a guess,
+ * never silently skipped (Master Development Mission 7's real
+ * attribution fix; see schema.ts's own comment on `costs.organization_id`).
+ */
+async function resolveContentItemOrganizationId(missionId: string): Promise<string> {
+  const mission = await getMission(missionId);
+  return requireOrganizationId(mission?.organization_id ?? null, `Content item's mission ${missionId}`);
+}
 
 export class ProductionApprovalValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -172,7 +216,10 @@ export async function approveForProduction(
   }
 
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   if (mission.state === "in_production") {
     return resolveAlreadyInProduction(missionId);
@@ -202,6 +249,14 @@ export async function approveForProduction(
   }
 
   const project = mission.project_id ? (await getProject(mission.project_id)) ?? null : null;
+
+  // The real "video allowance" entitlement check (Mission 8, Sections
+  // 14-15) — before the mission's own state ever transitions, so a
+  // refused approval leaves the mission exactly where it was rather than
+  // flipping it to "in_production" and then failing. A real, SEPARATE
+  // monthly counter from the dollar AI budget (contentProduction.ts's
+  // own MAX_ITEM_SPEND_USD stays an independent per-item safety cap).
+  await assertPlanAllowsNewVideoProduction(organization.id);
 
   assertTransition(mission.state, "in_production");
   const transition = await transitionMissionState(missionId, [mission.state], "in_production");
@@ -389,7 +444,10 @@ export async function commissionPilotAnyway(
   }
 
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   if (mission.state === "in_production") {
     return resolveAlreadyInProduction(missionId);
@@ -425,6 +483,11 @@ export async function commissionPilotAnyway(
   }
 
   const project = mission.project_id ? (await getProject(mission.project_id)) ?? null : null;
+
+  // The real video-allowance entitlement check (Mission 8, Sections
+  // 14-15) — same real gate as the normal approveForProduction path,
+  // before the mission's state ever transitions.
+  await assertPlanAllowsNewVideoProduction(organization.id);
 
   // Same eligible predecessor state as the normal path (only
   // ready_for_founders_review legally transitions to in_production — see
@@ -631,7 +694,10 @@ export async function produceAgainFromMission(
   }
 
   const mission = await getMission(missionId);
-  if (!mission) throw new Error(`Mission ${missionId} not found.`);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new Error(`Mission ${missionId} not found.`);
+  }
 
   if (!PRODUCIBLE_MISSION_STATES.includes(mission.state)) {
     throw new MissionNotReadyForProductionError(missionId, mission.state);
@@ -661,6 +727,13 @@ export async function produceAgainFromMission(
   }
 
   const project = mission.project_id ? (await getProject(mission.project_id)) ?? null : null;
+
+  // The real video-allowance entitlement check (Mission 8, Sections
+  // 14-15) — every real "Produce Again" is its own new, independent
+  // content item/production slot (see this function's own doc comment),
+  // so it counts against the plan's real monthly allowance exactly like
+  // a first production does.
+  await assertPlanAllowsNewVideoProduction(organization.id);
 
   // The one-time, monotonic mission transition — see this function's own
   // doc comment. Only ever attempted from ready_for_founders_review;
@@ -827,6 +900,7 @@ export async function approveContentVersion(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   await assertIsLatestVersion(item, input.contentVersionId);
 
   assertContentItemTransition(item.state, "ready_to_publish");
@@ -869,6 +943,7 @@ export async function rejectContentItem(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   await assertIsLatestVersion(item, input.contentVersionId);
 
   assertContentItemTransition(item.state, "rejected");
@@ -922,6 +997,7 @@ export async function requestContentRevision(
 
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   await assertIsLatestVersion(item, input.contentVersionId);
 
   if (item.version_count >= MAX_VERSIONS_PER_ITEM) {
@@ -1019,6 +1095,7 @@ export async function retryProductionAfterTechnicalFailure(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
 
   if (!isRecoverableFailureCategory(item.failure_category)) {
     throw new NotRecoverableFailureError(contentItemId, item.failure_category);
@@ -1172,6 +1249,34 @@ export async function retryProductionAfterTechnicalFailure(
   return toGenerating.item;
 }
 
+export class ContentAssetNotFoundError extends Error {
+  constructor(assetId: string) {
+    super(`Content asset ${assetId} not found.`);
+    this.name = "ContentAssetNotFoundError";
+  }
+}
+
+/**
+ * The real ownership chain for one generated file — asset -> version ->
+ * item -> mission -> organization — resolved and checked here rather
+ * than inline in the streaming route, so it's directly testable the same
+ * way every other tenant-boundary check in this codebase is (Master
+ * Development Mission 6). Real generated media is the single most
+ * sensitive thing Content Bot produces; this previously had no ownership
+ * check at all.
+ */
+export async function getOwnedContentAsset(assetId: string, founderId: string): Promise<ContentAsset> {
+  const asset = await getContentAsset(assetId);
+  const version = asset ? await getContentVersion(asset.content_version_id) : undefined;
+  const item = version ? await getContentItem(version.content_item_id) : undefined;
+  const mission = item ? await getMission(item.mission_id) : undefined;
+  const organization = await getActiveOrganizationForFounder(founderId);
+  if (!asset || !version || !item || !mission || mission.organization_id !== organization.id) {
+    throw new ContentAssetNotFoundError(assetId);
+  }
+  return asset;
+}
+
 /**
  * A founder cancelling production directly, without cancelling the whole
  * mission (see missionWorkflow.ts's cancelMission for the reverse
@@ -1188,6 +1293,7 @@ export async function cancelContentItem(
 ): Promise<ContentItem> {
   const item = await getContentItem(contentItemId);
   if (!item) throw new Error(`Content item ${contentItemId} not found.`);
+  await assertContentItemInFoundersOrganization(item.mission_id, founderId, `Content item ${contentItemId} not found.`);
   if (!isContentItemCancellable(item.state)) {
     throw new Error(`Content item ${contentItemId} cannot be cancelled from state "${item.state}".`);
   }
@@ -1613,6 +1719,7 @@ async function persistMediaResult(args: {
   });
   await recordCost({
     missionId: args.missionId,
+    organizationId: await resolveContentItemOrganizationId(args.missionId),
     agentId: args.agentId,
     contentItemId: args.contentItemId,
     contentVersionId: args.contentVersionId,
@@ -1664,6 +1771,7 @@ async function recordTokenCostOnFailure(
   }
   await recordCost({
     missionId: item.mission_id,
+    organizationId: await resolveContentItemOrganizationId(item.mission_id),
     agentId: item.agent_id,
     contentItemId: item.id,
     contentVersionId: versionId,
@@ -1704,6 +1812,7 @@ async function runCreativeStrategyStage(
     const { strategy, usage } = await planCreativeStrategy({ brief, audience: ctx }, deps.contentBot ?? {});
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -1811,6 +1920,7 @@ async function runProductionPlanningStage(
     );
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -1928,6 +2038,7 @@ async function runSafetyReviewStage(
     const { verdict, usage } = await reviewContentSafety(plan, ctx, deps.contentBot ?? {});
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -2082,6 +2193,7 @@ async function runReferenceGenerationStage(
     );
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -2178,6 +2290,7 @@ async function runReferenceGenerationStage(
       referenceAsset = { ...referenceAsset, checksum_sha256: putResult.checksumSha256, byte_size: putResult.byteSize };
       await recordCost({
         missionId: item.mission_id,
+        organizationId: await resolveContentItemOrganizationId(item.mission_id),
         agentId: item.agent_id,
         contentItemId: item.id,
         contentVersionId: version.id,
@@ -2655,6 +2768,7 @@ async function runVisualQCStage(
     );
     await recordCost({
       missionId: item.mission_id,
+      organizationId: await resolveContentItemOrganizationId(item.mission_id),
       agentId: item.agent_id,
       contentItemId: item.id,
       contentVersionId: version.id,
@@ -2808,6 +2922,7 @@ async function runVisualQCStage(
       }
       await recordCost({
         missionId: item.mission_id,
+        organizationId: await resolveContentItemOrganizationId(item.mission_id),
         agentId: item.agent_id,
         contentItemId: item.id,
         contentVersionId: version.id,
@@ -3177,6 +3292,60 @@ export async function runContentProductionPipeline(
     return item;
   }
 
+  // The real organization-level enforcement point (Mission 8 Milestone C)
+  // — mirrors Scout's and Business Analyst's own gate, scoped to this
+  // specific version rather than the whole item: each version is a
+  // genuinely separate real production attempt (the item's own
+  // MAX_VERSIONS_PER_ITEM cap already treats them that way), so the
+  // reservation's idempotency key is the version's own id — a
+  // crash-resumed run for the SAME version reserves against the SAME key
+  // and gets back the existing reservation rather than double-counting;
+  // a genuinely new version (fresh or revision) gets its own key. The
+  // worst-case ceiling reserved is the item's own *remaining* room under
+  // MAX_ITEM_SPEND_USD (already a real, enforced per-item cap via
+  // assertItemBudgetRemaining) — never the full $8 regardless of what
+  // prior versions already spent, so multiple versions of the same item
+  // can never together reserve more than the item could ever actually
+  // spend. A refusal settles the item straight to "failed" with a clear
+  // reason — nothing was spent on this version, so there's no cost to
+  // record — rather than leaving a background job's thrown error strand
+  // it in "generating".
+  const organizationId = await resolveContentItemOrganizationId(item.mission_id);
+  const alreadySpentOnItem = await contentItemSpendUsd(item.id);
+  const remainingItemCeiling = Math.max(0, MAX_ITEM_SPEND_USD - alreadySpentOnItem);
+  let reservation;
+  try {
+    reservation = await reserveBudget({
+      organizationId,
+      purpose: `content_production_v${version.version_number}`,
+      estimatedUsd: remainingItemCeiling,
+      idempotencyKey: `content-version-${version.id}`,
+    });
+  } catch (error) {
+    if (error instanceof BudgetExhaustedError) {
+      await updateContentVersion(version.id, {
+        status: "failed",
+        failure_reason: error.message,
+        completed_at: new Date().toISOString(),
+      });
+      const refusal = await transitionContentItemState(item.id, ["generating"], "failed", {
+        failure_reason: error.message,
+      });
+      await recordActivity({
+        missionId: item.mission_id,
+        actor: "system",
+        action: "production_refused_budget_exhausted",
+        detail: error.message,
+      });
+      // transitionContentItemState always returns the item's real current
+      // state either way — if it moved on (e.g. cancelled) before this
+      // could land, that's the same non-overwrite guarantee this function
+      // follows everywhere else.
+      return refusal.item;
+    }
+    throw error;
+  }
+
   const brief = item.brief as ProductionBrief;
   const ctx = item.audience_context as AudienceContext;
 
@@ -3201,7 +3370,9 @@ export async function runContentProductionPipeline(
     }
 
     await runAssemblyStage(item, version, ctx, deps);
-    return await runFinalisationStage(item, version);
+    const finalised = await runFinalisationStage(item, version);
+    await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
+    return finalised;
   } catch (error) {
     if (error instanceof ProductionMovedOn) {
       // The version itself must not be left stuck at status "generating"
@@ -3221,6 +3392,7 @@ export async function runContentProductionPipeline(
         action: "production_discarded_after_state_change",
         detail: `Content item was already "${error.item.state}" by the time production work continued — remaining work was not applied, but any real cost already spent was recorded.`,
       });
+      await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
       return error.item;
     }
 
@@ -3253,6 +3425,7 @@ export async function runContentProductionPipeline(
         action: "production_discarded_after_state_change",
         detail: `Production ${isRefusal ? "was refused" : "failed"} (${reason}), but the item was already "${settlement.item.state}" — its state was not overwritten.`,
       });
+      await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
       return settlement.item;
     }
 
@@ -3262,6 +3435,7 @@ export async function runContentProductionPipeline(
       action: isRefusal ? "production_blocked" : "production_failed",
       detail: reason,
     });
+    await settleReservation(reservation.id, await contentVersionSpendUsd(version.id));
     return settlement.item;
   }
 }

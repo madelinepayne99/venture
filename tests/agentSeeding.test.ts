@@ -26,10 +26,12 @@ describe("seedAgents — per-agent idempotent seeding", () => {
     expect(before.some((a) => a.key === "content_bot")).toBe(true);
 
     // Simulate exactly the real, live scenario: a database that already has
-    // other agents but is missing content_bot (delete its capabilities
-    // first — the real FK requires it).
+    // other agents but is missing content_bot (delete its capabilities and
+    // its real per-organization recruitment row first — both real FKs
+    // require it, same as agent_capabilities always did).
     const contentBot = before.find((a) => a.key === "content_bot")!;
     await db.delete(schema.agentCapabilities).where(eq(schema.agentCapabilities.agent_id, contentBot.id));
+    await db.delete(schema.organizationAgents).where(eq(schema.organizationAgents.agent_key, "content_bot"));
     await db.delete(schema.agents).where(eq(schema.agents.key, "content_bot"));
 
     const midway = await db.select().from(schema.agents);

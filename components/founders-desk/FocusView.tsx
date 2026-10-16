@@ -1,28 +1,53 @@
+"use client";
+
+import { useState } from "react";
 import type { Agent, LedgerEntry, Mission, Project, WorkspaceType } from "@/lib/db/types";
-import { StatusBadge } from "./StatusBadge";
-import { MissionForm } from "./MissionForm";
-import { MissionDetail, type MissionDetailData } from "./MissionDetail";
-import { ProductionActions } from "./ProductionActions";
-import { AgentRoster } from "./AgentRoster";
-import { FoundersDeskInbox } from "./FoundersDeskInbox";
-import { ExecutiveAssistantTasks } from "./ExecutiveAssistantTasks";
-import { FinanceAgentPanel } from "./FinanceAgentPanel";
-import { OperationsAgentChecklists } from "./OperationsAgentChecklists";
-import { BusinessAnalystPanel } from "./BusinessAnalystPanel";
-import { ChiefOfStaffPanel } from "./ChiefOfStaffPanel";
-import { Ledger } from "./Ledger";
-import { WorkspacePanel } from "./WorkspacePanel";
-import { isCancellable } from "@/lib/domain/missionStates";
+import type { MissionDetailData } from "./MissionDetail";
+import { FocusNav, type FocusSection } from "./focus/FocusNav";
+import { OverviewSection } from "./focus/OverviewSection";
+import { EmployeesSection } from "./focus/EmployeesSection";
+import { TasksSection } from "./focus/TasksSection";
+import { FoundersDeskSection } from "./focus/FoundersDeskSection";
+import { FinanceSection } from "./focus/FinanceSection";
+import { ReportsSection } from "./focus/ReportsSection";
+import { SettingsSection } from "./focus/SettingsSection";
+import { SupportSection } from "./focus/SupportSection";
+
+const SECTION_STORAGE_KEY = "venture-hq-focus-section";
+
+function readStoredSection(): FocusSection {
+  if (typeof window === "undefined") return "overview";
+  try {
+    const stored = window.localStorage.getItem(SECTION_STORAGE_KEY);
+    const valid: FocusSection[] = [
+      "overview",
+      "employees",
+      "tasks",
+      "foundersDesk",
+      "finance",
+      "reports",
+      "settings",
+      "support",
+    ];
+    return valid.includes(stored as FocusSection) ? (stored as FocusSection) : "overview";
+  } catch {
+    return "overview";
+  }
+}
 
 /**
- * The clean professional dashboard — the original Founders' Desk layout,
- * now scoped to whichever workspace the top workspace bar has selected
- * (missions here are already filtered to the active workspace by
- * FoundersDeskApp). Exactly the same real data, handlers, and components
- * HQ View uses; only the layout differs.
+ * Focus View (Mission 8 redesign — "Refined Emerald & Ivory") — a real
+ * business operating platform instead of a flat three-column dashboard.
+ * Same real data and handlers HQ View uses, passed down unchanged from
+ * FoundersDeskApp.tsx; only the presentation layer changed. The active
+ * section is a client-side-only preference (localStorage, read after
+ * mount to avoid a hydration mismatch — same pattern FoundersDeskApp.tsx
+ * already uses for view-mode/workspace) — it changes what's rendered,
+ * never what data is fetched or what a founder is allowed to do.
  */
 export function FocusView({
   agents,
+  pendingReviewCount,
   ledgerEntries,
   ledgerTotal,
   projects,
@@ -42,6 +67,7 @@ export function FocusView({
   onOpenContentReview,
 }: {
   agents: Agent[];
+  pendingReviewCount: number;
   ledgerEntries: LedgerEntry[];
   ledgerTotal: number;
   projects: Project[];
@@ -60,95 +86,76 @@ export function FocusView({
   onOpenProduceAgain: () => void;
   onOpenContentReview: (contentItemId: string) => void;
 }) {
+  // Starts at "overview" on the server-rendered pass (matching
+  // readStoredSection's own SSR fallback) and is corrected from
+  // localStorage immediately after mount — the same hydration-safe
+  // pattern FoundersDeskApp.tsx's own readLocalStorage already follows.
+  const [section, setSection] = useState<FocusSection>("overview");
+  const [hydrated, setHydrated] = useState(false);
+  if (!hydrated && typeof window !== "undefined") {
+    setHydrated(true);
+    const stored = readStoredSection();
+    if (stored !== section) setSection(stored);
+  }
+
+  function changeSection(next: FocusSection) {
+    setSection(next);
+    try {
+      window.localStorage.setItem(SECTION_STORAGE_KEY, next);
+    } catch {
+      // Private browsing / blocked storage — a real, harmless no-op; the
+      // section still changes for this view, it just won't be remembered.
+    }
+  }
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[280px_1fr_420px]">
-      <aside className="space-y-6">
-        <AgentRoster agents={agents} />
-        <ExecutiveAssistantTasks />
-        <FinanceAgentPanel />
-        <OperationsAgentChecklists />
-        <BusinessAnalystPanel />
-        <ChiefOfStaffPanel />
-        <Ledger entries={ledgerEntries} totalUsd={ledgerTotal} />
-      </aside>
+    <div className="rounded-2xl border border-focus-border bg-focus-ivory shadow-sm">
+      <div className="px-4 pt-2 sm:px-6">
+        <FocusNav active={section} onChange={changeSection} pendingReviewCount={pendingReviewCount} />
+      </div>
 
-      <section className="space-y-6">
-        <FoundersDeskInbox onSelectMission={onSelectMission} onOpenContentItem={onOpenContentReview} />
-
-        <WorkspacePanel projects={projects} onCreate={onCreateWorkspace} />
-
-        <div className="rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">
-          <h2 className="font-display text-lg font-semibold text-hq-ink">Create a mission</h2>
-          <p className="mt-1 text-sm text-hq-slate">
-            Give Scout a brief. It will come back with an honest, evidence-labeled research
-            report — never a guaranteed outcome.
-          </p>
-          <MissionForm projects={projects} defaultProjectId={defaultProjectId} onSubmit={onCreateMission} />
-        </div>
-
-        <div className="rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">
-          <h2 className="font-display text-lg font-semibold text-hq-ink">Missions</h2>
-          {missions.length === 0 ? (
-            <p className="mt-3 text-sm text-hq-slate">
-              No missions yet in this workspace — create the first one above.
-            </p>
-          ) : (
-            <ul className="mt-3 divide-y divide-hq-brass/10">
-              {missions.map((mission) => (
-                <li key={mission.id} className="py-3">
-                  <button
-                    onClick={() => onSelectMission(mission.id)}
-                    className={`w-full rounded-lg px-3 py-2 text-left transition hover:bg-hq-parchment/60 ${
-                      selectedMissionId === mission.id ? "bg-hq-parchment/80" : ""
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-medium text-hq-ink">{mission.title}</span>
-                      <StatusBadge state={mission.state} />
-                    </div>
-                    <p className="mt-1 line-clamp-1 text-xs text-hq-slate">{mission.brief}</p>
-                  </button>
-
-                  <div className="mt-2 flex gap-2 px-3">
-                    {mission.state === "awaiting_founder_approval" && (
-                      <button
-                        disabled={busyMissionId === mission.id}
-                        onClick={() => onApprove(mission.id)}
-                        className="rounded-md bg-hq-teal px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
-                      >
-                        {busyMissionId === mission.id ? "Sending Scout…" : "Approve & send Scout"}
-                      </button>
-                    )}
-                    {isCancellable(mission.state) && (
-                      <button
-                        disabled={busyMissionId === mission.id}
-                        onClick={() => onCancel(mission.id)}
-                        className="rounded-md border border-hq-slate/30 px-3 py-1 text-xs font-medium text-hq-slate disabled:opacity-50"
-                      >
-                        Cancel
-                      </button>
-                    )}
-                    {selectedMissionId === mission.id && missionDetail && (
-                      <ProductionActions
-                        detail={missionDetail}
-                        busy={busyMissionId === mission.id}
-                        onOpenApproveForProduction={onOpenApproveForProduction}
-                        onOpenCommissionPilot={onOpenCommissionPilot}
-                        onOpenProduceAgain={onOpenProduceAgain}
-                        onOpenContentReview={onOpenContentReview}
-                      />
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      </section>
-
-      <aside>
-        <MissionDetail detail={missionDetail} />
-      </aside>
+      {/* pb-20 (extra, beyond <main>'s own bottom padding): real clearance
+          for the global, fixed-to-viewport-bottom EmployeeDirectory strip
+          (components/founders-desk/EmployeeDirectory.tsx — rendered
+          outside this component, shared with HQ View, not touched here)
+          — found grazing the bottom of a tall section's last card during
+          Mission 8's Focus View verification. */}
+      <div className="p-4 pb-20 sm:p-6 sm:pb-24">
+        {section === "overview" && (
+          <OverviewSection
+            missions={missions}
+            agents={agents}
+            pendingReviewCount={pendingReviewCount}
+            onNavigate={changeSection}
+          />
+        )}
+        {section === "employees" && <EmployeesSection />}
+        {section === "tasks" && (
+          <TasksSection
+            projects={projects}
+            defaultProjectId={defaultProjectId}
+            missions={missions}
+            missionDetail={missionDetail}
+            selectedMissionId={selectedMissionId}
+            busyMissionId={busyMissionId}
+            onCreateMission={onCreateMission}
+            onSelectMission={onSelectMission}
+            onApprove={onApprove}
+            onCancel={onCancel}
+            onOpenApproveForProduction={onOpenApproveForProduction}
+            onOpenCommissionPilot={onOpenCommissionPilot}
+            onOpenProduceAgain={onOpenProduceAgain}
+            onOpenContentReview={onOpenContentReview}
+          />
+        )}
+        {section === "foundersDesk" && (
+          <FoundersDeskSection onSelectMission={onSelectMission} onOpenContentItem={onOpenContentReview} />
+        )}
+        {section === "finance" && <FinanceSection ledgerEntries={ledgerEntries} ledgerTotal={ledgerTotal} />}
+        {section === "reports" && <ReportsSection />}
+        {section === "settings" && <SettingsSection projects={projects} onCreateWorkspace={onCreateWorkspace} />}
+        {section === "support" && <SupportSection />}
+      </div>
     </div>
   );
 }

@@ -7,6 +7,17 @@ import type * as schema from "./schema";
 
 export type Founder = InferSelectModel<typeof schema.founders>;
 
+export type VentureStage = (typeof schema.ventureStageValues)[number];
+export type Organization = InferSelectModel<typeof schema.organizations>;
+export type OrganizationMemberRole = (typeof schema.organizationMemberRoleValues)[number];
+export type OrganizationMember = Omit<InferSelectModel<typeof schema.organizationMembers>, "role"> & {
+  role: OrganizationMemberRole;
+};
+export type OrganizationAgentStatus = (typeof schema.organizationAgentStatusValues)[number];
+export type OrganizationAgent = Omit<InferSelectModel<typeof schema.organizationAgents>, "status"> & {
+  status: OrganizationAgentStatus;
+};
+
 export type AgentStatus = (typeof schema.agentStatusValues)[number];
 export type Agent = InferSelectModel<typeof schema.agents>;
 export type AgentCapability = InferSelectModel<typeof schema.agentCapabilities>;
@@ -100,6 +111,26 @@ export type Approval = InferSelectModel<typeof schema.approvals>;
 export type CostEntry = InferSelectModel<typeof schema.costs>;
 export type LedgerEntry = InferSelectModel<typeof schema.ledgerEntries>;
 export type ActivityEntry = InferSelectModel<typeof schema.activityHistory>;
+
+export type OrganizationBudget = InferSelectModel<typeof schema.organizationBudgets>;
+export type BudgetReservationStatus = (typeof schema.budgetReservationStatusValues)[number];
+export type BudgetReservation = Omit<InferSelectModel<typeof schema.budgetReservations>, "status"> & {
+  status: BudgetReservationStatus;
+};
+
+// --- Subscription plans & billing (Mission 8, Sections 14-15) -----------
+export type SubscriptionPlan = InferSelectModel<typeof schema.subscriptionPlans>;
+export type SubscriptionStatus = (typeof schema.subscriptionStatusValues)[number];
+export type OrganizationSubscription = Omit<InferSelectModel<typeof schema.organizationSubscriptions>, "status"> & {
+  status: SubscriptionStatus;
+};
+export type BillingWebhookEvent = InferSelectModel<typeof schema.billingWebhookEvents>;
+
+// --- Customer support (Mission 10) ---------------------------------------
+export type SupportRequestStatus = (typeof schema.supportRequestStatusValues)[number];
+export type SupportRequest = Omit<InferSelectModel<typeof schema.supportRequests>, "status"> & {
+  status: SupportRequestStatus;
+};
 
 // --- Content Bot production (Milestone C1) ---------------------------------
 

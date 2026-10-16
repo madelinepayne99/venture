@@ -1,0 +1,2 @@
+ALTER TABLE "ledger_entries" ADD COLUMN "organization_id" text;--> statement-breakpoint
+ALTER TABLE "ledger_entries" ADD CONSTRAINT "ledger_entries_organization_id_organizations_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organizations"("id") ON DELETE no action ON UPDATE no action;

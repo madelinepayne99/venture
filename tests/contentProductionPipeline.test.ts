@@ -18,6 +18,8 @@ import {
 import type { StorageProvider, StoredObject } from "@/lib/storage/types";
 import type { ImageProvider, VoiceProvider, EditProvider, MediaResult, VoiceMediaResult } from "@/lib/media/types";
 import { MAX_GENERATION_ATTEMPTS_PER_VERSION, MAX_ITEM_SPEND_USD, MAX_QC_REGENERATIONS_PER_VERSION } from "@/lib/domain/contentProduction";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import { reserveBudget, getBudgetStatusForOrganization, DEFAULT_MONTHLY_BUDGET_USD } from "@/lib/domain/budgetWorkflow";
 import {
   makeContentPlan,
   makeProductionRecommendation,
@@ -594,8 +596,11 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     const item = await createRealContentItem();
     // Pre-load the ledger past the cap — the very first real media call
     // (voiceover) must refuse before spending anything more.
+    const { getActiveOrganizationForFounder } = await import("@/lib/domain/organizationWorkflow");
+    const organization = await getActiveOrganizationForFounder(founderId);
     await recordCost({
       missionId: null,
+      organizationId: organization.id,
       agentId: null,
       contentItemId: item.id,
       model: "n/a",
@@ -618,6 +623,64 @@ describe("Content Bot's production pipeline (real Postgres, fixture providers)",
     expect(settled.failure_reason).toContain("budget");
     expect(voice.calls).toBe(0);
     expect(image.calls).toHaveLength(0);
+  });
+
+  it("settles a real organization-level reservation with this version's actual cost on a successful run", async () => {
+    const item = await createRealContentItem();
+    const organization = await getActiveOrganizationForFounder(founderId);
+    const image = makeFakeImageProvider();
+    const voice = makeFakeVoiceProvider();
+    const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
+    const storage = makeFakeStorage();
+
+    const before = await getBudgetStatusForOrganization(organization.id);
+    const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+    const after = await getBudgetStatusForOrganization(organization.id);
+
+    expect(settled.state).toBe("awaiting_review");
+    const realSpend = await contentItemSpendUsd(item.id);
+    expect(realSpend).toBeGreaterThan(0);
+    // Committed spend grew by exactly this version's real recorded cost —
+    // not the worst-case (remaining item ceiling) reservation taken out
+    // before any real provider call.
+    expect(after.committedUsd - before.committedUsd).toBeCloseTo(realSpend, 6);
+  });
+
+  it("refuses to run production and settles the item as failed when the organization's AI budget is already exhausted", async () => {
+    const item = await createRealContentItem();
+    const organization = await getActiveOrganizationForFounder(founderId);
+
+    // Simulate prior real spend this month that already used up this
+    // organization's entire default budget — independent of (and well
+    // below) the item's own per-item cap.
+    await reserveBudget({
+      organizationId: organization.id,
+      purpose: "test_prior_spend",
+      estimatedUsd: DEFAULT_MONTHLY_BUDGET_USD,
+      idempotencyKey: "prior-spend-exhausts-content-bot-budget",
+    });
+
+    const image = makeFakeImageProvider();
+    const voice = makeFakeVoiceProvider();
+    const edit = makeFakeEditProvider();
+    const video = makeFakeVideoProvider();
+    const storage = makeFakeStorage();
+
+    const { runContentProductionPipeline } = await import("@/lib/domain/contentWorkflow");
+    const settled = await runContentProductionPipeline(item.id, { media: { image, voice, edit, video }, storage });
+
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toMatch(/budget is exhausted/i);
+    // The real model/media providers were never called — the gate
+    // refused before any spend.
+    expect(voice.calls).toBe(0);
+    expect(image.calls).toHaveLength(0);
+    expect(await contentItemSpendUsd(item.id)).toBe(0);
+
+    const activity = await listActivity(undefined, 50);
+    expect(activity.some((a) => a.action === "production_refused_budget_exhausted")).toBe(true);
   });
 
   it("fails a version outright once it has exhausted its real generation-attempt cap, rather than retrying forever", async () => {
