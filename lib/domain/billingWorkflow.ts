@@ -233,30 +233,49 @@ export async function processBillingWebhookEvent(event: Stripe.Event): Promise<{
       await updateOrganizationSubscription(subscription.organization_id, { status: "past_due" });
       break;
     }
-    case "invoice.payment_succeeded": {
-      // Mission 12 — the real missing recovery path. Before this fix,
-      // nothing in this codebase ever reacted to a successful payment:
-      // an organization that failed a charge (status "past_due", not
+    case "invoice.paid": {
+      // Mission 12 — the real missing recovery path, using Stripe's own
+      // CURRENT-documented event for it. Verified against Stripe's live
+      // "Using webhooks with subscriptions" guide while auditing this
+      // code (priority 2): Stripe's own subscription-tracking guidance
+      // names `invoice.paid` specifically — not the older
+      // `invoice.payment_succeeded`, which still exists but isn't what
+      // current docs point integrators toward. Before this fix, nothing
+      // in this codebase ever reacted to a successful payment at all: an
+      // organization that failed a charge (status "past_due", not
       // entitled — see subscriptionWorkflow.ts's ENTITLED_STATUSES) and
-      // then genuinely paid — either Stripe's own automatic retry
-      // succeeding, or the founder updating their card in the Billing
-      // Portal — stayed locked out of paid AI work forever despite
-      // having paid. This event is Stripe's authoritative "this invoice
-      // was actually paid" signal, for both an ordinary renewal and a
-      // recovered failed payment alike; either way the real outcome is
-      // the same: the organization is entitled again. currentPeriodEnd
-      // is deliberately left to customer.subscription.updated (which
-      // Stripe also sends around a renewal) rather than duplicated here.
+      // then genuinely paid — Stripe's own automatic retry succeeding,
+      // or the founder updating their card in the Billing Portal —
+      // stayed locked out of paid AI work forever despite having paid.
+      //
+      // Stripe's own docs also warn: "A paid invoice doesn't necessarily
+      // transition the subscription to active" — so this deliberately
+      // does NOT assume paid-invoice-implies-active-subscription. It
+      // resolves the invoice's real linked subscription (current API
+      // shape: `invoice.parent.subscription_details.subscription`, not
+      // the older flat `invoice.subscription` field, confirmed against
+      // the installed SDK's own current type definitions) and retrieves
+      // that subscription's own real, current status from Stripe —
+      // mirroring exactly how checkout.session.completed already
+      // resolves its subscription metadata rather than assuming.
       const invoice = event.data.object as Stripe.Invoice;
       const stripeCustomerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
       if (!stripeCustomerId) break;
-      const subscription = await getOrganizationSubscriptionByStripeCustomerId(stripeCustomerId);
-      if (!subscription) break;
+      const localSubscription = await getOrganizationSubscriptionByStripeCustomerId(stripeCustomerId);
+      if (!localSubscription) break;
       // Never resurrects a deliberately cancelled subscription — a
       // trailing/duplicate invoice for a subscription the customer
       // already cancelled must not silently re-activate it.
-      if (subscription.status === "canceled") break;
-      await updateOrganizationSubscription(subscription.organization_id, { status: "active" });
+      if (localSubscription.status === "canceled") break;
+
+      const subscriptionRef = invoice.parent?.subscription_details?.subscription;
+      const stripeSubscriptionId = typeof subscriptionRef === "string" ? subscriptionRef : subscriptionRef?.id;
+      if (!stripeSubscriptionId) break; // a non-subscription invoice — nothing to do here
+
+      const realSubscription = await getStripeClient().subscriptions.retrieve(stripeSubscriptionId);
+      await updateOrganizationSubscription(localSubscription.organization_id, {
+        status: normalizeStripeStatus(realSubscription.status),
+      });
       break;
     }
     default:

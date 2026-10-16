@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resetDbForTests, getDb } from "@/lib/db/client";
 import * as schema from "@/lib/db/schema";
 import { eq } from "drizzle-orm";
@@ -172,43 +172,121 @@ describe("processBillingWebhookEvent — real idempotent entitlement updates", (
   });
 
   // --- Mission 12: real missing renewal/recovery/downgrade behavior ---
+  // invoice.paid (not the older invoice.payment_succeeded — see
+  // billingWorkflow.ts's own doc comment on this event, verified against
+  // Stripe's current "Using webhooks with subscriptions" guide) resolves
+  // the invoice's real linked subscription and retrieves ITS real status
+  // from Stripe, rather than assuming paid-invoice-implies-active — so
+  // these tests stub getStripeClient().subscriptions.retrieve rather
+  // than hitting the real Stripe network (this sandbox holds no real
+  // STRIPE_SECRET_KEY).
 
-  it("invoice.payment_succeeded recovers a real past_due organization back to active — a real successful retry/renewal", async () => {
+  function mockSubscriptionRetrieve(status: string) {
+    const stripe = getStripeClient();
+    return vi
+      .spyOn(stripe.subscriptions, "retrieve")
+      .mockResolvedValue({ status } as unknown as Stripe.Response<Stripe.Subscription>);
+  }
+
+  it("invoice.paid recovers a real past_due organization back to active — a real successful retry/renewal", async () => {
     const organizationId = await makeTestOrganization("Bakery HQ");
     await updateOrganizationSubscription(organizationId, {
       planId: "business",
       status: "past_due",
       stripeCustomerId: "cus_recovering_123",
     });
+    const spy = mockSubscriptionRetrieve("active");
 
-    await processBillingWebhookEvent(makeFakeEvent("invoice.payment_succeeded", { customer: "cus_recovering_123" }));
+    await processBillingWebhookEvent(
+      makeFakeEvent("invoice.paid", {
+        customer: "cus_recovering_123",
+        parent: { subscription_details: { subscription: "sub_recovering_123" } },
+      }),
+    );
 
     const subscription = await getOrganizationSubscription(organizationId);
     expect(subscription!.status).toBe("active");
     expect(subscription!.plan_id).toBe("business"); // the real plan is preserved
+    expect(spy).toHaveBeenCalledWith("sub_recovering_123");
+    spy.mockRestore();
   });
 
-  it("invoice.payment_succeeded never resurrects a genuinely cancelled subscription (a trailing/duplicate invoice)", async () => {
+  it("invoice.paid syncs whatever real status Stripe's own subscription actually has — never assumes paid-invoice-implies-active (per Stripe's own documented caveat)", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    await updateOrganizationSubscription(organizationId, {
+      planId: "business",
+      status: "past_due",
+      stripeCustomerId: "cus_still_past_due_123",
+    });
+    // A paid invoice doesn't necessarily mean the subscription itself is
+    // active (Stripe's own docs) — simulate that real case directly.
+    const spy = mockSubscriptionRetrieve("past_due");
+
+    await processBillingWebhookEvent(
+      makeFakeEvent("invoice.paid", {
+        customer: "cus_still_past_due_123",
+        parent: { subscription_details: { subscription: "sub_still_past_due_123" } },
+      }),
+    );
+
+    const subscription = await getOrganizationSubscription(organizationId);
+    expect(subscription!.status).toBe("past_due"); // not blindly flipped to active
+    spy.mockRestore();
+  });
+
+  it("invoice.paid never resurrects a genuinely cancelled subscription (a trailing/duplicate invoice) — never even calls Stripe for it", async () => {
     const organizationId = await makeTestOrganization("Bakery HQ");
     await updateOrganizationSubscription(organizationId, {
       planId: "free",
       status: "canceled",
       stripeCustomerId: "cus_cancelled_123",
     });
+    const spy = mockSubscriptionRetrieve("active");
 
-    await processBillingWebhookEvent(makeFakeEvent("invoice.payment_succeeded", { customer: "cus_cancelled_123" }));
+    await processBillingWebhookEvent(
+      makeFakeEvent("invoice.paid", {
+        customer: "cus_cancelled_123",
+        parent: { subscription_details: { subscription: "sub_cancelled_123" } },
+      }),
+    );
 
     const subscription = await getOrganizationSubscription(organizationId);
     expect(subscription!.status).toBe("canceled"); // NOT silently re-activated
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
-  it("invoice.payment_succeeded for an unknown Stripe customer touches nothing", async () => {
+  it("invoice.paid for an unknown Stripe customer touches nothing", async () => {
     const organizationId = await makeTestOrganization("Bakery HQ");
     const before = await getOrganizationSubscription(organizationId);
 
-    await processBillingWebhookEvent(makeFakeEvent("invoice.payment_succeeded", { customer: "cus_never_seen_before" }));
+    await processBillingWebhookEvent(
+      makeFakeEvent("invoice.paid", {
+        customer: "cus_never_seen_before",
+        parent: { subscription_details: { subscription: "sub_never_seen_before" } },
+      }),
+    );
 
     expect(await getOrganizationSubscription(organizationId)).toEqual(before);
+  });
+
+  it("invoice.paid for a non-subscription invoice (no linked subscription) touches nothing", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    await updateOrganizationSubscription(organizationId, {
+      planId: "business",
+      status: "past_due",
+      stripeCustomerId: "cus_one_off_invoice_123",
+    });
+    const spy = mockSubscriptionRetrieve("active");
+
+    await processBillingWebhookEvent(
+      makeFakeEvent("invoice.paid", { customer: "cus_one_off_invoice_123", parent: null }),
+    );
+
+    const subscription = await getOrganizationSubscription(organizationId);
+    expect(subscription!.status).toBe("past_due"); // unchanged — nothing to recover from a non-subscription invoice
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 
   it("customer.subscription.updated syncs a real plan downgrade made through Stripe's own Billing Portal", async () => {
