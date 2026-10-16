@@ -28,7 +28,10 @@ export const PAID_AGENT_KEYS = new Set(["scout", "content_bot", "business_analys
 // not — a cancelled subscription, an expired/ended trial, or a failed
 // payment must never continue unlocking paid AI work just because the
 // organization_subscriptions row hasn't been deleted.
-const ENTITLED_STATUSES = new Set(["active", "trialing"]);
+// Exported (Mission 12) so billingWorkflow.ts's own "already subscribed"
+// checkout guard can check the exact same real vocabulary, rather than a
+// second, independently-maintained copy of it drifting out of sync.
+export const ENTITLED_STATUSES = new Set(["active", "trialing"]);
 
 export class SubscriptionNotFoundError extends Error {
   constructor(organizationId: string) {

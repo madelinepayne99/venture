@@ -5,10 +5,12 @@ import {
   getOrganizationSubscriptionByStripeCustomerId,
   updateOrganizationSubscription,
   getSubscriptionPlan,
+  getSubscriptionPlanByStripePriceId,
   getOrganizationSubscription,
   getFounder,
 } from "@/lib/db/repositories";
 import { getActiveOrganizationForFounder, requireOrganizationRole } from "@/lib/domain/organizationWorkflow";
+import { ENTITLED_STATUSES } from "@/lib/domain/subscriptionWorkflow";
 import {
   createCheckoutSession,
   createBillingPortalSession,
@@ -43,6 +45,30 @@ export class PlanNotPurchasableError extends Error {
 }
 
 /**
+ * Mission 12 — a real double-subscription risk found while auditing
+ * missing billing behaviors: a Stripe Checkout Session in "subscription"
+ * mode always creates a NEW real subscription — it never replaces an
+ * existing one, which is what the Billing Portal's own plan-change flow
+ * is for. Before this guard, an organization already on a real, active
+ * paid plan could start a second checkout for a different plan (the
+ * pricing page's "Subscribe" button has no such restriction) and end up
+ * genuinely billed for two simultaneous real subscriptions. A plan
+ * change for an already-subscribed organization must go through
+ * startBillingPortalSession instead.
+ */
+export class AlreadySubscribedError extends Error {
+  constructor(
+    readonly organizationId: string,
+    readonly currentPlanId: string,
+  ) {
+    super(
+      `This organization already has a real, active subscription ("${currentPlanId}"). Use "Manage billing" to change or cancel your plan — starting a new checkout here would create a second, separate real subscription.`,
+    );
+    this.name = "AlreadySubscribedError";
+  }
+}
+
+/**
  * Starts a real Stripe Checkout session for an organization to subscribe
  * to a real paid plan. Founder-gated one level up (the route calls
  * requireFounderId()); this additionally requires the real organization
@@ -63,6 +89,16 @@ export async function startCheckout(
   if (!plan.stripe_price_id) throw new PlanNotPurchasableError(planId);
 
   const subscription = await getOrganizationSubscription(organization.id);
+  // See AlreadySubscribedError's own doc comment — a real, active
+  // Stripe-backed subscription already exists, so a NEW checkout session
+  // would create a second, simultaneous real subscription rather than
+  // changing the existing one. stripe_subscription_id is the real
+  // signal: a free-plan organization (which has never checked out) has
+  // none, so first-time subscription is never blocked by this.
+  if (subscription?.stripe_subscription_id && ENTITLED_STATUSES.has(subscription.status)) {
+    throw new AlreadySubscribedError(organization.id, subscription.plan_id);
+  }
+
   const founder = await getFounder(founderId);
   const founderEmail = founder?.email ?? null;
 
@@ -147,7 +183,24 @@ export async function processBillingWebhookEvent(event: Stripe.Event): Promise<{
       const sub = event.data.object as Stripe.Subscription;
       const organizationId = sub.metadata?.organizationId;
       if (!organizationId) break;
+
+      // Mission 12 — real plan-change sync. A customer can upgrade or
+      // downgrade entirely inside Stripe's own Billing Portal
+      // (startBillingPortalSession), outside any route this app
+      // controls — Stripe's own real price id on the updated
+      // subscription is the only signal that happened. Before this fix,
+      // the local organization_subscriptions.plan_id was never updated
+      // on this event at all: a customer who downgraded through the
+      // portal kept their OLD (higher-tier) plan's real AI
+      // budget/video allowance indefinitely, despite now paying less —
+      // a real entitlement bug, not just a display one. A price id this
+      // app doesn't recognize is never guessed into a plan change; the
+      // status/period fields below still apply either way.
+      const stripePriceId = sub.items.data[0]?.price?.id;
+      const matchedPlan = stripePriceId ? await getSubscriptionPlanByStripePriceId(stripePriceId) : undefined;
+
       await updateOrganizationSubscription(organizationId, {
+        ...(matchedPlan ? { planId: matchedPlan.id } : {}),
         status: normalizeStripeStatus(sub.status),
         cancelAtPeriodEnd: sub.cancel_at_period_end,
         currentPeriodEnd: sub.items.data[0]?.current_period_end
@@ -178,6 +231,32 @@ export async function processBillingWebhookEvent(event: Stripe.Event): Promise<{
       const subscription = await getOrganizationSubscriptionByStripeCustomerId(stripeCustomerId);
       if (!subscription) break;
       await updateOrganizationSubscription(subscription.organization_id, { status: "past_due" });
+      break;
+    }
+    case "invoice.payment_succeeded": {
+      // Mission 12 — the real missing recovery path. Before this fix,
+      // nothing in this codebase ever reacted to a successful payment:
+      // an organization that failed a charge (status "past_due", not
+      // entitled — see subscriptionWorkflow.ts's ENTITLED_STATUSES) and
+      // then genuinely paid — either Stripe's own automatic retry
+      // succeeding, or the founder updating their card in the Billing
+      // Portal — stayed locked out of paid AI work forever despite
+      // having paid. This event is Stripe's authoritative "this invoice
+      // was actually paid" signal, for both an ordinary renewal and a
+      // recovered failed payment alike; either way the real outcome is
+      // the same: the organization is entitled again. currentPeriodEnd
+      // is deliberately left to customer.subscription.updated (which
+      // Stripe also sends around a renewal) rather than duplicated here.
+      const invoice = event.data.object as Stripe.Invoice;
+      const stripeCustomerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer?.id;
+      if (!stripeCustomerId) break;
+      const subscription = await getOrganizationSubscriptionByStripeCustomerId(stripeCustomerId);
+      if (!subscription) break;
+      // Never resurrects a deliberately cancelled subscription — a
+      // trailing/duplicate invoice for a subscription the customer
+      // already cancelled must not silently re-activate it.
+      if (subscription.status === "canceled") break;
+      await updateOrganizationSubscription(subscription.organization_id, { status: "active" });
       break;
     }
     default:

@@ -1,9 +1,17 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { resetDbForTests } from "@/lib/db/client";
+import { resetDbForTests, getDb } from "@/lib/db/client";
+import * as schema from "@/lib/db/schema";
+import { eq } from "drizzle-orm";
 import { createFounder, getOrganizationSubscription, updateOrganizationSubscription } from "@/lib/db/repositories";
 import { createOrganizationWithOwner } from "@/lib/domain/organizationWorkflow";
 import { getStripeClient, verifyWebhookSignature } from "@/lib/billing/stripe";
-import { processBillingWebhookEvent, startCheckout, PlanNotPurchasableError, PlanNotFoundError } from "@/lib/domain/billingWorkflow";
+import {
+  processBillingWebhookEvent,
+  startCheckout,
+  PlanNotPurchasableError,
+  PlanNotFoundError,
+  AlreadySubscribedError,
+} from "@/lib/domain/billingWorkflow";
 import type Stripe from "stripe";
 
 /**
@@ -162,6 +170,101 @@ describe("processBillingWebhookEvent — real idempotent entitlement updates", (
     const after = await getOrganizationSubscription(organizationId);
     expect(after).toEqual(before); // completely untouched
   });
+
+  // --- Mission 12: real missing renewal/recovery/downgrade behavior ---
+
+  it("invoice.payment_succeeded recovers a real past_due organization back to active — a real successful retry/renewal", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    await updateOrganizationSubscription(organizationId, {
+      planId: "business",
+      status: "past_due",
+      stripeCustomerId: "cus_recovering_123",
+    });
+
+    await processBillingWebhookEvent(makeFakeEvent("invoice.payment_succeeded", { customer: "cus_recovering_123" }));
+
+    const subscription = await getOrganizationSubscription(organizationId);
+    expect(subscription!.status).toBe("active");
+    expect(subscription!.plan_id).toBe("business"); // the real plan is preserved
+  });
+
+  it("invoice.payment_succeeded never resurrects a genuinely cancelled subscription (a trailing/duplicate invoice)", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    await updateOrganizationSubscription(organizationId, {
+      planId: "free",
+      status: "canceled",
+      stripeCustomerId: "cus_cancelled_123",
+    });
+
+    await processBillingWebhookEvent(makeFakeEvent("invoice.payment_succeeded", { customer: "cus_cancelled_123" }));
+
+    const subscription = await getOrganizationSubscription(organizationId);
+    expect(subscription!.status).toBe("canceled"); // NOT silently re-activated
+  });
+
+  it("invoice.payment_succeeded for an unknown Stripe customer touches nothing", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    const before = await getOrganizationSubscription(organizationId);
+
+    await processBillingWebhookEvent(makeFakeEvent("invoice.payment_succeeded", { customer: "cus_never_seen_before" }));
+
+    expect(await getOrganizationSubscription(organizationId)).toEqual(before);
+  });
+
+  it("customer.subscription.updated syncs a real plan downgrade made through Stripe's own Billing Portal", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    await updateOrganizationSubscription(organizationId, {
+      planId: "growth",
+      status: "active",
+      stripeCustomerId: "cus_downgrading_123",
+      stripeSubscriptionId: "sub_downgrading_123",
+    });
+
+    // Give the real "starter" plan a real Stripe price id to downgrade to
+    // — this app's seed data ships every plan with stripe_price_id: null
+    // until a founder connects a real Stripe account, so the test sets
+    // one directly (the one piece of state no repository function
+    // exposes a write path for, deliberately — see CLAUDE.md's own note
+    // that a plan's price is set once a real account exists, not through
+    // any app-level API).
+    const db = await getDb();
+    await db.update(schema.subscriptionPlans).set({ stripe_price_id: "price_starter_test" }).where(eq(schema.subscriptionPlans.id, "starter"));
+
+    await processBillingWebhookEvent(
+      makeFakeEvent("customer.subscription.updated", {
+        metadata: { organizationId },
+        status: "active",
+        cancel_at_period_end: false,
+        items: { data: [{ price: { id: "price_starter_test" }, current_period_end: Math.floor(Date.now() / 1000) + 86400 }] },
+      }),
+    );
+
+    const subscription = await getOrganizationSubscription(organizationId);
+    expect(subscription!.plan_id).toBe("starter"); // really synced down from "growth"
+    expect(subscription!.status).toBe("active");
+  });
+
+  it("customer.subscription.updated with an unrecognized Stripe price id never guesses a plan change", async () => {
+    const organizationId = await makeTestOrganization("Bakery HQ");
+    await updateOrganizationSubscription(organizationId, {
+      planId: "growth",
+      status: "active",
+      stripeCustomerId: "cus_unknown_price_123",
+    });
+
+    await processBillingWebhookEvent(
+      makeFakeEvent("customer.subscription.updated", {
+        metadata: { organizationId },
+        status: "active",
+        cancel_at_period_end: false,
+        items: { data: [{ price: { id: "price_this_app_has_never_seen" }, current_period_end: Math.floor(Date.now() / 1000) + 86400 }] },
+      }),
+    );
+
+    const subscription = await getOrganizationSubscription(organizationId);
+    expect(subscription!.plan_id).toBe("growth"); // unchanged — never guessed
+    expect(subscription!.status).toBe("active"); // other real fields still applied
+  });
 });
 
 describe("Altered plan identifiers cannot unlock paid AI work", () => {
@@ -189,6 +292,41 @@ describe("Altered plan identifiers cannot unlock paid AI work", () => {
         cancelUrl: "https://example.test/c",
       }),
     ).rejects.toBeInstanceOf(PlanNotFoundError);
+  });
+
+  it("refuses to start a SECOND checkout for an organization already on a real, active paid plan — never a double subscription", async () => {
+    const founder = await createFounder({ name: "Test Owner" });
+    const { organization } = await createOrganizationWithOwner(founder.id, "Test Org");
+    await updateOrganizationSubscription(organization.id, {
+      planId: "starter",
+      status: "active",
+      stripeCustomerId: "cus_already_123",
+      stripeSubscriptionId: "sub_already_123",
+    });
+
+    const db = await getDb();
+    await db.update(schema.subscriptionPlans).set({ stripe_price_id: "price_growth_test" }).where(eq(schema.subscriptionPlans.id, "growth"));
+
+    await expect(
+      startCheckout(founder.id, "growth", { successUrl: "https://example.test/s", cancelUrl: "https://example.test/c" }),
+    ).rejects.toBeInstanceOf(AlreadySubscribedError);
+  });
+
+  it("still allows a genuine first-time checkout for a free-plan organization with no real Stripe subscription yet", async () => {
+    const founder = await createFounder({ name: "Test Owner" });
+    await createOrganizationWithOwner(founder.id, "Test Org");
+
+    const db = await getDb();
+    await db.update(schema.subscriptionPlans).set({ stripe_price_id: "price_starter_first_time" }).where(eq(schema.subscriptionPlans.id, "starter"));
+
+    // A real, successful checkout-session creation requires a real
+    // network call to Stripe, which this sandbox never makes — so this
+    // asserts the function gets PAST the AlreadySubscribedError guard
+    // (the thing this test is actually about) by confirming the error it
+    // does throw is the network-level one, not AlreadySubscribedError.
+    await expect(
+      startCheckout(founder.id, "starter", { successUrl: "https://example.test/s", cancelUrl: "https://example.test/c" }),
+    ).rejects.not.toBeInstanceOf(AlreadySubscribedError);
   });
 });
 

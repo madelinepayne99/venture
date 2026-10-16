@@ -63,7 +63,7 @@ import {
   VideoAllowanceExceededError,
   SubscriptionNotFoundError,
 } from "@/lib/domain/subscriptionWorkflow";
-import { PlanNotFoundError, PlanNotPurchasableError } from "@/lib/domain/billingWorkflow";
+import { PlanNotFoundError, PlanNotPurchasableError, AlreadySubscribedError } from "@/lib/domain/billingWorkflow";
 import { StripeNotConfiguredError } from "@/lib/billing/stripe";
 import { SupportRequestValidationError, SupportRequestRateLimitError } from "@/lib/domain/supportWorkflow";
 import {
@@ -249,6 +249,12 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   }
   if (error instanceof PlanNotPurchasableError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof AlreadySubscribedError) {
+    return NextResponse.json(
+      { error: error.message, currentPlanId: error.currentPlanId },
+      { status: 409 },
+    );
   }
   if (error instanceof StripeNotConfiguredError) {
     // 503 (Service Unavailable) — a real, honest signal that billing

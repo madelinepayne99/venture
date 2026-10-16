@@ -19,12 +19,16 @@ function describeAgentAccess(plan: SubscriptionPlan): string {
 export function PricingTable({
   plans,
   signedInFounderName,
+  currentPlanId,
 }: {
   plans: SubscriptionPlan[];
   signedInFounderName: string | null;
+  /** The organization's real current plan id, only when it's a genuine, active, Stripe-backed subscription — null otherwise (free plan, signed out, no organization yet). See billingWorkflow.ts's AlreadySubscribedError. */
+  currentPlanId: string | null;
 }) {
   const [busyPlanId, setBusyPlanId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [portalBusy, setPortalBusy] = useState(false);
 
   async function handleSubscribe(planId: string) {
     setBusyPlanId(planId);
@@ -43,6 +47,26 @@ export function PricingTable({
       window.location.href = body.checkoutUrl;
     } finally {
       setBusyPlanId(null);
+    }
+  }
+
+  // Mission 12 — a plan change for an organization already on a real
+  // paid plan must go through the Billing Portal, never a second
+  // checkout (see billingWorkflow.ts's AlreadySubscribedError — this is
+  // the UI-side of that same real protection).
+  async function handleManageBilling() {
+    setPortalBusy(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/billing/portal", { method: "POST" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(body.error ?? "Could not open billing management.");
+        return;
+      }
+      window.location.href = body.portalUrl;
+    } finally {
+      setPortalBusy(false);
     }
   }
 
@@ -106,6 +130,22 @@ export function PricingTable({
               <div className="mt-6 rounded-md border border-focus-border py-2 text-center text-sm font-medium text-focus-slate">
                 No paid AI execution
               </div>
+            ) : currentPlanId === plan.id ? (
+              <div className="mt-6 rounded-md border border-focus-emerald bg-focus-emerald/10 py-2 text-center text-sm font-semibold text-focus-emerald">
+                Your current plan
+              </div>
+            ) : currentPlanId ? (
+              // Already on a different real paid plan — a plan change
+              // must go through the Billing Portal, never a second
+              // checkout (see handleManageBilling's own doc comment).
+              <button
+                type="button"
+                disabled={portalBusy}
+                onClick={handleManageBilling}
+                className="mt-6 rounded-md border border-focus-border py-2 text-sm font-semibold text-focus-ink transition hover:bg-focus-ivory disabled:opacity-50"
+              >
+                {portalBusy ? "Opening…" : "Change plan in Manage billing"}
+              </button>
             ) : (
               <button
                 type="button"

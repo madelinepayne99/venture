@@ -260,6 +260,21 @@ export async function getSubscriptionPlan(planId: string): Promise<SubscriptionP
   return row;
 }
 
+/**
+ * Mission 12 — the real mechanism behind syncing a plan change made
+ * through Stripe's own Billing Portal (an upgrade or downgrade a
+ * customer does themselves, outside any route this app controls).
+ * `customer.subscription.updated`'s real Stripe price id is the only
+ * signal available; this reverse-looks-up which local plan it
+ * corresponds to. Returns undefined for a price id this app doesn't
+ * recognize — the caller must never guess a plan in that case.
+ */
+export async function getSubscriptionPlanByStripePriceId(stripePriceId: string): Promise<SubscriptionPlan | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.subscriptionPlans).where(eq(schema.subscriptionPlans.stripe_price_id, stripePriceId));
+  return row;
+}
+
 /** Real, atomic creation — called once, at the moment an organization itself is created (createOrganizationWithOwner), so every organization has exactly one subscription row from the start. `onConflictDoNothing` makes a retried call safe rather than erroring on the real unique constraint. */
 export async function createOrganizationSubscription(input: {
   organizationId: string;

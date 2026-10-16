@@ -1,5 +1,6 @@
 import { auth } from "@/auth";
-import { listAllPlansForFounder } from "@/lib/domain/subscriptionWorkflow";
+import { listAllPlansForFounder, resolveOrganizationSubscription } from "@/lib/domain/subscriptionWorkflow";
+import { getActiveOrganizationForFounder, OrganizationNotFoundError } from "@/lib/domain/organizationWorkflow";
 import { PricingTable } from "@/components/pricing/PricingTable";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +22,25 @@ export default async function PricingPage() {
   const session = await auth();
   const plans = await listAllPlansForFounder();
 
+  // Mission 12 — so the page can disable "Subscribe" and point to
+  // "Manage billing" instead for an organization already on a real,
+  // active paid plan (see billingWorkflow.ts's AlreadySubscribedError —
+  // this is the UI-side half; the real protection is server-side there,
+  // never just this). null for a signed-out visitor or a founder with no
+  // organization yet (onboarding) — both already handled below.
+  let currentPlanId: string | null = null;
+  if (session?.founderId) {
+    try {
+      const organization = await getActiveOrganizationForFounder(session.founderId);
+      const { subscription, isEntitled } = await resolveOrganizationSubscription(organization.id);
+      if (isEntitled && subscription.stripe_subscription_id) {
+        currentPlanId = subscription.plan_id;
+      }
+    } catch (error) {
+      if (!(error instanceof OrganizationNotFoundError)) throw error;
+    }
+  }
+
   return (
     <main className="mx-auto min-h-screen max-w-6xl px-4 py-12 sm:px-6">
       <div className="mb-3 rounded-lg border border-focus-gold/40 bg-focus-goldSoft px-4 py-3 text-sm text-focus-goldText">
@@ -37,7 +57,7 @@ export default async function PricingPage() {
         </p>
       </div>
 
-      <PricingTable plans={plans} signedInFounderName={session?.founderName ?? null} />
+      <PricingTable plans={plans} signedInFounderName={session?.founderName ?? null} currentPlanId={currentPlanId} />
 
       <div className="mx-auto mt-12 max-w-3xl rounded-xl border border-focus-border bg-focus-card p-6 text-sm text-focus-slate">
         <h2 className="font-display text-base font-semibold text-focus-ink">How these numbers were set</h2>
