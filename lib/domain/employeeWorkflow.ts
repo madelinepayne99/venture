@@ -12,7 +12,7 @@ import {
   listAgentTasksForOrganization,
 } from "@/lib/db/repositories";
 import type { Agent } from "@/lib/db/types";
-import { assertPlanAllowsAgent } from "@/lib/domain/subscriptionWorkflow";
+import { assertPlanAllowsAgent, resolveOrganizationSubscription, PAID_AGENT_KEYS } from "@/lib/domain/subscriptionWorkflow";
 
 /**
  * The Employee Directory's real recruit/remove workflow — now genuinely
@@ -76,6 +76,17 @@ export interface EmployeeProfile {
    * integrations at all (nothing to wait on).
    */
   integrationsReady: boolean;
+  /**
+   * Mission 12 — whether THIS employee requires a paid plan
+   * (`PAID_AGENT_KEYS` — Scout, Content Bot, Business Analyst), so the
+   * UI can show a real "requires a paid plan" signal before a founder
+   * ever clicks Recruit, instead of only after a real, correct, but
+   * surprising 403 from `assertPlanAllowsAgent`. Found live during a
+   * fresh-organization onboarding walkthrough: every employee card
+   * looked identically "Available," with zero visual difference between
+   * a free-plan-usable employee and one the free plan would refuse.
+   */
+  requiresPaidPlan: boolean;
 }
 
 /** Real presence check only — never reads or forwards an env var's actual value. */
@@ -95,6 +106,7 @@ export async function listEmployeeDirectory(organizationId: string): Promise<Emp
       agent,
       recruited: orgAgent?.status === "active",
       integrationsReady: definition.requiredIntegrations.every(hasRealIntegration),
+      requiresPaidPlan: PAID_AGENT_KEYS.has(definition.key),
     };
   });
 }

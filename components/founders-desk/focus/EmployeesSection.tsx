@@ -12,6 +12,7 @@ interface EmployeeProfile {
   agent: Agent | null;
   recruited: boolean;
   integrationsReady: boolean;
+  requiresPaidPlan: boolean;
 }
 
 const STATUS_LABEL: Record<EmployeeDefinition["implementationStatus"], string> = {
@@ -31,6 +32,7 @@ const STATUS_LABEL: Record<EmployeeDefinition["implementationStatus"], string> =
  */
 export function EmployeesSection() {
   const [employees, setEmployees] = useState<EmployeeProfile[]>([]);
+  const [includesPaidAgents, setIncludesPaidAgents] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busyKey, setBusyKey] = useState<string | null>(null);
@@ -41,6 +43,11 @@ export function EmployeesSection() {
       if (!res.ok) throw new Error("Could not load the employee directory.");
       const data = await res.json();
       setEmployees(data.employees ?? []);
+      // Mission 12 — defaults to true (never shows a false restriction)
+      // if this field is ever missing for some reason; the real refusal
+      // still happens server-side in handleRecruit's own error handling
+      // regardless of what this proactive badge shows.
+      setIncludesPaidAgents(data.includesPaidAgents ?? true);
       setError(null);
     } catch {
       setError("Could not load the employee directory right now.");
@@ -100,9 +107,19 @@ export function EmployeesSection() {
         </FocusCard>
       ) : (
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {employees.map(({ definition, recruited, integrationsReady }) => {
+          {employees.map(({ definition, recruited, integrationsReady, requiresPaidPlan }) => {
             const busy = busyKey === definition.key;
             const canRecruit = definition.recruitable;
+            // Mission 12 — found live during a fresh-organization
+            // onboarding walkthrough: every employee card looked
+            // identically "Available" regardless of plan, so a founder
+            // on the free plan would click Recruit on Scout and only
+            // learn it's a paid-only employee from the real (correct,
+            // but surprising) 403 afterward. This is the proactive
+            // signal — the real refusal in handleRecruit's own error
+            // handling is still the actual enforcement; this is purely
+            // about not surprising a founder who hasn't clicked yet.
+            const blockedByPlan = requiresPaidPlan && !includesPaidAgents && !recruited;
             return (
               <FocusCard key={definition.key} className="flex flex-col">
                 <div className="flex items-start gap-4">
@@ -138,6 +155,12 @@ export function EmployeesSection() {
                   </p>
                 )}
 
+                {blockedByPlan && (
+                  <p className="mt-3 text-xs font-medium text-status-danger">
+                    Requires a paid plan — upgrade from Settings to recruit this employee.
+                  </p>
+                )}
+
                 <div className="mt-auto pt-4">
                   <div className="flex items-center justify-between gap-3">
                     <span
@@ -152,7 +175,7 @@ export function EmployeesSection() {
                       {recruited ? "Recruited" : STATUS_LABEL[definition.implementationStatus]}
                     </span>
 
-                    {canRecruit && !recruited && (
+                    {canRecruit && !recruited && !blockedByPlan && (
                       <button
                         type="button"
                         disabled={busy}

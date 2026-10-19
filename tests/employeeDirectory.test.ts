@@ -15,6 +15,7 @@ import {
 } from "@/lib/domain/employeeWorkflow";
 import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 import { EMPLOYEE_REGISTRY } from "@/lib/agents/employeeRegistry";
+import { PAID_AGENT_KEYS } from "@/lib/domain/subscriptionWorkflow";
 
 async function seededFounderId(): Promise<string> {
   const founders = await listFounders();
@@ -150,5 +151,22 @@ describe("recruitEmployee / removeEmployee", () => {
 
     const tasks = await listFounderTasks(founderId);
     expect(tasks.some((t) => t.id === task.id && t.state === "completed")).toBe(true);
+  });
+
+  it("requiresPaidPlan is true for exactly Scout/Content Bot/Business Analyst — Mission 12's real proactive plan-restriction signal", async () => {
+    const organizationId = await seededOrganizationId();
+    const directory = await listEmployeeDirectory(organizationId);
+
+    for (const profile of directory) {
+      expect(profile.requiresPaidPlan).toBe(PAID_AGENT_KEYS.has(profile.definition.key));
+    }
+    // Spot-check the specific real agents this matters for — a founder on
+    // the free plan should see this signal before ever clicking Recruit.
+    expect(directory.find((e) => e.definition.key === "scout")!.requiresPaidPlan).toBe(true);
+    expect(directory.find((e) => e.definition.key === "content_bot")!.requiresPaidPlan).toBe(true);
+    expect(directory.find((e) => e.definition.key === "business_analyst")!.requiresPaidPlan).toBe(true);
+    expect(directory.find((e) => e.definition.key === "executive_assistant")!.requiresPaidPlan).toBe(false);
+    expect(directory.find((e) => e.definition.key === "finance_agent")!.requiresPaidPlan).toBe(false);
+    expect(directory.find((e) => e.definition.key === "operations_agent")!.requiresPaidPlan).toBe(false);
   });
 });
