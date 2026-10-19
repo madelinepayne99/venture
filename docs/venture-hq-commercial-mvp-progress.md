@@ -2202,18 +2202,206 @@ Mission 9/10 — a real Stripe test-mode account, a real GitHub OAuth App,
 final approved pricing/refund policy, legal review. This session added
 no new launch blocker.
 
+## Mission 12 — Commercial Launch Preparation: DONE
+
+Survived an unexpected Mac shutdown mid-session; recovered cleanly (see
+"Local verification" note below) with zero work lost. 7 commits total.
+Checkpoint tag before any change: `mission12-baseline-809tests`.
+
+### Priority 1 — Pricing/margin audit
+
+`docs/billing/pricing-approval.md` — a founder-facing comparison built
+from this app's own real, freshly-queried `costs`/`ledger_entries` data
+(Scout avg $0.28/max $0.38 per pass; Business Analyst avg $0.12/max
+$0.14; Content Bot avg $0.65/max $3.86 per real item), the real enforced
+ceilings (Scout's 2-pass ~$1/mission cap, Content Bot's real cumulative
+$8/item cap), and — the one real gap the original Mission 8 pass didn't
+model — Stripe's own processing fee (not modeled anywhere in this
+codebase, confirmed by search). Worst-case margins at full allowance
+utilization, precisely computed: Starter 55.0–56.0%, Business
+39.2–40.2%, Growth 29.7–30.7% depending on UK vs. international card
+fees. Recommendation: all four current prices (£0/£19/£49/£99) are
+financially sound even in the worst case — no change needed. Explicit
+FX caveat (£1≈$1.27 stated, not live) and a clear approve/adjust
+decision checklist for Ellis and Maddie.
+
+### Priority 2 — Stripe code verified against current official docs
+
+Fetched Stripe's live documentation directly (October 2026) and checked
+every real code path against it:
+- API version `2026-09-30.endive` and SDK `^23.0.0` both confirmed
+  current (matching Stripe's own live sample code exactly).
+- Checkout Session / Billing Portal / webhook-signature-verification
+  shapes confirmed current, byte-for-byte matching official samples.
+- **One real mismatch found and fixed**: the webhook handler used the
+  older `invoice.payment_succeeded` instead of the currently-recommended
+  `invoice.paid`, and the invoice→subscription link had moved to a
+  nested `invoice.parent.subscription_details.subscription` field in
+  this API version (confirmed against the installed SDK's own current
+  TypeScript types, not guessed). Fixed: the handler now resolves the
+  invoice's real linked subscription and applies ITS real, current
+  status from Stripe — never assumes "paid invoice implies active
+  subscription" (Stripe's own documented caveat).
+
+`docs/billing/stripe-setup-guide.md` — exact, no-credentials instructions
+for connecting a real Stripe test-mode account: product/price creation,
+the one-time SQL to set each plan's real `stripe_price_id` (no admin UI
+exists for this, deliberately), API key/webhook setup for both local
+(Stripe CLI) and staging, an end-to-end verification walkthrough, and
+how to use Stripe's real Test Clocks to simulate a renewal/failed-
+payment-recovery/portal-downgrade without waiting a real month.
+
+### Priority 3 — Missing test-mode billing behaviors, implemented
+
+Three real gaps found and fixed, each verified by temporarily reverting
+the fix and confirming its regression test genuinely fails first:
+
+1. **No recovery from a failed payment** — nothing ever reacted to a
+   successful payment after `past_due`; an organization that failed a
+   charge and then genuinely paid stayed locked out of paid AI work
+   forever. Fixed via the new `invoice.paid` handler (see Priority 2).
+2. **A real plan change via the Billing Portal never synced locally** —
+   `customer.subscription.updated` updated status/period but never
+   `plan_id`; a customer who changed plans through Stripe's own portal
+   kept their old plan's real AI budget/video allowance indefinitely.
+   Fixed via a new `getSubscriptionPlanByStripePriceId` reverse lookup.
+3. **A real double-subscription risk** — Stripe Checkout always creates
+   a NEW subscription, never replaces an existing one; the pricing
+   page's "Subscribe" button had no guard against an already-subscribed
+   organization starting a second checkout. Fixed server-side (new
+   `AlreadySubscribedError` in `startCheckout`) and in the UI
+   (`PricingTable` now shows "Your current plan" / routes to "Manage
+   billing" instead of a second Subscribe for an already-subscribed
+   organization).
+
+Confirmed NOT a gap: "quota resets" are already correct by
+construction — both the real AI budget and video allowance are computed
+live against the current calendar month's real rows, never a stored
+counter needing an explicit reset job.
+
+### Priority 4 — Staging deployment configuration
+
+`docs/deployment/staging-setup.md` — a real, ready-to-use (never
+executed) staging config: a staging/production separation table, a
+pre-flight checklist for public-signup/live-billing staying off,
+step-by-step staging database/GitHub-OAuth-App/Inngest/Vercel setup, a
+named real gap (`CONTENT_STORAGE_PROVIDER=local_disk` doesn't persist on
+Vercel — Content Bot's generated media can't be meaningfully tested on
+staging until a real object-store provider exists), and a
+post-deployment verification checklist. Also removed a stale, unused
+`next.config.mjs` entry (`serverExternalPackages: ["better-sqlite3"]`)
+left over from the pre-Postgres SQLite era.
+
+### Priority 5 — Legal founder decision checklist
+
+`docs/legal/founder-decision-checklist.md` — consolidates every real
+open decision point across the four legal drafts (refund policy,
+subscription terms, support information, business details, data/
+privacy, qualified review) into one checkbox list, cross-referenced
+against Mission 9's original audit. Records which of that audit's named
+product gaps are now closed (data export, account deletion, the support
+surface — all built in Mission 10) versus still genuinely open (consent
+recording, automatic data retention, real entity details).
+
+### Priority 6 — Real customer-journey re-verification
+
+A real, live Playwright walkthrough (fresh fictional organization,
+desktop) of the complete journey: onboarding (welcome → create HQ →
+recruit → ready) → real dashboard → real Executive Assistant task
+creation/completion → real submit-for-review → real Founders' Desk
+Approve. Every step succeeded; zero console/page errors.
+
+**One real usability gap found and fixed live**: every employee card —
+including Scout, Content Bot, and Business Analyst, all of which require
+a paid plan — looked identically "Available" on a fresh free-plan
+organization. A founder would click Recruit and only learn why it failed
+from the error afterward. Fixed by threading a real `requiresPaidPlan`
+flag through `listEmployeeDirectory` → `GET /api/employees` → both
+`EmployeesSection.tsx` (Focus View's Employees tab and the onboarding
+flow's "recruit" step share this one component) — a paid-only employee
+now shows "Requires a paid plan — upgrade from Settings to recruit this
+employee" with no clickable Recruit button, instead of a surprising 403
+after the fact. Re-verified live after the Mac crash interrupted the
+first verification: exactly 4 of 7 cards show a real Recruit button (the
+free-plan-eligible ones), the other 3 show the restriction message.
+
+Billing/plan restrictions also directly verified live: Settings
+correctly shows the real Free Playground plan, $0.00/$0.00 AI allowance,
+cancellation guidance, and support contact; the pricing page correctly
+shows real "Subscribe" buttons (not "Your current plan," since free was
+never purchased through Stripe).
+
+### Priority 7 — Desktop + mobile Playwright
+
+A full mobile-viewport (390px) sweep across Dashboard, Focus View,
+Employees (including the new restriction message), Tasks, Founders'
+Desk, Finance, Settings, Support, Pricing, and HQ View (Astra's 3D
+office, confirmed untouched and rendering correctly at mobile width).
+**Zero console/page errors and zero visual defects found** — no fixes
+needed this round, a genuinely clean result reflecting the mobile
+responsiveness work already done in prior missions.
+
+### Local verification vs. a real deployment (unchanged, still real)
+
+Every item above was verified locally — real Postgres, real Playwright
+browser automation (real session rows provisioned directly, same
+established technique since no real GitHub OAuth app exists in this
+sandbox), real `npm test`/`tsc`/`next build`. No real Stripe account,
+real GitHub OAuth App, or real deployment exists yet — see
+`docs/billing/stripe-setup-guide.md` and `docs/deployment/
+staging-setup.md` for exactly what a founder does next to close those
+gaps. All fictional test data (founders, organizations, memberships,
+tasks, deliverables, subscriptions) created during this mission's live
+verification was fully removed from the real database afterward,
+confirmed by direct query; Ellis's and Maddie's real founder rows and
+"Founders' HQ" were confirmed untouched both before and after, including
+across the mid-mission crash and recovery.
+
+### Test totals
+
+68 files / **819 tests** (+10 from Mission 11's 809: 8 in
+`billingWebhookSecurity.test.ts`, 1 in `employeeDirectory.test.ts`, plus
+one net change from file reorganization). Typecheck clean. Production
+build clean.
+
+### Commits (7)
+
+```
+8a18385 Mission 12 Priority 3: implement missing test-mode billing behaviors
+1349f54 Mission 12 Priority 2: fix a current-docs mismatch in the payment-recovery webhook
+1e91f30 Mission 12 Priorities 1-2: pricing approval doc + Stripe setup guide
+175ade8 Mission 12 Priorities 4-5: staging deployment config + legal decision checklist
+20b033e Mission 12 Priority 6: proactive paid-plan signal in the Employee Directory
+```
+
+### Remaining founder-action blockers (unchanged — this mission closed no new blocker, but named them precisely)
+
+1. A real Stripe test-mode account — `docs/billing/stripe-setup-guide.md`
+   has the exact steps; nothing in the code blocks this anymore.
+2. A real GitHub OAuth App — needed for both local testing's one
+   remaining gap (the real sign-in round-trip) and any real deployment;
+   `docs/deployment/staging-setup.md` covers exact setup.
+3. Final founder-approved subscription prices — `docs/billing/
+   pricing-approval.md` has a specific recommendation (approve as-is)
+   awaiting Ellis's and Maddie's sign-off.
+4. A refund policy, business entity details, and qualified legal/
+   data-protection review — `docs/legal/founder-decision-checklist.md`
+   has the complete, consolidated list.
+5. (Optional) A real email provider, if founders want support-ticket
+   confirmation emails to actually send.
+
 ## Exact restart point for a future session
 
-1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **809 tests
+1. Confirm baseline: `npm test && npx tsc --noEmit` (expect **819 tests
    passing**).
-2. Recommended follow-up (not blocking): re-run Mission 9/10's full
-   desktop+mobile Playwright user-journey sweep once more, since this
-   session's fixes touched `missionWorkflow.ts`/`contentWorkflow.ts`,
-   which those flows exercise.
-3. A real Stripe test-mode account is the single external dependency
-   blocking genuine end-to-end billing verification.
-4. Astra's branch still doesn't exist — check again before touching
+2. The next real milestone is founder-driven: connect a real Stripe
+   test-mode account (`docs/billing/stripe-setup-guide.md`), approve
+   pricing (`docs/billing/pricing-approval.md`), or decide on a staging
+   deployment (`docs/deployment/staging-setup.md`) — all three are
+   now fully prepared and ready to execute, pending founder action
+   this sandbox cannot take on its own.
+3. Astra's branch still doesn't exist — check again before touching
    anything office-related.
 
 Restart command: `npm test && npx tsc --noEmit` to reconfirm the
-baseline (809 tests) still holds before continuing.
+baseline (819 tests) still holds before continuing.
