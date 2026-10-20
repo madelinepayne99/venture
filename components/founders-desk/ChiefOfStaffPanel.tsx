@@ -37,6 +37,7 @@ export function ChiefOfStaffPanel() {
   const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
   const [consolidateBusy, setConsolidateBusy] = useState(false);
   const [consolidateMessage, setConsolidateMessage] = useState<string | null>(null);
+  const [researchError, setResearchError] = useState<{ taskId: string; message: string } | null>(null);
 
   async function refreshList() {
     const res = await fetch("/api/chief-of-staff/goals");
@@ -99,6 +100,28 @@ export function ChiefOfStaffPanel() {
     }
   }
 
+  // Master Development Mission 6 — Business Analyst is the one delegate
+  // with a genuine autonomous capability (real, billed web research), so
+  // its subtasks are completed by actually running that capability, never
+  // by a manual checkbox claiming work happened that didn't. See
+  // runDelegatedResearch's own doc comment in chiefOfStaffWorkflow.ts.
+  async function handleRunResearch(taskId: string) {
+    if (!selected) return;
+    setBusyTaskId(taskId);
+    setResearchError(null);
+    try {
+      const res = await fetch(`/api/chief-of-staff/subtasks/${taskId}/run-research`, { method: "POST" });
+      if (res.ok) {
+        await openGoal(selected.id);
+      } else {
+        const body = await res.json().catch(() => ({}));
+        setResearchError({ taskId, message: body.error ?? "Could not run research for this subtask." });
+      }
+    } finally {
+      setBusyTaskId(null);
+    }
+  }
+
   return (
     <div className="rounded-2xl border border-hq-brass/20 bg-white/70 p-5 shadow-desk">
       <h2 className="font-display text-lg font-semibold text-hq-ink">Chief of Staff — Delegation</h2>
@@ -130,13 +153,24 @@ export function ChiefOfStaffPanel() {
                     </div>
                     {!settled && (
                       <div className="flex gap-1">
-                        <button
-                          disabled={busyTaskId === task.id}
-                          onClick={() => handleSubtaskAction(task.id, "complete")}
-                          className="rounded-md bg-hq-teal px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
-                        >
-                          Done
-                        </button>
+                        {task.agent_key === "business_analyst" ? (
+                          <button
+                            disabled={busyTaskId === task.id}
+                            onClick={() => handleRunResearch(task.id)}
+                            title="Actually runs Business Analyst's real research — never a manual checkbox for this agent"
+                            className="rounded-md bg-hq-teal px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
+                          >
+                            {busyTaskId === task.id ? "Researching…" : "Run real research"}
+                          </button>
+                        ) : (
+                          <button
+                            disabled={busyTaskId === task.id}
+                            onClick={() => handleSubtaskAction(task.id, "complete")}
+                            className="rounded-md bg-hq-teal px-2 py-1 text-xs font-semibold text-white disabled:opacity-50"
+                          >
+                            Done
+                          </button>
+                        )}
                         <button
                           disabled={busyTaskId === task.id}
                           onClick={() => handleSubtaskAction(task.id, "cancel")}
@@ -147,6 +181,9 @@ export function ChiefOfStaffPanel() {
                       </div>
                     )}
                   </div>
+                  {researchError?.taskId === task.id && (
+                    <p className="mt-1 text-xs text-red-600">{researchError.message}</p>
+                  )}
                 </li>
               );
             })}

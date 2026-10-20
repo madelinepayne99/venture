@@ -15,10 +15,17 @@ import {
   transitionMissionState,
 } from "@/lib/db/repositories";
 import { makeScoutReport, makeServiceBusinessReport, makeProductionRecommendation } from "./testUtils";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import {
+  reserveBudget,
+  getBudgetStatusForOrganization,
+  DEFAULT_MONTHLY_BUDGET_USD,
+} from "@/lib/domain/budgetWorkflow";
 
 vi.mock("@/lib/agents/scout", () => {
   return {
     runScoutResearch: vi.fn(),
+    SCOUT_MODEL: "claude-sonnet-5",
     ScoutResearchError: class ScoutResearchError extends Error {
       usage: { model: string; inputTokens: number; outputTokens: number };
       constructor(message: string, usage: { model: string; inputTokens: number; outputTokens: number }) {
@@ -137,6 +144,123 @@ describe("mission workflow", () => {
     expect(actions).toContain("mission_created");
     expect(actions).toContain("mission_approved");
     expect(actions).toContain("research_completed");
+  });
+
+  it("settles a real reservation with the actual cost once Scout's research completes", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+    const report = makeScoutReport();
+    vi.mocked(scoutModule.runScoutResearch).mockResolvedValue({
+      report,
+      usage: { model: "claude-sonnet-5", inputTokens: 1200, outputTokens: 600, usdCost: 0.0084 },
+      evidence: [],
+    });
+
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title: "Preschool counting worksheets",
+      brief: "Research demand for printable counting worksheets on Etsy.",
+    });
+    const organization = await getActiveOrganizationForFounder(founderId);
+    await approveMission(created.id, founderId);
+
+    const before = await getBudgetStatusForOrganization(organization.id);
+    await runScoutPipeline(created.id);
+    const after = await getBudgetStatusForOrganization(organization.id);
+
+    // Committed spend grew by exactly the real recorded cost, not the
+    // worst-case reservation taken out before the call.
+    expect(after.committedUsd - before.committedUsd).toBeCloseTo(0.0084, 6);
+  });
+
+  it("refuses to run Scout and settles the mission as failed when the organization's AI budget is already exhausted", async () => {
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+
+    const created = await createAndSubmitMission({
+      founderId,
+      projectId: null,
+      title: "Preschool counting worksheets",
+      brief: "Research demand for printable counting worksheets on Etsy.",
+    });
+    const organization = await getActiveOrganizationForFounder(founderId);
+    await approveMission(created.id, founderId);
+
+    // Simulate prior real spend this month that already used up this
+    // organization's entire default budget.
+    await reserveBudget({
+      organizationId: organization.id,
+      purpose: "test_prior_spend",
+      estimatedUsd: DEFAULT_MONTHLY_BUDGET_USD,
+      idempotencyKey: "prior-spend-exhausts-scout-budget",
+    });
+
+    const settled = await runScoutPipeline(created.id);
+
+    // The real model was never called — the gate refused before any spend.
+    expect(scoutModule.runScoutResearch).not.toHaveBeenCalled();
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toMatch(/budget is exhausted/i);
+    expect(await listCosts(created.id)).toHaveLength(0);
+
+    const actions = (await listActivity(created.id)).map((a) => a.action);
+    expect(actions).toContain("research_refused_budget_exhausted");
+  });
+
+  it("Mission 9 — a background job (runScoutPipeline) cannot be used to bypass an organization's spending limit, even for a stale-recruited agent after a real downgrade/cancellation", async () => {
+    // A real scenario this protects against: an organization subscribes
+    // to a paid plan, recruits Scout, then genuinely downgrades or
+    // cancels (a real Stripe webhook — see billingWorkflow.ts). Scout's
+    // own organization_agents row stays "active" (recruitment isn't
+    // automatically reverted by a plan change) — the real, actual
+    // protection must come from the budget/entitlement check INSIDE the
+    // background job itself (runScoutPipeline), not from a route-level
+    // check that a direct Inngest-triggered background job never goes
+    // through at all.
+    const { createOrganizationWithOwner } = await import("@/lib/domain/organizationWorkflow");
+    const { createFounder, updateOrganizationSubscription } = await import("@/lib/db/repositories");
+    const { recruitEmployee } = await import("@/lib/domain/employeeWorkflow");
+
+    const customerFounder = await createFounder({ name: "Downgrade Test Customer" });
+    const { organization } = await createOrganizationWithOwner(customerFounder.id, "Downgrade Test Co");
+
+    // Genuinely paid, genuinely recruits Scout — both real, legitimate actions.
+    await updateOrganizationSubscription(organization.id, { planId: "business", status: "active" });
+    await recruitEmployee(organization.id, "scout");
+
+    // A real cancellation (e.g. customer.subscription.deleted) — the
+    // actual mechanism billingWorkflow.ts uses, reverting to the real
+    // free plan. Scout's own recruitment row is deliberately left
+    // untouched — proving THIS, not agent-recruitment state, is what a
+    // background job must actually check.
+    await updateOrganizationSubscription(organization.id, { planId: "free", status: "canceled" });
+
+    const { createAndSubmitMission, approveMission, runScoutPipeline } = await import(
+      "@/lib/domain/missionWorkflow"
+    );
+    const scoutModule = await import("@/lib/agents/scout");
+    const created = await createAndSubmitMission({
+      founderId: customerFounder.id,
+      projectId: null,
+      title: "Should never actually run",
+      brief: "Proving a downgraded organization's background job is still blocked.",
+    });
+    await approveMission(created.id, customerFounder.id);
+
+    // This is the exact call shape the real Inngest job
+    // (scoutResearchJob.ts) makes — no HTTP route, no founder session,
+    // nothing to bypass by crafting a request differently.
+    const settled = await runScoutPipeline(created.id);
+
+    expect(scoutModule.runScoutResearch).not.toHaveBeenCalled(); // the real model was never reached
+    expect(settled.state).toBe("failed");
+    expect(settled.failure_reason).toMatch(/budget is exhausted/i); // $0 real budget on the free plan
+    expect(await listCosts(created.id)).toHaveLength(0); // zero real spend
   });
 
   it("moves a mission to awaiting_evidence when Scout's evidence is too weak to decide", async () => {
@@ -311,8 +435,10 @@ describe("mission workflow", () => {
     // Simulate a mission whose first attempt got as far as "researching"
     // plus the assignment/stage rows, then the process died before
     // calling Scout — exactly the state a real crash would leave behind.
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Crashed mid-flight",
       brief: "A mission whose first research attempt crashed before finishing.",
@@ -408,8 +534,10 @@ describe("mission workflow", () => {
     const { runScoutPipeline } = await import("@/lib/domain/missionWorkflow");
     const scoutModule = await import("@/lib/agents/scout");
 
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Never approved",
       brief: "A mission the research job somehow runs for before it was ever approved.",
@@ -478,8 +606,10 @@ describe("mission workflow", () => {
     const { approveMission } = await import("@/lib/domain/missionWorkflow");
     const { IllegalMissionTransitionError } = await import("@/lib/domain/missionStates");
 
+    const orgForDraft = await getActiveOrganizationForFounder(founderId);
     const draftMission = await createMission({
       founderId,
+      organizationId: orgForDraft.id,
       projectId: null,
       title: "Skips the gate",
       brief: "An attempt to approve a mission that never asked the founders.",
@@ -566,8 +696,10 @@ describe("mission workflow", () => {
       evidence: [],
     });
 
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Race to research",
       brief: "Two job triggers for the same freshly-queued mission at once.",
@@ -594,8 +726,10 @@ describe("mission workflow", () => {
   });
 
   it("transitionMissionState lets only one of two racing conditional updates for the same fromState succeed", async () => {
+    const organization = await getActiveOrganizationForFounder(founderId);
     const mission = await createMission({
       founderId,
+      organizationId: organization.id,
       projectId: null,
       title: "Race target",
       brief: "Used to test the atomic transition guard directly, independent of higher-level timing.",
@@ -651,7 +785,8 @@ describe("mission workflow", () => {
       evidence: [],
     });
 
-    const project = await createProject({ name: "Hair & Beauty Clients", workspaceType: "service_business" });
+    const orgForProject = await getActiveOrganizationForFounder(founderId);
+    const project = await createProject({ name: "Hair & Beauty Clients", organizationId: orgForProject.id, workspaceType: "service_business" });
 
     const created = await createAndSubmitMission({
       founderId,

@@ -48,7 +48,35 @@ export interface EmployeeDefinition {
   worldTarget: string | null;
   /** The accent color already used for this employee's rig/desk in the 3D scene, or a neutral default for a not-yet-built employee. */
   accentColor: string;
+  /**
+   * A real static portrait rendered from this employee's own approved 3D
+   * rig (`components/founders-desk/world/scout.ts`'s character-building
+   * functions — see `app/dev-portrait-capture/page.tsx`, the one-off
+   * capture harness used to generate these), not a fabricated image or a
+   * different art style. Null for the three not-yet-built future
+   * employees, which have no rig to render — `EmployeeDirectory.tsx`
+   * falls back to a plain, honestly-generic silhouette for those, never
+   * initials claiming to be a finished portrait.
+   */
+  portraitUrl: string | null;
 }
+
+/**
+ * Plain-language, customer-facing labels for the real env-var integration
+ * names in `requiredIntegrations` above — never shown to a founder/
+ * customer as a raw variable name like "ANTHROPIC_API_KEY" (Master
+ * Development Mission 5, Section 4). The variable NAMES themselves are
+ * not secret (only their values are, and those never leave the server —
+ * see `lib/domain/employeeWorkflow.ts`'s `integrationsReady`), but a raw
+ * env var string is still inappropriate, confusing customer-facing
+ * language.
+ */
+export const INTEGRATION_LABELS: Record<string, string> = {
+  ANTHROPIC_API_KEY: "AI research & writing",
+  FAL_KEY: "AI image generation",
+  ELEVENLABS_API_KEY: "AI voice narration",
+  SHOTSTACK_API_KEY: "Video assembly",
+};
 
 export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
   {
@@ -70,6 +98,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: ["founder_approval_to_dispatch"],
     worldTarget: "scout",
     accentColor: "#195a4d",
+    portraitUrl: "/employee-portraits/scout.png",
   },
   {
     key: "content_bot",
@@ -90,6 +119,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: ["founder_approval_for_production", "founder_review_of_every_version"],
     worldTarget: "content_bot",
     accentColor: "#1d4d7a",
+    portraitUrl: "/employee-portraits/content_bot.png",
   },
   {
     key: "chief_of_staff",
@@ -109,6 +139,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: "chief_of_staff",
     accentColor: "#a9762f",
+    portraitUrl: "/employee-portraits/chief_of_staff.png",
   },
   {
     key: "executive_assistant",
@@ -128,6 +159,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: "executive_assistant",
     accentColor: "#7a4868",
+    portraitUrl: "/employee-portraits/executive_assistant.png",
   },
   {
     key: "finance_agent",
@@ -147,6 +179,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: "finance_agent",
     accentColor: "#8a5a2e",
+    portraitUrl: "/employee-portraits/finance_agent.png",
   },
   {
     key: "business_analyst",
@@ -166,6 +199,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: "business_analyst",
     accentColor: "#4f4a80",
+    portraitUrl: "/employee-portraits/business_analyst.png",
   },
   {
     key: "operations_agent",
@@ -185,6 +219,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: "operations_agent",
     accentColor: "#45606d",
+    portraitUrl: "/employee-portraits/operations_agent.png",
   },
   // --- Future employees — COMING SOON, no capability exists yet -------
   {
@@ -201,6 +236,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: null,
     accentColor: "#6b6456",
+    portraitUrl: null,
   },
   {
     key: "ai_receptionist",
@@ -216,6 +252,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: null,
     accentColor: "#6b6456",
+    portraitUrl: null,
   },
   {
     key: "sales_specialist",
@@ -231,6 +268,7 @@ export const EMPLOYEE_REGISTRY: EmployeeDefinition[] = [
     permissionRequirements: [],
     worldTarget: null,
     accentColor: "#6b6456",
+    portraitUrl: null,
   },
 ];
 

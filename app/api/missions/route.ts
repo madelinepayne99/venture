@@ -1,29 +1,32 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  listMissions,
-  listLeadAssignments,
+  listMissionsForOrganization,
+  listLeadAssignmentsForOrganization,
   listContentItemsForMissions,
-  listAgentTaskWorldSignals,
+  listAgentTaskWorldSignalsForOrganization,
   getDefaultProject,
 } from "@/lib/db/repositories";
 import { createAndSubmitMission } from "@/lib/domain/missionWorkflow";
 import { toApiErrorResponse } from "@/lib/api/errors";
 import { requireFounderId } from "@/lib/api/session";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
 
 export async function GET() {
   try {
-    await requireFounderId();
-    // agentTaskSignals (Milestone 7) rides on this same, already-polled
-    // endpoint rather than a second polling loop — it's the one real
-    // signal driving the Operations Wing agents' positions in the shared
-    // 3D office, exactly like leadAssignments/contentItems already drive
-    // Scout's/Content Bot's. Not actually mission data, but reusing the
-    // existing poll keeps "Office View and Focus View share the same
-    // underlying data" a single fetch, not two.
+    const founderId = await requireFounderId();
+    const organization = await getActiveOrganizationForFounder(founderId);
+    // Missions, leadAssignments, and agentTaskSignals are all real,
+    // organization-owned data (Master Development Mission 6, Section 8 —
+    // "Scout missions ... must not leak across organizations" — and the
+    // same reasoning extended to what drives the shared 3D office scene).
+    // This is a pure data-scoping change: components/founders-desk/world/*
+    // is completely untouched — Astra's own design — it just now only
+    // ever receives one real organization's own real assignments/signals,
+    // in the exact same shape as before.
     const [missions, leadAssignments, agentTaskSignals] = await Promise.all([
-      listMissions(),
-      listLeadAssignments(),
-      listAgentTaskWorldSignals(),
+      listMissionsForOrganization(organization.id),
+      listLeadAssignmentsForOrganization(organization.id),
+      listAgentTaskWorldSignalsForOrganization(organization.id),
     ]);
     const contentItems = await listContentItemsForMissions(missions.map((m) => m.id));
     return NextResponse.json({ missions, leadAssignments, contentItems, agentTaskSignals });
@@ -35,11 +38,12 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const founderId = await requireFounderId();
+    const organization = await getActiveOrganizationForFounder(founderId);
     const body = await request.json();
     const { title, brief, projectId } = body ?? {};
 
     const resolvedProjectId =
-      typeof projectId === "string" && projectId ? projectId : (await getDefaultProject())?.id ?? null;
+      typeof projectId === "string" && projectId ? projectId : (await getDefaultProject(organization.id))?.id ?? null;
 
     const mission = await createAndSubmitMission({
       founderId,

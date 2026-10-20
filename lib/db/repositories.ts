@@ -40,6 +40,17 @@ import type {
   MissionState,
   Project,
   WorkspaceType,
+  Organization,
+  VentureStage,
+  OrganizationMember,
+  OrganizationMemberRole,
+  OrganizationAgent,
+  OrganizationAgentStatus,
+  SubscriptionPlan,
+  OrganizationSubscription,
+  SubscriptionStatus,
+  SupportRequest,
+  SupportRequestStatus,
 } from "./types";
 
 function now(): string {
@@ -53,6 +64,29 @@ export async function listFounders(): Promise<Founder[]> {
   return db.select().from(schema.founders).orderBy(schema.founders.created_at);
 }
 
+/**
+ * Real, organization-scoped founder listing (Mission 10) — the actual
+ * fix for a real cross-tenant PII leak found live during this session:
+ * `listFounders()` above returns EVERY founder in the entire system
+ * with no scoping at all, and was being served directly to any
+ * authenticated founder via `GET /api/founders` and `app/page.tsx` —
+ * meaning a completely unrelated customer could see every other real
+ * founder's name and (where set) real email address, including Ellis
+ * and Maddie's. This is the organization-scoped replacement every
+ * customer-facing read must use instead: only the real members of the
+ * organization actually being asked about.
+ */
+export async function listFoundersForOrganization(organizationId: string): Promise<Founder[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ founder: schema.founders })
+    .from(schema.organizationMembers)
+    .innerJoin(schema.founders, eq(schema.founders.id, schema.organizationMembers.founder_id))
+    .where(eq(schema.organizationMembers.organization_id, organizationId))
+    .orderBy(schema.founders.created_at);
+  return rows.map((r) => r.founder);
+}
+
 export async function getFounder(id: string): Promise<Founder | undefined> {
   const db = await getDb();
   const [row] = await db.select().from(schema.founders).where(eq(schema.founders.id, id));
@@ -63,6 +97,342 @@ export async function getFounderByEmail(email: string): Promise<Founder | undefi
   const db = await getDb();
   const [row] = await db.select().from(schema.founders).where(eq(schema.founders.email, email));
   return row;
+}
+
+/**
+ * Real founder creation — used by this phase's own security-negative
+ * tests (two genuinely separate fictional businesses need two genuinely
+ * separate real people) and by a future onboarding flow (Phase I, not
+ * built yet). Not used by `seed()`, which hardcodes Ellis/Maddie's own
+ * two rows directly and must stay that way (see client.ts's own doc
+ * comment on preserving founder data).
+ */
+export async function createFounder(input: { name: string; email?: string | null }): Promise<Founder> {
+  const db = await getDb();
+  const [row] = await db
+    .insert(schema.founders)
+    .values({ id: randomUUID(), name: input.name, email: input.email ?? null })
+    .returning();
+  return row!;
+}
+
+/**
+ * Real account deletion (Mission 10) — anonymize, never hard-delete. Sets
+ * name to a clearly-labeled placeholder, frees the real email (so the
+ * same person could genuinely sign up again later, and so the unique
+ * constraint on `founders.email` never blocks a different real person
+ * from using it), and stamps `deleted_at`. Every real mission/cost/
+ * deliverable row this founder ever created keeps its real `founder_id`
+ * reference — this never touches those tables.
+ */
+export async function anonymizeFounder(founderId: string): Promise<Founder> {
+  const db = await getDb();
+  const [row] = await db
+    .update(schema.founders)
+    .set({ name: "Deleted Founder", email: null, deleted_at: now() })
+    .where(eq(schema.founders.id, founderId))
+    .returning();
+  return row!;
+}
+
+/**
+ * Real organization closure (Mission 10) — stamps `closed_at`, never a
+ * hard delete (see schema.ts's own doc comment: every real mission/cost/
+ * deliverable this organization ever produced keeps its real history).
+ * Only ever called for a sole owner with no other real members —
+ * enforced in `lib/domain/accountWorkflow.ts`, not here.
+ */
+export async function closeOrganization(organizationId: string): Promise<Organization> {
+  const db = await getDb();
+  const [row] = await db
+    .update(schema.organizations)
+    .set({ closed_at: now() })
+    .where(eq(schema.organizations.id, organizationId))
+    .returning();
+  return row!;
+}
+
+/**
+ * Deletes the real Auth.js `auth_user` row matching this email — the
+ * actual mechanism that signs a deleted founder out everywhere and
+ * refuses any future sign-in attempt through their old session, since
+ * `auth_user`/`founders` are linked by email, not a direct foreign key
+ * (see auth.ts's `resolveFounderIdentity`). `authAccounts`/
+ * `authSessions` both have `onDelete: "cascade"` on their `userId` FK
+ * (schema.ts), so this one delete also removes every real session and
+ * linked OAuth account row for them — no separate cleanup needed.
+ * Returns `false` if no matching `auth_user` row exists (e.g. this
+ * founder never actually signed in), which is a normal, safe outcome,
+ * not an error.
+ */
+export async function deleteAuthUserByEmail(email: string): Promise<boolean> {
+  const db = await getDb();
+  const deleted = await db.delete(schema.authUsers).where(eq(schema.authUsers.email, email)).returning();
+  return deleted.length > 0;
+}
+
+// --- Organizations (Master Development Mission 6 — multi-tenancy) -------
+
+export async function createOrganization(input: {
+  name: string;
+  ownerFounderId: string;
+  ventureStage?: VentureStage | null;
+}): Promise<Organization> {
+  const db = await getDb();
+  const id = randomUUID();
+  const [row] = await db
+    .insert(schema.organizations)
+    .values({
+      id,
+      name: input.name,
+      owner_founder_id: input.ownerFounderId,
+      venture_stage: input.ventureStage ?? null,
+    })
+    .returning();
+  return row!;
+}
+
+export async function getOrganizationById(id: string): Promise<Organization | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.organizations).where(eq(schema.organizations.id, id));
+  return row;
+}
+
+export async function addOrganizationMember(input: {
+  organizationId: string;
+  founderId: string;
+  role: OrganizationMemberRole;
+}): Promise<OrganizationMember> {
+  const db = await getDb();
+  const id = randomUUID();
+  const [row] = await db
+    .insert(schema.organizationMembers)
+    .values({ id, organization_id: input.organizationId, founder_id: input.founderId, role: input.role })
+    .returning();
+  return row as OrganizationMember;
+}
+
+/** Every real organization this founder genuinely belongs to — ordered oldest-membership-first, so a caller that needs one deterministic "active" organization (no switcher UI yet) gets a stable, repeatable choice. */
+export async function listOrganizationMembershipsForFounder(founderId: string): Promise<OrganizationMember[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.organizationMembers)
+    .where(eq(schema.organizationMembers.founder_id, founderId))
+    .orderBy(schema.organizationMembers.created_at);
+  return rows as OrganizationMember[];
+}
+
+/**
+ * The real, server-side membership check every tenant-scoped operation
+ * must go through — returns undefined (never throws) when the founder is
+ * not genuinely a member of this organization, so callers decide how to
+ * fail (see lib/domain/organizationWorkflow.ts's requireOrganizationMembership,
+ * the one real place that turns this into a thrown error).
+ */
+export async function getOrganizationMembership(
+  organizationId: string,
+  founderId: string,
+): Promise<OrganizationMember | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.organizationMembers)
+    .where(
+      and(
+        eq(schema.organizationMembers.organization_id, organizationId),
+        eq(schema.organizationMembers.founder_id, founderId),
+      ),
+    );
+  return row as OrganizationMember | undefined;
+}
+
+// --- Subscription plans & billing (Mission 8, Sections 14-15) -----------
+
+export async function listSubscriptionPlans(): Promise<SubscriptionPlan[]> {
+  const db = await getDb();
+  return db.select().from(schema.subscriptionPlans);
+}
+
+export async function getSubscriptionPlan(planId: string): Promise<SubscriptionPlan | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.subscriptionPlans).where(eq(schema.subscriptionPlans.id, planId));
+  return row;
+}
+
+/**
+ * Mission 12 — the real mechanism behind syncing a plan change made
+ * through Stripe's own Billing Portal (an upgrade or downgrade a
+ * customer does themselves, outside any route this app controls).
+ * `customer.subscription.updated`'s real Stripe price id is the only
+ * signal available; this reverse-looks-up which local plan it
+ * corresponds to. Returns undefined for a price id this app doesn't
+ * recognize — the caller must never guess a plan in that case.
+ */
+export async function getSubscriptionPlanByStripePriceId(stripePriceId: string): Promise<SubscriptionPlan | undefined> {
+  const db = await getDb();
+  const [row] = await db.select().from(schema.subscriptionPlans).where(eq(schema.subscriptionPlans.stripe_price_id, stripePriceId));
+  return row;
+}
+
+/** Real, atomic creation — called once, at the moment an organization itself is created (createOrganizationWithOwner), so every organization has exactly one subscription row from the start. `onConflictDoNothing` makes a retried call safe rather than erroring on the real unique constraint. */
+export async function createOrganizationSubscription(input: {
+  organizationId: string;
+  planId: string;
+}): Promise<OrganizationSubscription> {
+  const db = await getDb();
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  const [row] = await db
+    .insert(schema.organizationSubscriptions)
+    .values({
+      id,
+      organization_id: input.organizationId,
+      plan_id: input.planId,
+      status: "active",
+      created_at: now,
+      updated_at: now,
+    })
+    .onConflictDoNothing({ target: schema.organizationSubscriptions.organization_id })
+    .returning();
+  if (row) return row as OrganizationSubscription;
+  // Lost a race to a concurrent creation for the SAME organization (or a
+  // retried call) — return the real existing row rather than erroring.
+  const [existing] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.organization_id, input.organizationId));
+  return existing as OrganizationSubscription;
+}
+
+export async function getOrganizationSubscription(organizationId: string): Promise<OrganizationSubscription | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.organization_id, organizationId));
+  return row as OrganizationSubscription | undefined;
+}
+
+export async function getOrganizationSubscriptionByStripeCustomerId(
+  stripeCustomerId: string,
+): Promise<OrganizationSubscription | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.organizationSubscriptions)
+    .where(eq(schema.organizationSubscriptions.stripe_customer_id, stripeCustomerId));
+  return row as OrganizationSubscription | undefined;
+}
+
+export async function updateOrganizationSubscription(
+  organizationId: string,
+  fields: Partial<{
+    planId: string;
+    status: SubscriptionStatus;
+    stripeCustomerId: string | null;
+    stripeSubscriptionId: string | null;
+    currentPeriodEnd: string | null;
+    cancelAtPeriodEnd: boolean;
+  }>,
+): Promise<OrganizationSubscription> {
+  const db = await getDb();
+  const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (fields.planId !== undefined) updates.plan_id = fields.planId;
+  if (fields.status !== undefined) updates.status = fields.status;
+  if (fields.stripeCustomerId !== undefined) updates.stripe_customer_id = fields.stripeCustomerId;
+  if (fields.stripeSubscriptionId !== undefined) updates.stripe_subscription_id = fields.stripeSubscriptionId;
+  if (fields.currentPeriodEnd !== undefined) updates.current_period_end = fields.currentPeriodEnd;
+  if (fields.cancelAtPeriodEnd !== undefined) updates.cancel_at_period_end = fields.cancelAtPeriodEnd;
+  const [row] = await db
+    .update(schema.organizationSubscriptions)
+    .set(updates)
+    .where(eq(schema.organizationSubscriptions.organization_id, organizationId))
+    .returning();
+  return row as OrganizationSubscription;
+}
+
+/** Real idempotency check — returns true if this exact Stripe event id has already been processed (insert succeeded = first time seeing it; conflict = a genuine redelivery). */
+export async function recordBillingWebhookEventIfNew(eventId: string, type: string): Promise<boolean> {
+  const db = await getDb();
+  const result = await db
+    .insert(schema.billingWebhookEvents)
+    .values({ id: eventId, type, processed_at: new Date().toISOString() })
+    .onConflictDoNothing({ target: schema.billingWebhookEvents.id })
+    .returning({ id: schema.billingWebhookEvents.id });
+  return result.length > 0;
+}
+
+/** Real count of content items a real organization has already started producing this calendar month — the actual mechanism behind each plan's separate monthly video allowance (contentProduction.ts's assertPlanAllowsNewVideoProduction). */
+export async function countContentItemsStartedThisMonth(organizationId: string, monthStartIso: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db.execute<{ count: string }>(sql`
+    select count(*)::int as count
+    from ${schema.contentItems} ci
+    join ${schema.missions} m on m.id = ci.mission_id
+    where m.organization_id = ${organizationId}
+      and ci.created_at >= ${monthStartIso}
+  `);
+  return Number((row as unknown as { count: number })?.count ?? 0);
+}
+
+// --- Per-organization workforce (replaces the global agents.status as the
+// real "is this agent recruited" signal — see schema.ts's own comment on
+// organization_agents for why this is a separate table, not a new column
+// on the shared `agents` catalog) -----------------------------------------
+
+export async function listOrganizationAgents(organizationId: string): Promise<OrganizationAgent[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.organizationAgents)
+    .where(eq(schema.organizationAgents.organization_id, organizationId));
+  return rows as OrganizationAgent[];
+}
+
+export async function getOrganizationAgent(
+  organizationId: string,
+  agentKey: string,
+): Promise<OrganizationAgent | undefined> {
+  const db = await getDb();
+  const [row] = await db
+    .select()
+    .from(schema.organizationAgents)
+    .where(
+      and(
+        eq(schema.organizationAgents.organization_id, organizationId),
+        eq(schema.organizationAgents.agent_key, agentKey),
+      ),
+    );
+  return row as OrganizationAgent | undefined;
+}
+
+/**
+ * Real upsert — a genuine insert for this organization's first-ever
+ * decision about this agent, or an update if it already has one. Uses
+ * the real DB-level unique index (organization_id, agent_key) via
+ * `onConflictDoUpdate`, so two genuinely concurrent recruit requests for
+ * the same org+agent can never create two rows — the same "the database
+ * is the actual guarantee, not just application logic" discipline every
+ * other atomic transition in this codebase already follows.
+ */
+export async function setOrganizationAgentStatus(
+  organizationId: string,
+  agentKey: string,
+  status: OrganizationAgentStatus,
+): Promise<OrganizationAgent> {
+  const db = await getDb();
+  const id = randomUUID();
+  const ts = now();
+  const [row] = await db
+    .insert(schema.organizationAgents)
+    .values({ id, organization_id: organizationId, agent_key: agentKey, status, updated_at: ts })
+    .onConflictDoUpdate({
+      target: [schema.organizationAgents.organization_id, schema.organizationAgents.agent_key],
+      set: { status, updated_at: ts },
+    })
+    .returning();
+  return row as OrganizationAgent;
 }
 
 // --- Agents ---------------------------------------------------------------
@@ -100,6 +470,7 @@ export async function setAgentStatus(key: string, status: AgentStatus): Promise<
 export async function createAgentTask(input: {
   agentKey: string;
   founderId: string;
+  organizationId: string;
   taskType: string;
   title: string;
   detail?: string | null;
@@ -115,6 +486,7 @@ export async function createAgentTask(input: {
     id,
     agent_key: input.agentKey,
     founder_id: input.founderId,
+    organization_id: input.organizationId,
     task_type: input.taskType,
     title: input.title,
     detail: input.detail ?? null,
@@ -135,6 +507,22 @@ export async function listAgentTasksForFounder(
 ): Promise<AgentTask[]> {
   const db = await getDb();
   const conditions = [eq(schema.agentTasks.founder_id, founderId)];
+  if (opts?.agentKey) conditions.push(eq(schema.agentTasks.agent_key, opts.agentKey));
+  const rows = await db
+    .select()
+    .from(schema.agentTasks)
+    .where(and(...conditions))
+    .orderBy(desc(schema.agentTasks.created_at));
+  return rows as AgentTask[];
+}
+
+/** Real, server-side WHERE-clause scoping by organization — used wherever a caller must reason about an organization's work (e.g. the active-work check before removing a recruited agent), never a founder's alone, since a future founder may belong to more than one organization. */
+export async function listAgentTasksForOrganization(
+  organizationId: string,
+  opts?: { agentKey?: string },
+): Promise<AgentTask[]> {
+  const db = await getDb();
+  const conditions = [eq(schema.agentTasks.organization_id, organizationId)];
   if (opts?.agentKey) conditions.push(eq(schema.agentTasks.agent_key, opts.agentKey));
   const rows = await db
     .select()
@@ -197,17 +585,42 @@ export async function listAgentTaskWorldSignals(): Promise<
   return rows as Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>;
 }
 
+/**
+ * The real organization-scoped version — same pure data-scoping change
+ * and same rationale as listLeadAssignmentsForOrganization above. The
+ * returned shape is identical (never title/detail/payload — see this
+ * function's un-scoped sibling's own doc comment for why), so
+ * world/layout.ts's agentDestination/agentBusy logic needs zero changes;
+ * it just now only ever sees one real organization's own agent_tasks
+ * rows.
+ */
+export async function listAgentTaskWorldSignalsForOrganization(
+  organizationId: string,
+): Promise<Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>> {
+  const db = await getDb();
+  const rows = await db
+    .select({
+      agent_key: schema.agentTasks.agent_key,
+      state: schema.agentTasks.state,
+      goal_id: schema.agentTasks.goal_id,
+    })
+    .from(schema.agentTasks)
+    .where(eq(schema.agentTasks.organization_id, organizationId));
+  return rows as Array<{ agent_key: string; state: AgentTaskState; goal_id: string | null }>;
+}
+
 // --- Chief of Staff (Operations Wing) ---------------------------------------
 // A goal is an immutable grouping container; its real delegated work lives
 // in agent_tasks rows carrying this goal's id (see schema.ts's doc comment
 // on agentTasks.goal_id).
 
-export async function createChiefOfStaffGoal(input: { founderId: string; title: string }): Promise<ChiefOfStaffGoal> {
+export async function createChiefOfStaffGoal(input: { founderId: string; organizationId: string; title: string }): Promise<ChiefOfStaffGoal> {
   const db = await getDb();
   const id = randomUUID();
   await db.insert(schema.chiefOfStaffGoals).values({
     id,
     founder_id: input.founderId,
+    organization_id: input.organizationId,
     title: input.title,
     created_at: now(),
   });
@@ -253,6 +666,7 @@ export async function getChiefOfStaffGoalWithSubtasks(id: string): Promise<Chief
 // comment on `expenses`/`budgets` for why (currency correctness).
 
 export async function recordExpense(input: {
+  organizationId: string;
   category: string;
   description: string;
   amount: number;
@@ -264,6 +678,7 @@ export async function recordExpense(input: {
   const timestamp = now();
   await db.insert(schema.expenses).values({
     id,
+    organization_id: input.organizationId,
     category: input.category,
     description: input.description,
     amount: input.amount,
@@ -275,16 +690,28 @@ export async function recordExpense(input: {
   return row as Expense;
 }
 
-export async function listExpenses(opts?: { category?: string }): Promise<Expense[]> {
+export async function listExpenses(organizationId: string, opts?: { category?: string }): Promise<Expense[]> {
   const db = await getDb();
-  const query = db.select().from(schema.expenses);
-  const rows = opts?.category
-    ? await query.where(eq(schema.expenses.category, opts.category)).orderBy(desc(schema.expenses.incurred_at))
-    : await query.orderBy(desc(schema.expenses.incurred_at));
+  const conditions = [eq(schema.expenses.organization_id, organizationId)];
+  if (opts?.category) conditions.push(eq(schema.expenses.category, opts.category));
+  const rows = await db
+    .select()
+    .from(schema.expenses)
+    .where(and(...conditions))
+    .orderBy(desc(schema.expenses.incurred_at));
   return rows as Expense[];
 }
 
+// "One budget ceiling per category+period" (see schema.ts's own comment on
+// `budgets`) is now real per-organization uniqueness, not global — Bakery
+// HQ and Landscaping HQ can each have their own "software" budget without
+// colliding on the same real row. There is no DB-level unique constraint
+// for this yet (a real follow-up — see the progress doc); this upsert's
+// own SELECT-then-branch is the only guard today, same caveat every other
+// non-atomic upsert in this codebase that predates the atomic-transition
+// pattern already carries.
 export async function upsertBudget(input: {
+  organizationId: string;
   category: string;
   amount: number;
   currency: string;
@@ -294,7 +721,13 @@ export async function upsertBudget(input: {
   const existing = await db
     .select()
     .from(schema.budgets)
-    .where(and(eq(schema.budgets.category, input.category), eq(schema.budgets.period, input.period ?? "monthly")));
+    .where(
+      and(
+        eq(schema.budgets.organization_id, input.organizationId),
+        eq(schema.budgets.category, input.category),
+        eq(schema.budgets.period, input.period ?? "monthly"),
+      ),
+    );
 
   if (existing.length > 0) {
     const id = existing[0]!.id;
@@ -310,6 +743,7 @@ export async function upsertBudget(input: {
   const timestamp = now();
   await db.insert(schema.budgets).values({
     id,
+    organization_id: input.organizationId,
     category: input.category,
     amount: input.amount,
     currency: input.currency,
@@ -321,22 +755,37 @@ export async function upsertBudget(input: {
   return row as Budget;
 }
 
-export async function listBudgets(): Promise<Budget[]> {
+export async function listBudgets(organizationId: string): Promise<Budget[]> {
   const db = await getDb();
-  const rows = await db.select().from(schema.budgets).orderBy(schema.budgets.category);
+  const rows = await db
+    .select()
+    .from(schema.budgets)
+    .where(eq(schema.budgets.organization_id, organizationId))
+    .orderBy(schema.budgets.category);
   return rows as Budget[];
 }
 
-export async function getBudgetByCategory(category: string, period: BudgetPeriod = "monthly"): Promise<Budget | undefined> {
+export async function getBudgetByCategory(
+  organizationId: string,
+  category: string,
+  period: BudgetPeriod = "monthly",
+): Promise<Budget | undefined> {
   const db = await getDb();
   const [row] = await db
     .select()
     .from(schema.budgets)
-    .where(and(eq(schema.budgets.category, category), eq(schema.budgets.period, period)));
+    .where(
+      and(
+        eq(schema.budgets.organization_id, organizationId),
+        eq(schema.budgets.category, category),
+        eq(schema.budgets.period, period),
+      ),
+    );
   return row as Budget | undefined;
 }
 
 export async function sumExpensesByCategoryAndCurrency(
+  organizationId: string,
   category: string,
 ): Promise<Array<{ currency: string; total: number }>> {
   const db = await getDb();
@@ -346,7 +795,7 @@ export async function sumExpensesByCategoryAndCurrency(
       total: sql<number>`coalesce(sum(${schema.expenses.amount}), 0)`,
     })
     .from(schema.expenses)
-    .where(eq(schema.expenses.category, category))
+    .where(and(eq(schema.expenses.organization_id, organizationId), eq(schema.expenses.category, category)))
     .groupBy(schema.expenses.currency);
   return rows;
 }
@@ -358,6 +807,7 @@ export async function sumExpensesByCategoryAndCurrency(
 
 export async function createChecklist(input: {
   founderId: string;
+  organizationId: string;
   title: string;
   itemLabels: string[];
 }): Promise<ChecklistWithItems> {
@@ -367,6 +817,7 @@ export async function createChecklist(input: {
   await db.insert(schema.checklists).values({
     id,
     founder_id: input.founderId,
+    organization_id: input.organizationId,
     title: input.title,
     created_at: timestamp,
     updated_at: timestamp,
@@ -459,6 +910,7 @@ export async function setChecklistItemDone(itemId: string, isDone: boolean): Pro
 
 export async function saveBusinessAnalystReport(input: {
   founderId: string;
+  organizationId: string;
   query: string;
   state: BusinessAnalystReportState;
   report: unknown | null;
@@ -473,6 +925,7 @@ export async function saveBusinessAnalystReport(input: {
   await db.insert(schema.businessAnalystReports).values({
     id,
     founder_id: input.founderId,
+    organization_id: input.organizationId,
     query: input.query,
     state: input.state,
     report: input.report,
@@ -513,15 +966,25 @@ export async function getBusinessAnalystReport(
 
 // --- Projects ---------------------------------------------------------------
 
-export async function listProjects(): Promise<Project[]> {
+export async function listProjects(organizationId: string): Promise<Project[]> {
   const db = await getDb();
-  const rows = await db.select().from(schema.projects).orderBy(schema.projects.created_at);
+  const rows = await db
+    .select()
+    .from(schema.projects)
+    .where(eq(schema.projects.organization_id, organizationId))
+    .orderBy(schema.projects.created_at);
   return rows as Project[];
 }
 
-export async function getDefaultProject(): Promise<Project | undefined> {
+/** A real cross-tenant leak this migration closes: the old global version picked the single oldest project across EVERY organization — a mission created without an explicit projectId could land in a different organization's workspace entirely. */
+export async function getDefaultProject(organizationId: string): Promise<Project | undefined> {
   const db = await getDb();
-  const [row] = await db.select().from(schema.projects).orderBy(schema.projects.created_at).limit(1);
+  const [row] = await db
+    .select()
+    .from(schema.projects)
+    .where(eq(schema.projects.organization_id, organizationId))
+    .orderBy(schema.projects.created_at)
+    .limit(1);
   return row as Project | undefined;
 }
 
@@ -540,6 +1003,7 @@ export async function getProject(id: string): Promise<Project | undefined> {
  */
 export async function createProject(input: {
   name: string;
+  organizationId: string;
   workspaceType: WorkspaceType;
   description?: string | null;
 }): Promise<Project> {
@@ -549,6 +1013,7 @@ export async function createProject(input: {
     .values({
       id: randomUUID(),
       name: input.name,
+      organization_id: input.organizationId,
       description: input.description ?? null,
       platform_focus: null,
       workspace_type: input.workspaceType,
@@ -561,6 +1026,7 @@ export async function createProject(input: {
 
 export async function createMission(input: {
   founderId: string;
+  organizationId: string;
   projectId: string | null;
   title: string;
   brief: string;
@@ -572,6 +1038,7 @@ export async function createMission(input: {
     id,
     project_id: input.projectId,
     founder_id: input.founderId,
+    organization_id: input.organizationId,
     title: input.title,
     brief: input.brief,
     state: "draft",
@@ -596,6 +1063,17 @@ export async function getMission(id: string): Promise<Mission | undefined> {
 export async function listMissions(): Promise<Mission[]> {
   const db = await getDb();
   const rows = await db.select().from(schema.missions).orderBy(desc(schema.missions.created_at));
+  return rows as Mission[];
+}
+
+/** Real, server-side WHERE-clause scoping — not a post-fetch filter — for every caller that must never see another organization's missions. */
+export async function listMissionsForOrganization(organizationId: string): Promise<Mission[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.missions)
+    .where(eq(schema.missions.organization_id, organizationId))
+    .orderBy(desc(schema.missions.created_at));
   return rows as Mission[];
 }
 
@@ -837,6 +1315,30 @@ export async function listLeadAssignments(): Promise<MissionLeadAssignment[]> {
   return rows;
 }
 
+/**
+ * The real organization-scoped version (Master Development Mission 6 —
+ * "Address global leadAssignments ... Keep the business/task state
+ * organisation-scoped"). Deliberately a pure data-scoping change: the 3D
+ * world components this feeds (components/founders-desk/world/*) are
+ * completely untouched — they still receive a plain
+ * MissionLeadAssignment[] in the exact same shape, just correctly scoped
+ * to one real organization's own missions (via the real
+ * mission_id -> missions.organization_id chain) instead of every
+ * organization's at once. `listLeadAssignments()` above stays available
+ * for any caller that genuinely needs the global view (none currently
+ * do outside this function's own callers, which have all been updated).
+ */
+export async function listLeadAssignmentsForOrganization(organizationId: string): Promise<MissionLeadAssignment[]> {
+  const db = await getDb();
+  const rows = await db
+    .select({ mission_id: schema.agentAssignments.mission_id, agent_key: schema.agents.key })
+    .from(schema.agentAssignments)
+    .innerJoin(schema.agents, eq(schema.agentAssignments.agent_id, schema.agents.id))
+    .innerJoin(schema.missions, eq(schema.agentAssignments.mission_id, schema.missions.id))
+    .where(and(eq(schema.agentAssignments.role, "lead"), eq(schema.missions.organization_id, organizationId)));
+  return rows;
+}
+
 /** Whether this agent is already assigned to this mission — used to keep resumed retries idempotent. */
 export async function hasAssignment(missionId: string, agentId: string): Promise<boolean> {
   const db = await getDb();
@@ -983,6 +1485,15 @@ export async function listApprovalsForContentItem(contentItemId: string): Promis
 
 export async function recordCost(entry: {
   missionId: string | null;
+  /**
+   * Required — Master Development Mission 7's real attribution fix.
+   * Every caller must resolve and pass the real organization this spend
+   * belongs to (via its mission, its content item, or directly — see
+   * businessAnalystWorkflow.ts for the standalone-research case this
+   * closes). Never optional: an unattributed cost is exactly the gap
+   * this migration exists to close, so there is no silent fallback.
+   */
+  organizationId: string;
   agentId: string | null;
   model: string;
   /** Null for a media-provider call priced in a different unit — see `provider`/`unit`/`quantity`. */
@@ -1003,6 +1514,7 @@ export async function recordCost(entry: {
     .values({
       id: randomUUID(),
       mission_id: entry.missionId,
+      organization_id: entry.organizationId,
       agent_id: entry.agentId,
       model: entry.model,
       input_tokens: entry.inputTokens ?? null,
@@ -1028,6 +1540,7 @@ export async function recordCost(entry: {
     await db.insert(schema.ledgerEntries).values({
       id: randomUUID(),
       mission_id: entry.missionId,
+      organization_id: entry.organizationId,
       category: "agent_cost",
       description,
       amount_usd: -Math.abs(entry.usdCost),
@@ -1065,17 +1578,125 @@ export async function contentItemSpendUsd(contentItemId: string): Promise<number
   return row?.total ?? 0;
 }
 
+/**
+ * Sum of real, known (non-null) usd_cost rows for one content *version* —
+ * narrower than contentItemSpendUsd (item-wide), used by the organization
+ * budget reservation's settlement (Mission 8 Milestone C): one version is
+ * one real production attempt/spend event (mirrors Scout's one research
+ * pass), so its own reservation settles with just its own real cost, not
+ * the item's cumulative total across every version.
+ */
+export async function contentVersionSpendUsd(contentVersionId: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${schema.costs.usd_cost}), 0)` })
+    .from(schema.costs)
+    .where(and(eq(schema.costs.content_version_id, contentVersionId), sql`${schema.costs.usd_cost} is not null`));
+  return row?.total ?? 0;
+}
+
+/**
+ * @deprecated Globally unscoped — returns EVERY organization's real ledger
+ * entries with no filtering at all. This was found live during Mission 10
+ * serving one organization's real financial data to a completely unrelated
+ * customer via GET /api/ledger and app/page.tsx. Kept only because tests
+ * reference it directly for seed-data assertions; every real route/page must
+ * use `listLedgerEntriesForOrganization` instead.
+ */
 export async function listLedgerEntries(limit = 50): Promise<LedgerEntry[]> {
   const db = await getDb();
   return db.select().from(schema.ledgerEntries).orderBy(desc(schema.ledgerEntries.created_at)).limit(limit);
 }
 
+/**
+ * @deprecated Globally unscoped — see `listLedgerEntries`'s doc comment.
+ * Use `ledgerTotalUsdForOrganization` for any real, customer-facing total.
+ */
 export async function ledgerTotalUsd(): Promise<number> {
   const db = await getDb();
   const [row] = await db
     .select({ total: sql<number>`coalesce(sum(${schema.ledgerEntries.amount_usd}), 0)` })
     .from(schema.ledgerEntries);
   return row?.total ?? 0;
+}
+
+/**
+ * Real, organization-scoped ledger listing (Mission 10) — the fix for the
+ * second real cross-tenant leak found live this session (the first was
+ * `listFoundersForOrganization`'s own leak). Only entries belonging to the
+ * organization actually being asked about.
+ */
+export async function listLedgerEntriesForOrganization(organizationId: string, limit = 50): Promise<LedgerEntry[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(schema.ledgerEntries)
+    .where(eq(schema.ledgerEntries.organization_id, organizationId))
+    .orderBy(desc(schema.ledgerEntries.created_at))
+    .limit(limit);
+}
+
+/** Organization-scoped counterpart to `ledgerTotalUsd` — see its doc comment above. */
+export async function ledgerTotalUsdForOrganization(organizationId: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${schema.ledgerEntries.amount_usd}), 0)` })
+    .from(schema.ledgerEntries)
+    .where(eq(schema.ledgerEntries.organization_id, organizationId));
+  return row?.total ?? 0;
+}
+
+// --- Customer support (Mission 10) --------------------------------------
+
+export async function createSupportRequest(input: {
+  organizationId: string | null;
+  founderId: string;
+  subject: string;
+  message: string;
+}): Promise<SupportRequest> {
+  const db = await getDb();
+  const ts = now();
+  const [row] = await db
+    .insert(schema.supportRequests)
+    .values({
+      id: randomUUID(),
+      organization_id: input.organizationId,
+      founder_id: input.founderId,
+      subject: input.subject,
+      message: input.message,
+      status: "open",
+      created_at: ts,
+      updated_at: ts,
+    })
+    .returning();
+  return row as SupportRequest;
+}
+
+/** A founder's own real support requests — never another founder's, regardless of organization. */
+export async function listSupportRequestsForFounder(founderId: string): Promise<SupportRequest[]> {
+  const db = await getDb();
+  const rows = await db
+    .select()
+    .from(schema.supportRequests)
+    .where(eq(schema.supportRequests.founder_id, founderId))
+    .orderBy(desc(schema.supportRequests.created_at));
+  return rows as SupportRequest[];
+}
+
+/**
+ * Real, server-side rate-limit check — how many support requests this
+ * founder has filed since `sinceIso`. The actual spam/abuse protection
+ * mechanism (see `submitSupportRequest` in `lib/domain/supportWorkflow.ts`
+ * for the limit itself); this just counts, it never decides what the
+ * limit is.
+ */
+export async function countSupportRequestsForFounderSince(founderId: string, sinceIso: string): Promise<number> {
+  const db = await getDb();
+  const [row] = await db
+    .select({ n: sql<number>`count(*)` })
+    .from(schema.supportRequests)
+    .where(and(eq(schema.supportRequests.founder_id, founderId), sql`${schema.supportRequests.created_at} >= ${sinceIso}`));
+  return Number(row?.n ?? 0);
 }
 
 // --- Activity history -------------------------------------------------------
@@ -1545,6 +2166,7 @@ export async function listContentAssets(contentVersionId: string): Promise<Conte
 export async function createAgentDeliverable(input: {
   agentKey: string;
   founderId: string;
+  organizationId: string;
   sourceType: string;
   sourceId: string;
   title: string;
@@ -1558,6 +2180,7 @@ export async function createAgentDeliverable(input: {
     id,
     agent_key: input.agentKey,
     founder_id: input.founderId,
+    organization_id: input.organizationId,
     source_type: input.sourceType,
     source_id: input.sourceId,
     title: input.title,
@@ -1578,9 +2201,14 @@ export async function getAgentDeliverable(id: string): Promise<AgentDeliverable 
   return row as unknown as AgentDeliverable | undefined;
 }
 
-export async function listAgentDeliverables(opts?: { state?: AgentDeliverableState; agentKey?: string }): Promise<AgentDeliverable[]> {
+export async function listAgentDeliverables(opts?: {
+  organizationId?: string;
+  state?: AgentDeliverableState;
+  agentKey?: string;
+}): Promise<AgentDeliverable[]> {
   const db = await getDb();
   const conditions = [];
+  if (opts?.organizationId) conditions.push(eq(schema.agentDeliverables.organization_id, opts.organizationId));
   if (opts?.state) conditions.push(eq(schema.agentDeliverables.state, opts.state));
   if (opts?.agentKey) conditions.push(eq(schema.agentDeliverables.agent_key, opts.agentKey));
   const rows = conditions.length

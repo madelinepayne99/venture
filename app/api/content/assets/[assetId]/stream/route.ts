@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getContentAsset } from "@/lib/db/repositories";
 import { getStorageProvider } from "@/lib/storage/registry";
 import { toApiErrorResponse } from "@/lib/api/errors";
 import { requireFounderId } from "@/lib/api/session";
+import { getOwnedContentAsset } from "@/lib/domain/contentWorkflow";
 
 /**
  * Never a public URL — the actual mechanism behind "watchable in-app, no
@@ -28,12 +28,15 @@ function parseRangeHeader(header: string | null, byteSize: number): { start: num
 
 export async function GET(request: NextRequest, { params }: { params: Promise<{ assetId: string }> }) {
   try {
-    await requireFounderId();
+    const founderId = await requireFounderId();
     const { assetId } = await params;
-    const asset = await getContentAsset(assetId);
-    if (!asset) {
-      return NextResponse.json({ error: `Content asset ${assetId} not found.` }, { status: 404 });
-    }
+    // Real file bytes are the single most sensitive thing Content Bot
+    // produces — getOwnedContentAsset resolves the real chain (asset ->
+    // version -> item -> mission -> organization) before anything here
+    // ever opens the underlying storage key. Master Development Mission
+    // 6: this route previously had NO ownership check at all, a genuine
+    // cross-organization media leak.
+    const asset = await getOwnedContentAsset(assetId, founderId);
 
     const storage = getStorageProvider();
     const head = await storage.head(asset.storage_key);

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { resetDbForTests } from "@/lib/db/client";
-import { getAgentByKey } from "@/lib/db/repositories";
+import { getAgentByKey, listFounders } from "@/lib/db/repositories";
 import {
   logExpense,
   setCategoryBudget,
@@ -8,6 +8,12 @@ import {
   listAllExpenses,
   FinanceValidationError,
 } from "@/lib/domain/financeWorkflow";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+
+async function seededOrganizationId(): Promise<string> {
+  const founders = await listFounders();
+  return (await getActiveOrganizationForFounder(founders[0]!.id)).id;
+}
 
 describe("Finance Agent is registered correctly", () => {
   beforeEach(async () => {
@@ -26,7 +32,8 @@ describe("logExpense", () => {
   });
 
   it("records a real expense with explicit currency", async () => {
-    const expense = await logExpense({
+    const organizationId = await seededOrganizationId();
+    const expense = await logExpense(organizationId, {
       category: "software",
       description: "Monthly subscription",
       amount: 12,
@@ -39,29 +46,32 @@ describe("logExpense", () => {
   });
 
   it("is genuinely visible after a fresh read", async () => {
-    await logExpense({ category: "software", description: "Real persistence check", amount: 5, currency: "GBP" });
-    const expenses = await listAllExpenses("software");
+    const organizationId = await seededOrganizationId();
+    await logExpense(organizationId, { category: "software", description: "Real persistence check", amount: 5, currency: "GBP" });
+    const expenses = await listAllExpenses(organizationId, "software");
     expect(expenses.some((e) => e.description === "Real persistence check")).toBe(true);
   });
 
   it("rejects a missing/invalid currency rather than defaulting to one", async () => {
+    const organizationId = await seededOrganizationId();
     await expect(
-      logExpense({ category: "software", description: "x", amount: 5, currency: "" }),
+      logExpense(organizationId, { category: "software", description: "x", amount: 5, currency: "" }),
     ).rejects.toBeInstanceOf(FinanceValidationError);
     await expect(
-      logExpense({ category: "software", description: "x", amount: 5, currency: "pounds" }),
+      logExpense(organizationId, { category: "software", description: "x", amount: 5, currency: "pounds" }),
     ).rejects.toBeInstanceOf(FinanceValidationError);
   });
 
   it("rejects a zero or negative amount and writes nothing", async () => {
-    const before = await listAllExpenses("software");
+    const organizationId = await seededOrganizationId();
+    const before = await listAllExpenses(organizationId, "software");
     await expect(
-      logExpense({ category: "software", description: "x", amount: 0, currency: "GBP" }),
+      logExpense(organizationId, { category: "software", description: "x", amount: 0, currency: "GBP" }),
     ).rejects.toBeInstanceOf(FinanceValidationError);
     await expect(
-      logExpense({ category: "software", description: "x", amount: -5, currency: "GBP" }),
+      logExpense(organizationId, { category: "software", description: "x", amount: -5, currency: "GBP" }),
     ).rejects.toBeInstanceOf(FinanceValidationError);
-    const after = await listAllExpenses("software");
+    const after = await listAllExpenses(organizationId, "software");
     expect(after).toHaveLength(before.length);
   });
 });
@@ -72,10 +82,11 @@ describe("setCategoryBudget / getBudgetStatus — the exact founder acceptance s
   });
 
   it("£12 expense + £30 monthly budget = £18 remaining, after a fresh read", async () => {
-    await setCategoryBudget({ category: "software", amount: 30, currency: "GBP", period: "monthly" });
-    await logExpense({ category: "software", description: "Subscription", amount: 12, currency: "GBP" });
+    const organizationId = await seededOrganizationId();
+    await setCategoryBudget(organizationId, { category: "software", amount: 30, currency: "GBP", period: "monthly" });
+    await logExpense(organizationId, { category: "software", description: "Subscription", amount: 12, currency: "GBP" });
 
-    const status = await getBudgetStatus("software");
+    const status = await getBudgetStatus(organizationId, "software");
 
     expect(status.budget?.amount).toBe(30);
     expect(status.budget?.currency).toBe("GBP");
@@ -85,21 +96,23 @@ describe("setCategoryBudget / getBudgetStatus — the exact founder acceptance s
   });
 
   it("sums multiple expenses in the same category correctly", async () => {
-    await setCategoryBudget({ category: "software", amount: 30, currency: "GBP" });
-    await logExpense({ category: "software", description: "A", amount: 12, currency: "GBP" });
-    await logExpense({ category: "software", description: "B", amount: 5, currency: "GBP" });
+    const organizationId = await seededOrganizationId();
+    await setCategoryBudget(organizationId, { category: "software", amount: 30, currency: "GBP" });
+    await logExpense(organizationId, { category: "software", description: "A", amount: 12, currency: "GBP" });
+    await logExpense(organizationId, { category: "software", description: "B", amount: 5, currency: "GBP" });
 
-    const status = await getBudgetStatus("software");
+    const status = await getBudgetStatus(organizationId, "software");
     expect(status.spentInBudgetCurrency).toBe(17);
     expect(status.remaining).toBe(13);
   });
 
   it("never silently mixes a different-currency expense into the budget total", async () => {
-    await setCategoryBudget({ category: "software", amount: 30, currency: "GBP" });
-    await logExpense({ category: "software", description: "GBP one", amount: 12, currency: "GBP" });
-    await logExpense({ category: "software", description: "USD one", amount: 9, currency: "USD" });
+    const organizationId = await seededOrganizationId();
+    await setCategoryBudget(organizationId, { category: "software", amount: 30, currency: "GBP" });
+    await logExpense(organizationId, { category: "software", description: "GBP one", amount: 12, currency: "GBP" });
+    await logExpense(organizationId, { category: "software", description: "USD one", amount: 9, currency: "USD" });
 
-    const status = await getBudgetStatus("software");
+    const status = await getBudgetStatus(organizationId, "software");
     // Only the matching-currency expense counts toward spend/remaining.
     expect(status.spentInBudgetCurrency).toBe(12);
     expect(status.remaining).toBe(18);
@@ -108,16 +121,18 @@ describe("setCategoryBudget / getBudgetStatus — the exact founder acceptance s
   });
 
   it("reports no budget rather than fabricating one for an unset category", async () => {
-    const status = await getBudgetStatus("marketing");
+    const organizationId = await seededOrganizationId();
+    const status = await getBudgetStatus(organizationId, "marketing");
     expect(status.budget).toBeNull();
     expect(status.remaining).toBeNull();
   });
 
   it("updates an existing budget in place rather than creating a duplicate", async () => {
-    await setCategoryBudget({ category: "software", amount: 30, currency: "GBP" });
-    await setCategoryBudget({ category: "software", amount: 50, currency: "GBP" });
+    const organizationId = await seededOrganizationId();
+    await setCategoryBudget(organizationId, { category: "software", amount: 30, currency: "GBP" });
+    await setCategoryBudget(organizationId, { category: "software", amount: 50, currency: "GBP" });
 
-    const status = await getBudgetStatus("software");
+    const status = await getBudgetStatus(organizationId, "software");
     expect(status.budget?.amount).toBe(50);
   });
 });

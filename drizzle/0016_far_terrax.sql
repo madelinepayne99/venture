@@ -1,0 +1,1 @@
+ALTER TABLE "organizations" ADD COLUMN "venture_stage" text;

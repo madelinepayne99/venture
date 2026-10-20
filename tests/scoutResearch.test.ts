@@ -16,6 +16,7 @@ function makeMission(overrides: Partial<Mission> = {}): Mission {
     id: "mission-1",
     project_id: null,
     founder_id: "founder-1",
+    organization_id: null,
     title: "Preschool counting worksheets",
     brief: "Research demand for printable counting worksheets for 3-5 year olds on Etsy.",
     interpreted_mission: null,

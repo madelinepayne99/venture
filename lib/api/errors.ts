@@ -13,6 +13,7 @@ import {
   NotRecoverableFailureError,
   ProduceAgainValidationError,
   MissionNotReadyForProductionError,
+  ContentAssetNotFoundError,
 } from "@/lib/domain/contentWorkflow";
 import { NoProductionRecommendationError, FounderCommissionValidationError } from "@/lib/domain/contentHandoff";
 import { ProductionGenuinelyStartedError } from "@/lib/domain/missionWorkflow";
@@ -36,6 +37,8 @@ import {
 import {
   ChiefOfStaffValidationError,
   ChiefOfStaffGoalNotFoundError,
+  ChiefOfStaffTaskNotFoundError,
+  ChiefOfStaffResearchError,
 } from "@/lib/domain/chiefOfStaffWorkflow";
 import {
   EmployeeNotFoundError,
@@ -47,6 +50,27 @@ import {
   FoundersDeskNotFoundError,
   FoundersDeskStateError,
 } from "@/lib/domain/foundersDeskWorkflow";
+import {
+  OrganizationNotFoundError,
+  OrganizationMembershipError,
+  OrganizationValidationError,
+  OrganizationPermissionError,
+} from "@/lib/domain/organizationWorkflow";
+import { BudgetExhaustedError } from "@/lib/domain/budgetWorkflow";
+import {
+  PlanDoesNotIncludePaidAgentsError,
+  SubscriptionNotEntitledError,
+  VideoAllowanceExceededError,
+  SubscriptionNotFoundError,
+} from "@/lib/domain/subscriptionWorkflow";
+import { PlanNotFoundError, PlanNotPurchasableError, AlreadySubscribedError } from "@/lib/domain/billingWorkflow";
+import { StripeNotConfiguredError } from "@/lib/billing/stripe";
+import { SupportRequestValidationError, SupportRequestRateLimitError } from "@/lib/domain/supportWorkflow";
+import {
+  AccountDeletionConfirmationError,
+  AccountDeletionBlockedError,
+  AccountAlreadyDeletedError,
+} from "@/lib/domain/accountWorkflow";
 
 /**
  * Maps known domain errors to HTTP responses. Anything unrecognized is
@@ -142,8 +166,11 @@ export function toApiErrorResponse(error: unknown): NextResponse {
   if (error instanceof ChiefOfStaffValidationError) {
     return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
   }
-  if (error instanceof ChiefOfStaffGoalNotFoundError) {
+  if (error instanceof ChiefOfStaffGoalNotFoundError || error instanceof ChiefOfStaffTaskNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof ChiefOfStaffResearchError) {
+    return NextResponse.json({ error: error.message, reportId: error.reportId }, { status: 409 });
   }
   if (error instanceof EmployeeNotFoundError) {
     return NextResponse.json({ error: error.message }, { status: 404 });
@@ -161,6 +188,96 @@ export function toApiErrorResponse(error: unknown): NextResponse {
     return NextResponse.json({ error: error.message }, { status: 404 });
   }
   if (error instanceof FoundersDeskStateError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof OrganizationNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof OrganizationMembershipError) {
+    // Deliberately the same generic message regardless of whether the
+    // organization genuinely doesn't exist or the founder just isn't a
+    // member of it — never confirm or deny another organization's
+    // existence to someone who isn't in it.
+    return NextResponse.json({ error: "You do not have access to that organization." }, { status: 403 });
+  }
+  if (error instanceof OrganizationPermissionError) {
+    return NextResponse.json({ error: "Your role in this organization doesn't permit that action." }, { status: 403 });
+  }
+  if (error instanceof OrganizationValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof ContentAssetNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof BudgetExhaustedError) {
+    // 429 (Too Many Requests) is the closest standard status for "this
+    // organization's own spending limit is already used up this month" —
+    // not a 403 (it's not a permissions problem) and not a 402 (no real
+    // payment flow exists in this app yet). The real figures (never a
+    // vague message alone) let the UI show exactly how exhausted the
+    // budget is.
+    return NextResponse.json(
+      {
+        error: error.message,
+        limitUsd: error.limitUsd,
+        committedUsd: error.committedUsd,
+        requestedUsd: error.requestedUsd,
+      },
+      { status: 429 },
+    );
+  }
+  if (error instanceof PlanDoesNotIncludePaidAgentsError) {
+    return NextResponse.json(
+      { error: error.message, planId: error.planId, agentKey: error.agentKey },
+      { status: 403 },
+    );
+  }
+  if (error instanceof SubscriptionNotEntitledError) {
+    return NextResponse.json({ error: error.message, status: error.status }, { status: 403 });
+  }
+  if (error instanceof VideoAllowanceExceededError) {
+    return NextResponse.json(
+      { error: error.message, planId: error.planId, usedThisMonth: error.usedThisMonth, allowance: error.allowance },
+      { status: 429 },
+    );
+  }
+  if (error instanceof SubscriptionNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof PlanNotFoundError) {
+    return NextResponse.json({ error: error.message }, { status: 404 });
+  }
+  if (error instanceof PlanNotPurchasableError) {
+    return NextResponse.json({ error: error.message }, { status: 409 });
+  }
+  if (error instanceof AlreadySubscribedError) {
+    return NextResponse.json(
+      { error: error.message, currentPlanId: error.currentPlanId },
+      { status: 409 },
+    );
+  }
+  if (error instanceof StripeNotConfiguredError) {
+    // 503 (Service Unavailable) — a real, honest signal that billing
+    // itself isn't configured in this environment, never a silent
+    // failure or a fabricated success.
+    return NextResponse.json({ error: error.message }, { status: 503 });
+  }
+  if (error instanceof SupportRequestValidationError) {
+    return NextResponse.json({ error: error.message, details: error.errors }, { status: 400 });
+  }
+  if (error instanceof SupportRequestRateLimitError) {
+    return NextResponse.json({ error: error.message }, { status: 429 });
+  }
+  if (error instanceof AccountDeletionConfirmationError) {
+    return NextResponse.json({ error: error.message }, { status: 400 });
+  }
+  if (error instanceof AccountDeletionBlockedError) {
+    return NextResponse.json(
+      { error: error.message, organizationId: error.organizationId, otherMemberCount: error.otherMemberCount },
+      { status: 409 },
+    );
+  }
+  if (error instanceof AccountAlreadyDeletedError) {
     return NextResponse.json({ error: error.message }, { status: 409 });
   }
   if (error instanceof Error && error.message.includes("not found")) {

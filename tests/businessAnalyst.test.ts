@@ -11,7 +11,14 @@ import {
   BusinessAnalystValidationError,
   BusinessAnalystReportNotFoundError,
 } from "@/lib/domain/businessAnalystWorkflow";
-import { fakeAnthropicClient, fakeAnthropicMessage } from "./testUtils";
+import { fakeAnthropicClient, fakeAnthropicClientWithCalls, fakeAnthropicMessage } from "./testUtils";
+import { getActiveOrganizationForFounder } from "@/lib/domain/organizationWorkflow";
+import {
+  reserveBudget,
+  getBudgetStatusForOrganization,
+  DEFAULT_MONTHLY_BUDGET_USD,
+  BudgetExhaustedError,
+} from "@/lib/domain/budgetWorkflow";
 
 async function seededFounderId(): Promise<string> {
   const founders = await listFounders();
@@ -170,6 +177,73 @@ describe("requestResearch — real persistence, success and failure", () => {
 
     const after = await listFounderResearchReports(founderId);
     expect(after).toHaveLength(before.length);
+  });
+});
+
+describe("requestResearch — real budget enforcement (Mission 7 Phase 4)", () => {
+  beforeEach(async () => {
+    await resetDbForTests();
+  });
+
+  it("settles a real reservation with the actual cost on a successful run", async () => {
+    const founderId = await seededFounderId();
+    const organization = await getActiveOrganizationForFounder(founderId);
+    const report = makeReport();
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const before = await getBudgetStatusForOrganization(organization.id);
+    const saved = await requestResearch(founderId, report.query, { client });
+    const after = await getBudgetStatusForOrganization(organization.id);
+
+    expect(saved.state).toBe("completed");
+    // Committed spend grew by exactly the real recorded cost — not the
+    // worst-case estimate that was reserved up front.
+    expect(after.committedUsd - before.committedUsd).toBeCloseTo(saved.usd_cost ?? 0, 6);
+  });
+
+  it("settles a real reservation with the real cost even on a failed (guardrail-rejected) run", async () => {
+    const founderId = await seededFounderId();
+    const organization = await getActiveOrganizationForFounder(founderId);
+    const report = makeReport({ sources: [] }); // triggers the zero-sources guardrail rejection
+    const client = fakeAnthropicClient([fakeAnthropicMessage(report)]);
+
+    const before = await getBudgetStatusForOrganization(organization.id);
+    const saved = await requestResearch(founderId, "A question with no real evidence", { client });
+    const after = await getBudgetStatusForOrganization(organization.id);
+
+    expect(saved.state).toBe("failed");
+    // A failed-but-billed run's real cost still counts against committed
+    // spend — not the worst-case reservation, and never left "reserved"
+    // (uncommitted) forever.
+    expect(after.committedUsd - before.committedUsd).toBeCloseTo(saved.usd_cost ?? 0, 6);
+  });
+
+  it("refuses the request before ever calling the model when the organization's budget is already exhausted", async () => {
+    const founderId = await seededFounderId();
+    const organization = await getActiveOrganizationForFounder(founderId);
+
+    // Simulate prior real spend this month that's already used up the
+    // organization's entire default budget.
+    await reserveBudget({
+      organizationId: organization.id,
+      purpose: "test_prior_spend",
+      estimatedUsd: DEFAULT_MONTHLY_BUDGET_USD,
+      idempotencyKey: "prior-spend-exhausts-budget",
+    });
+
+    const report = makeReport();
+    const { client, calls } = fakeAnthropicClientWithCalls([fakeAnthropicMessage(report)]);
+
+    await expect(requestResearch(founderId, report.query, { client })).rejects.toBeInstanceOf(
+      BudgetExhaustedError,
+    );
+
+    // The real model was never called — the gate refused before any spend.
+    expect(calls).toHaveLength(0);
+
+    // Nothing was persisted for this refused request either.
+    const reports = await listFounderResearchReports(founderId);
+    expect(reports.some((r) => r.query === report.query)).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 import "server-only";
 import {
-  listMissions,
+  listMissionsForOrganization,
   getMission,
   recordApproval,
   listApprovals,
@@ -20,6 +20,7 @@ import {
 import { getBudgetStatus, listAllExpenses } from "@/lib/domain/financeWorkflow";
 import type { AgentDeliverable, Mission, Expense } from "@/lib/db/types";
 import type { BusinessAnalystReport } from "@/lib/agents/businessAnalyst/schema";
+import { getActiveOrganizationForFounder, requireOrganizationRole } from "@/lib/domain/organizationWorkflow";
 
 /**
  * The Universal Founders' Desk (Commercial MVP Milestone 4) — a real
@@ -84,13 +85,16 @@ export interface ReviewItem {
 
 /**
  * The real, unified pending inbox — every item a founder genuinely has
- * waiting to review right now, across all seven agents. A mission/item/
- * deliverable only ever appears here once (missions already reviewed at
- * the Founders' Desk — any `founders_desk_*` decision recorded — drop
- * off, same as any other agent's reviewed work).
+ * waiting to review right now, across all seven agents, scoped to one
+ * real organization (Master Development Mission 6, Phase E — Section 8's
+ * explicit "one organization cannot review... another organization's
+ * work"). A mission/item/deliverable only ever appears here once
+ * (missions already reviewed at the Founders' Desk — any
+ * `founders_desk_*` decision recorded — drop off, same as any other
+ * agent's reviewed work).
  */
-export async function listFoundersDeskInbox(): Promise<ReviewItem[]> {
-  const missions = await listMissions();
+export async function listFoundersDeskInbox(organizationId: string): Promise<ReviewItem[]> {
+  const missions = await listMissionsForOrganization(organizationId);
   const readyMissions = missions.filter((m) => m.state === "ready_for_founders_review");
 
   const scoutItems: ReviewItem[] = [];
@@ -114,20 +118,46 @@ export async function listFoundersDeskInbox(): Promise<ReviewItem[]> {
 
   const contentItems = await listContentItemsForMissions(missions.map((m) => m.id));
   const awaitingReview = contentItems.filter((c) => c.state === "awaiting_review");
+  // Master Development Mission 5, Section 5 — a real founder test saw two
+  // Content Bot inbox entries with near-identical, truncated titles and
+  // asked whether that's a genuine duplication bug. Investigated: it
+  // isn't — Content Bot's multi-production architecture (see
+  // lib/domain/contentWorkflow.ts's `produceAgainFromMission`) lets one
+  // Scout mission genuinely own several independent content_items
+  // (separate "Produce Again" attempts), and this inbox correctly listed
+  // each of them once. The real problem was presentation: both rows
+  // showed only the shared mission title, with nothing to tell a founder
+  // they're two distinct, real pieces of work. Fixed here, not by
+  // deduplicating (that would hide a real, legitimate second deliverable)
+  // — every content item for a mission with more than one is labeled
+  // with its own real ordinal among that mission's real items, ordered
+  // by creation, so "attempt 2 of 2" (etc.) is visible at a glance.
+  const itemsByMission = new Map<string, typeof contentItems>();
+  for (const item of contentItems) {
+    const list = itemsByMission.get(item.mission_id) ?? [];
+    list.push(item);
+    itemsByMission.set(item.mission_id, list);
+  }
+  for (const list of itemsByMission.values()) list.sort((a, b) => a.created_at.localeCompare(b.created_at));
+
   const contentBotItems: ReviewItem[] = awaitingReview.map((c) => {
     const mission = missions.find((m) => m.id === c.mission_id);
+    const siblings = itemsByMission.get(c.mission_id) ?? [c];
+    const ordinal = siblings.findIndex((s) => s.id === c.id) + 1;
+    const baseTitle = mission?.title ?? "Produced content";
+    const title = siblings.length > 1 ? `${baseTitle} (production attempt ${ordinal} of ${siblings.length})` : baseTitle;
     return {
       id: `content_bot:${c.id}`,
       source: "content_bot_item",
       agentKey: "content_bot",
-      title: mission?.title ?? "Produced content",
+      title,
       kind: "produced_content",
       createdAt: c.updated_at,
       referenceId: c.id,
     };
   });
 
-  const deliverables = await listAgentDeliverables({ state: "awaiting_review" });
+  const deliverables = await listAgentDeliverables({ organizationId, state: "awaiting_review" });
   const deliverableItems: ReviewItem[] = deliverables.map((d) => ({
     id: `deliverable:${d.id}`,
     source: "agent_deliverable",
@@ -153,8 +183,22 @@ export async function reviewScoutMission(
   decision: ScoutDeskDecision,
   note?: string,
 ): Promise<{ mission: Mission; message: string }> {
+  const organization = await getActiveOrganizationForFounder(founderId);
+  // Reviewing/approving work is a real sensitive action (Section 9's own
+  // example) — restricted to owner/admin. Checked before existence, same
+  // ordering as every other permission check in this codebase: a
+  // non-owner/admin member learns they lack permission, not whether a
+  // mission with this id even exists.
+  await requireOrganizationRole(founderId, organization.id, ["owner", "admin"]);
   const mission = await getMission(missionId);
-  if (!mission) throw new FoundersDeskNotFoundError(`Mission ${missionId} not found.`);
+  // Deliberately the same "not found" error whether the mission genuinely
+  // doesn't exist or belongs to a different organization — never confirm
+  // or deny another organization's mission exists to a founder outside it
+  // (Master Development Mission 6, Section 8/10 — the real cross-tenant
+  // boundary this adapter must now also enforce).
+  if (!mission || mission.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Mission ${missionId} not found.`);
+  }
   if (mission.state !== "ready_for_founders_review") {
     throw new FoundersDeskStateError(`Mission ${missionId} is not awaiting Founders' Desk review (state: ${mission.state}).`);
   }
@@ -191,14 +235,45 @@ export async function reviewScoutMission(
 
 export type DeliverableDecision = "approve" | "reject" | "revise";
 
+/**
+ * Mission 11 security audit finding (CRITICAL): `GET /api/founders-desk/
+ * deliverables/[id]` previously called the raw, globally unscoped
+ * `getAgentDeliverable(id)` directly — `requireFounderId()` was called
+ * but its result discarded, so the route never actually checked that the
+ * requesting founder's organization owned the deliverable at all. Any
+ * authenticated founder could read ANY organization's deliverable
+ * content (Scout reports, Business Analyst reports, Executive Assistant
+ * summaries, checklist reviews, Chief of Staff goal consolidations) and
+ * its full review history by guessing or observing an id. This is the
+ * real, centralized ownership check both the GET route and
+ * `reviewAgentDeliverable` below now share — the same "not found"
+ * regardless of whether the id doesn't exist or belongs to someone
+ * else's organization, never a signal either way.
+ */
+export async function getOwnedAgentDeliverable(deliverableId: string, founderId: string): Promise<AgentDeliverable> {
+  const organization = await getActiveOrganizationForFounder(founderId);
+  const deliverable = await getAgentDeliverable(deliverableId);
+  if (!deliverable || deliverable.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Deliverable ${deliverableId} not found.`);
+  }
+  return deliverable;
+}
+
 export async function reviewAgentDeliverable(
   deliverableId: string,
   founderId: string,
   decision: DeliverableDecision,
   note?: string,
 ): Promise<{ deliverable: AgentDeliverable; message: string }> {
+  const organization = await getActiveOrganizationForFounder(founderId);
+  await requireOrganizationRole(founderId, organization.id, ["owner", "admin"]);
   const deliverable = await getAgentDeliverable(deliverableId);
-  if (!deliverable) throw new FoundersDeskNotFoundError(`Deliverable ${deliverableId} not found.`);
+  // Same real cross-tenant boundary as reviewScoutMission above — a
+  // generic "not found" regardless of why, never a signal that a
+  // deliverable exists in someone else's organization.
+  if (!deliverable || deliverable.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Deliverable ${deliverableId} not found.`);
+  }
   if (deliverable.state !== "awaiting_review") {
     throw new FoundersDeskStateError(`Deliverable ${deliverableId} is not awaiting review (state: ${deliverable.state}).`);
   }
@@ -221,6 +296,7 @@ export async function reviewAgentDeliverable(
     await createAgentTask({
       agentKey: deliverable.agent_key,
       founderId,
+      organizationId: organization.id,
       taskType: "revision_follow_up",
       title: `Revise: ${deliverable.title}`,
       detail: note || "A founder requested a revision at the Founders' Desk.",
@@ -241,6 +317,7 @@ export async function listDeliverableHistory(deliverableId: string) {
 async function submit(input: {
   agentKey: string;
   founderId: string;
+  organizationId: string;
   sourceType: string;
   sourceId: string;
   title: string;
@@ -252,14 +329,18 @@ async function submit(input: {
 
 /** Executive Assistant — a reviewable summary of a genuinely completed task. */
 export async function submitExecutiveAssistantSummary(founderId: string, taskId: string): Promise<AgentDeliverable> {
+  const organization = await getActiveOrganizationForFounder(founderId);
   const task = await getAgentTask(taskId);
-  if (!task || task.founder_id !== founderId) throw new FoundersDeskNotFoundError(`Task ${taskId} not found.`);
+  if (!task || task.founder_id !== founderId || task.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Task ${taskId} not found.`);
+  }
   if (task.state !== "completed") {
     throw new FoundersDeskValidationError(`Task "${task.title}" is not completed yet (state: ${task.state}).`);
   }
   return submit({
     agentKey: "executive_assistant",
     founderId,
+    organizationId: organization.id,
     sourceType: "agent_task",
     sourceId: taskId,
     title: task.title,
@@ -275,14 +356,16 @@ export async function submitExecutiveAssistantSummary(founderId: string, taskId:
 
 /** Finance Agent — a reviewable report from genuinely recorded expenses/budget. */
 export async function submitFinanceReport(founderId: string, category: string): Promise<AgentDeliverable> {
-  const status = await getBudgetStatus(category);
-  const expenses = await listAllExpenses(category);
+  const organization = await getActiveOrganizationForFounder(founderId);
+  const status = await getBudgetStatus(organization.id, category);
+  const expenses = await listAllExpenses(organization.id, category);
   if (!status.budget && expenses.length === 0) {
     throw new FoundersDeskValidationError(`No real budget or expenses exist for "${category}" yet.`);
   }
   return submit({
     agentKey: "finance_agent",
     founderId,
+    organizationId: organization.id,
     sourceType: "finance_report",
     sourceId: category,
     title: `Spend report — ${category}`,
@@ -300,11 +383,15 @@ export async function submitFinanceReport(founderId: string, category: string): 
 
 /** Operations Agent — a reviewable snapshot of a real checklist. */
 export async function submitChecklistForReview(founderId: string, checklistId: string): Promise<AgentDeliverable> {
+  const organization = await getActiveOrganizationForFounder(founderId);
   const checklist = await getChecklistWithItems(checklistId);
-  if (!checklist || checklist.founder_id !== founderId) throw new FoundersDeskNotFoundError(`Checklist ${checklistId} not found.`);
+  if (!checklist || checklist.founder_id !== founderId || checklist.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Checklist ${checklistId} not found.`);
+  }
   return submit({
     agentKey: "operations_agent",
     founderId,
+    organizationId: organization.id,
     sourceType: "checklist",
     sourceId: checklistId,
     title: checklist.title,
@@ -320,8 +407,11 @@ export async function submitChecklistForReview(founderId: string, checklistId: s
 
 /** Business Analyst — the genuine completed research report, with real sources and cost. */
 export async function submitBusinessAnalystReport(founderId: string, reportId: string): Promise<AgentDeliverable> {
+  const organization = await getActiveOrganizationForFounder(founderId);
   const report = await getBusinessAnalystReport(reportId);
-  if (!report || report.founder_id !== founderId) throw new FoundersDeskNotFoundError(`Report ${reportId} not found.`);
+  if (!report || report.founder_id !== founderId || report.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Report ${reportId} not found.`);
+  }
   if (report.state !== "completed") {
     throw new FoundersDeskValidationError(`This research request did not complete successfully (state: ${report.state}).`);
   }
@@ -329,6 +419,7 @@ export async function submitBusinessAnalystReport(founderId: string, reportId: s
   return submit({
     agentKey: "business_analyst",
     founderId,
+    organizationId: organization.id,
     sourceType: "business_analyst_report",
     sourceId: reportId,
     title: report.query,
@@ -354,8 +445,11 @@ export async function submitBusinessAnalystReport(founderId: string, reportId: s
  * that isn't actually done.
  */
 export async function submitGoalConsolidation(founderId: string, goalId: string): Promise<AgentDeliverable> {
+  const organization = await getActiveOrganizationForFounder(founderId);
   const goal = await getChiefOfStaffGoalWithSubtasks(goalId);
-  if (!goal || goal.founder_id !== founderId) throw new FoundersDeskNotFoundError(`Goal ${goalId} not found.`);
+  if (!goal || goal.founder_id !== founderId || goal.organization_id !== organization.id) {
+    throw new FoundersDeskNotFoundError(`Goal ${goalId} not found.`);
+  }
   const unresolved = goal.subtasks.filter((s) => s.state === "open" || s.state === "in_progress");
   if (unresolved.length > 0) {
     throw new FoundersDeskValidationError(
@@ -365,6 +459,7 @@ export async function submitGoalConsolidation(founderId: string, goalId: string)
   return submit({
     agentKey: "chief_of_staff",
     founderId,
+    organizationId: organization.id,
     sourceType: "chief_of_staff_goal",
     sourceId: goalId,
     title: goal.title,
